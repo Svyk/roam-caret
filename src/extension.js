@@ -15,7 +15,7 @@ import {
   renderPanel,
 } from "./cursor-smith.js";
 
-export const VERSION = "0.1.0";
+export const VERSION = "0.1.1";
 const CANVAS_Z_INDEX = 40; // PROVISIONAL
 const VERSION_FLAG = "__ROAM_CURSOR_SMITH_VERSION";
 
@@ -201,6 +201,13 @@ class CursorSmithRuntime {
     });
     const panelRoot = document.createElement("div");
     panelRoot.className = `cs-panel ${ROOT_CLASS}-panel`;
+    try {
+      const bodyBg = getComputedStyle(document.body).backgroundColor;
+      if (bodyBg && bodyBg !== "transparent" && !/,\s*0\)$/.test(bodyBg)) {
+        panelRoot.style.setProperty("--cs-panel-bg", bodyBg);
+      }
+    } catch {
+    }
     const toastEl = document.createElement("div");
     toastEl.className = "cs-toast";
     overlay.append(panelRoot, toastEl);
@@ -239,8 +246,6 @@ class CursorSmithRuntime {
         },
         settings: this._settings,
         disabled: !this._settings.enabled,
-        data: undefined,
-        scopeArgs: () => null,
         set: (patch) => this._set(patch),
         setLive: (patch) => this._setLive(patch),
         rerender: () => this.renderPanel(),

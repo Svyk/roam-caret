@@ -83,9 +83,9 @@ test("extension exports the Roam lifecycle contract and survives repeated unload
   assert.equal(typeof extension.onunload, "function");
 
   const api = fakeExtensionApi();
-  const cleanup = await extension.onload({ extensionAPI: api, extension: { version: "0.1.0" } });
+  const cleanup = await extension.onload({ extensionAPI: api, extension: { version: "0.1.1" } });
   assert.equal(typeof cleanup, "function");
-  assert.equal(globalThis.__ROAM_CURSOR_SMITH_VERSION, "0.1.0");
+  assert.equal(globalThis.__ROAM_CURSOR_SMITH_VERSION, "0.1.1");
   assert.equal(api.calls.filter(([name]) => name === "setting:set").length, 0);
   assert.deepEqual(
     api.calls.filter(([name]) => name === "command:add").map(([, label]) => label),

@@ -61,3 +61,22 @@ test("built extension.css hides Roam block carets and not Thymer listview", asyn
   assert.doesNotMatch(css, /listview-caret/);
   assert.doesNotMatch(css, /textarea\s*\{[^}]*caret-color/s);
 });
+
+test("extension.css uses opaque panel chrome and hides Svy caret overlay", async () => {
+  const css = await readFile(new URL("../src/extension.css", import.meta.url), "utf8");
+  assert.match(css, /\.cs-panel\.cs-panel[\s\S]*background:\s*Canvas/);
+  assert.match(css, /svy-caret-overlay-ui/);
+  assert.match(css, /\.cs-panel-overlay[\s\S]*z-index:\s*10000/);
+});
+
+test("renderPanel omits akaready and buymeacoffee chrome", async () => {
+  const src = await readFile(new URL("../src/cursor-smith.js", import.meta.url), "utf8");
+  const start = src.indexOf("function renderPanel");
+  const end = src.indexOf("__name(renderPanel", start);
+  const block = src.slice(start, end);
+  assert.doesNotMatch(block, /feedback:/);
+  assert.doesNotMatch(block, /akaready/);
+  assert.doesNotMatch(block, /buymeacoffee/);
+  assert.doesNotMatch(block, /scope:\s*ctl\.scopeArgs/);
+  assert.match(block, /Hide Roam's native caret/);
+});

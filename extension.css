@@ -46,16 +46,20 @@ body.cs-active.cs-hide-native .rm-block__input
   display: none !important;
 }
 
+body.cs-active .svy-caret-overlay-ui {
+  display: none !important;
+}
+
 .cs-panel-overlay {
   position: fixed;
   inset: 0;
-  z-index: 50; /* PROVISIONAL */
+  z-index: 10000;
   display: flex;
   align-items: flex-start;
   justify-content: center;
   padding: 24px 16px;
   overflow: auto;
-  background: color-mix(in srgb, currentColor 28%, transparent);
+  background: rgba(16, 22, 26, 0.55);
 }
 
 .cs-panel.cs-panel {
@@ -63,13 +67,13 @@ body.cs-active.cs-hide-native .rm-block__input
   --tps-text-muted: var(--cl-gray-550, color-mix(in srgb, currentColor 62%, transparent));
   --tps-text-faint: color-mix(in srgb, currentColor 48%, transparent);
   --tps-accent: var(--roam-color-primary, var(--cl-blue, #106ba3));
-  --tps-panel-bg: var(--bc-main, currentColor);
+  --tps-panel-bg: Canvas;
   --tps-bg-input: var(--bc-hover, color-mix(in srgb, currentColor 6%, transparent));
   --tps-bg-hover: var(--bc-hover, color-mix(in srgb, currentColor 8%, transparent));
   --tps-border: var(--bc-menu, color-mix(in srgb, currentColor 22%, transparent));
   --tps-divider: var(--bc-menu, color-mix(in srgb, currentColor 14%, transparent));
   position: relative;
-  z-index: 50; /* PROVISIONAL */
+  z-index: 10000;
   width: min(560px, 100%);
   max-height: calc(100vh - 48px);
   overflow: auto;
@@ -77,8 +81,10 @@ body.cs-active.cs-hide-native .rm-block__input
   padding: 12px 14px 20px;
   border: 1px solid var(--tps-border);
   border-radius: 8px;
-  background: var(--bc-main, var(--app-bg, Canvas));
-  color: var(--tps-text);
+  background: Canvas;
+  color: CanvasText;
+  color-scheme: light dark;
+  isolation: isolate;
   box-shadow: 0 12px 40px color-mix(in srgb, currentColor 18%, transparent);
 }
 
@@ -86,11 +92,11 @@ body.cs-active.cs-hide-native .rm-block__input
   --tps-text: var(--bc-light-gray-5, currentColor);
   --tps-text-muted: var(--cl-gray-550, color-mix(in srgb, currentColor 62%, transparent));
   --tps-accent: var(--roam-color-primary, var(--cl-blue, #106ba3));
-  --tps-panel-bg: var(--bc-main, currentColor);
+  --tps-panel-bg: Canvas;
   --tps-bg-input: var(--bc-hover, color-mix(in srgb, currentColor 6%, transparent));
   --tps-border: var(--bc-menu, color-mix(in srgb, currentColor 22%, transparent));
   overflow: visible;
-  background: transparent;
+  background: Canvas;
   color: inherit;
 }
 

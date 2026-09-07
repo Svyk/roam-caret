@@ -1,4 +1,4 @@
-/* Cursor Smith v0.1.0 | MIT | generated; edit src/ */
+/* Cursor Smith v0.1.1 | MIT | generated; edit src/ */
 
 // src/lifecycle.js
 function isPromiseLike(value) {
@@ -2229,10 +2229,10 @@ function pluginHeader({
   onHelperToggle,
   icon = "",
   version = "1.0",
-  author = "@akaready",
-  homepage = "https://akaready.com",
-  repository = "https://github.com/akaready",
-  coffee = "https://buymeacoffee.com/akaready",
+  author = "",
+  homepage = "",
+  repository = "",
+  coffee = "",
   killSwitch = null,
   feedback = null,
   scope = null
@@ -2263,7 +2263,7 @@ function pluginHeader({
     h(
       "p",
       { class: "tps-plugin-header-attr" },
-      h(
+      author && homepage ? h(
         "span",
         { class: "tps-plugin-header-link-group" },
         h("i", { class: "ti ti-link tps-plugin-header-icon", "aria-hidden": "true" }),
@@ -2273,8 +2273,8 @@ function pluginHeader({
           target: "_blank",
           rel: "noopener noreferrer"
         }, author)
-      ),
-      h(
+      ) : null,
+      coffee ? h(
         "span",
         { class: "tps-plugin-header-link-group" },
         h("i", { class: "ti ti-coffee tps-plugin-header-icon", "aria-hidden": "true" }),
@@ -2284,12 +2284,12 @@ function pluginHeader({
           target: "_blank",
           rel: "noopener noreferrer"
         }, "buy me a coffee")
-      ),
+      ) : null,
       version ? h(
         "span",
         { class: "tps-plugin-header-link-group" },
         h("span", { class: "tps-plugin-header-icon tps-plugin-header-iconify tps-plugin-header-iconify-github", "aria-hidden": "true" }),
-        h("a", { class: "tps-plugin-header-link tps-plugin-header-link--muted tps-plugin-header-version", href: repository, target: "_blank", rel: "noopener noreferrer" }, `v${version}`)
+        repository ? h("a", { class: "tps-plugin-header-link tps-plugin-header-link--muted tps-plugin-header-version", href: repository, target: "_blank", rel: "noopener noreferrer" }, `v${version}`) : h("span", { class: "tps-plugin-header-link tps-plugin-header-version" }, `v${version}`)
       ) : null,
       // Bug report sits with the attribution links (right of the version);
       // the far-right corner is reserved for state toggles (scope pill,
@@ -8594,7 +8594,7 @@ function renderPanel(root, ctl) {
       checkShape("blinkBreathing", "Breathing", "Shrink and swell instead of fading out, so the cursor never disappears."),
       s.blinkBreathing ? sub([slider("blinkBreathDepth", "Breath depth", { min: 0.05, max: 0.5, step: 0.01, format: /* @__PURE__ */ __name((v) => Math.round(v * 100) + "%", "format") })]) : null
     ])] : [],
-    check("hideNativeCaret", "Hide Thymer's own caret", "Turn this off to see both at once — useful when diagnosing alignment."),
+    check("hideNativeCaret", "Hide Roam's native caret", "Turn this off to see both at once — useful when diagnosing alignment."),
     check("hideOnWindowBlur", "Hide when the window loses focus", "What every other writing app does.")
   ];
   const smoothBody = [
@@ -8735,19 +8735,17 @@ function renderPanel(root, ctl) {
       {
         title: "Cursor Smith",
         lede: [
-          "Forge your text cursor. Ported to Thymer from ",
+          "MIT-licensed port of ",
           link(UPSTREAM_REPO, "Cursor-Smith"),
           " by ",
           link(UPSTREAM_AUTHOR, "SadSnake1"),
-          " (MIT)."
+          " for Roam Research."
         ],
         helper: ctl.conf?.instructions,
         icon: "wand",
         version: ctl.version,
-        repository: ctl.conf?.repository,
-        scope: ctl.scopeArgs(),
-        killSwitch: { on: !ctl.disabled, onToggle: ctl.toggleDisabled },
-        feedback: { data: ctl.data }
+        repository: ctl.conf?.repository || "https://github.com/Svyk/roam-cursor-smith",
+        killSwitch: { on: !ctl.disabled, onToggle: ctl.toggleDisabled }
       }
     ),
     // Sticky so it stays reachable while you scroll the settings below it —
@@ -8927,7 +8925,7 @@ function buildPresets(ctl) {
 __name(buildPresets, "buildPresets");
 
 // src/extension.js
-var VERSION = "0.1.0";
+var VERSION = "0.1.1";
 var CANVAS_Z_INDEX = 40;
 var VERSION_FLAG = "__ROAM_CURSOR_SMITH_VERSION";
 var activeLifecycle = null;
@@ -9092,6 +9090,13 @@ var CursorSmithRuntime = class {
     });
     const panelRoot = document.createElement("div");
     panelRoot.className = `cs-panel ${ROOT_CLASS}-panel`;
+    try {
+      const bodyBg = getComputedStyle(document.body).backgroundColor;
+      if (bodyBg && bodyBg !== "transparent" && !/,\s*0\)$/.test(bodyBg)) {
+        panelRoot.style.setProperty("--cs-panel-bg", bodyBg);
+      }
+    } catch {
+    }
     const toastEl = document.createElement("div");
     toastEl.className = "cs-toast";
     overlay.append(panelRoot, toastEl);
@@ -9127,8 +9132,6 @@ var CursorSmithRuntime = class {
         },
         settings: this._settings,
         disabled: !this._settings.enabled,
-        data: void 0,
-        scopeArgs: () => null,
         set: (patch) => this._set(patch),
         setLive: (patch) => this._setLive(patch),
         rerender: () => this.renderPanel(),

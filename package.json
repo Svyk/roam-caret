@@ -1,6 +1,6 @@
 {
   "name": "roam-cursor-smith",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "private": true,
   "description": "Canvas-rendered text cursor for Roam Research. Port of Cursor Smith.",
   "type": "module",
