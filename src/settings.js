@@ -1,32 +1,10 @@
-export const SETTING_IDS = Object.freeze({
-  includeTimestamp: "include-timestamp",
-});
+export const OPTIONS_KEY = "options";
 
-export async function initializeSettings(extensionAPI) {
-  if (
-    extensionAPI.settings.canSet !== false
-    && extensionAPI.settings.get(SETTING_IDS.includeTimestamp) == null
-  ) {
-    await extensionAPI.settings.set(SETTING_IDS.includeTimestamp, true);
-  }
+export function loadOptions(extensionAPI) {
+  const raw = extensionAPI.settings.get(OPTIONS_KEY);
+  return raw == null ? null : raw;
 }
 
-export function createSettingsPanel() {
-  return {
-    tabTitle: "Example Extension",
-    settings: [
-      {
-        id: SETTING_IDS.includeTimestamp,
-        name: "Include timestamp",
-        description: "Include the current time in the example command's console greeting.",
-        action: {
-          type: "switch",
-          onChange: (event) => {
-            console.info("[example-extension] Include timestamp:", event.target.checked);
-          },
-        },
-      },
-    ],
-  };
+export async function persistOptions(extensionAPI, value) {
+  await extensionAPI.settings.set(OPTIONS_KEY, value);
 }
-

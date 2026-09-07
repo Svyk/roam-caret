@@ -1,105 +1,8 @@
-/* Cursor Smith v0.1.0 | MIT | generated; edit src/ */
+const __defProp = Object.defineProperty;
+const __name = (target, value) => __defProp(target, "name", { value, configurable: true });
 
-// src/lifecycle.js
-function isPromiseLike(value) {
-  return value != null && typeof value.then === "function";
-}
-async function callSafely(disposer) {
-  const result = disposer();
-  if (isPromiseLike(result)) await result;
-}
-function createLifecycle() {
-  let disposed = false;
-  const disposers = [];
-  const add = (disposer) => {
-    if (typeof disposer !== "function") throw new TypeError("A disposer must be a function");
-    if (disposed) {
-      void callSafely(disposer).catch((error) => console.error("[cursor-smith] Late cleanup failed", error));
-      return disposer;
-    }
-    disposers.push(disposer);
-    return disposer;
-  };
-  return {
-    get disposed() {
-      return disposed;
-    },
-    add,
-    async command(commandApi, config) {
-      if (!commandApi?.addCommand || !commandApi?.removeCommand) {
-        throw new TypeError("A command API with addCommand/removeCommand is required");
-      }
-      await commandApi.addCommand(config);
-      add(() => commandApi.removeCommand({ label: config.label }));
-    },
-    event(target, type, listener, options) {
-      target.addEventListener(type, listener, options);
-      add(() => target.removeEventListener(type, listener, options));
-      return listener;
-    },
-    interval(callback, delay, ...args) {
-      const id = globalThis.setInterval(callback, delay, ...args);
-      add(() => globalThis.clearInterval(id));
-      return id;
-    },
-    timeout(callback, delay, ...args) {
-      const id = globalThis.setTimeout(callback, delay, ...args);
-      add(() => globalThis.clearTimeout(id));
-      return id;
-    },
-    observer(observer, target, options) {
-      observer.observe(target, options);
-      add(() => observer.disconnect());
-      return observer;
-    },
-    node(node, parent = globalThis.document?.body) {
-      if (!parent) throw new Error("A parent node is required outside the browser");
-      parent.append(node);
-      add(() => node.remove());
-      return node;
-    },
-    pullWatch(dataApi, pattern, entity, callback) {
-      if (!dataApi?.addPullWatch || !dataApi?.removePullWatch) {
-        throw new TypeError("A Roam data API with addPullWatch/removePullWatch is required");
-      }
-      dataApi.addPullWatch(pattern, entity, callback);
-      add(() => dataApi.removePullWatch(pattern, entity, callback));
-      return callback;
-    },
-    async settingsPanel(extensionAPI, config) {
-      await extensionAPI.settings.panel.create(config);
-    },
-    async dispose() {
-      if (disposed) return;
-      disposed = true;
-      const errors = [];
-      for (const disposer of disposers.splice(0).reverse()) {
-        try {
-          await callSafely(disposer);
-        } catch (error) {
-          errors.push(error);
-        }
-      }
-      if (errors.length) throw new AggregateError(errors, "One or more extension cleanups failed");
-    }
-  };
-}
-
-// src/settings.js
-var OPTIONS_KEY = "options";
-function loadOptions(extensionAPI) {
-  const raw = extensionAPI.settings.get(OPTIONS_KEY);
-  return raw == null ? null : raw;
-}
-async function persistOptions(extensionAPI, value) {
-  await extensionAPI.settings.set(OPTIONS_KEY, value);
-}
-
-// src/cursor-smith.js
-var __defProp = Object.defineProperty;
-var __name = (target, value) => __defProp(target, "name", { value, configurable: true });
 var tokens_default = `/*
- * Thymer Plugin Settings UI — Design Tokens
+ * Thymer Plugin Settings UI \u2014 Design Tokens
  *
  * Canonical CSS custom properties for the plugin settings panel system.
  * Plugins consume this verbatim; component CSS reads from these vars.
@@ -122,13 +25,13 @@ var tokens_default = `/*
  */
 
 .tps-panel.tps-panel {
-/* ── Color: text ──────────────────────────────────────────────────── */
+/* \u2500\u2500 Color: text \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500 */
 --tps-text:           var(--text-default,   currentColor);
 --tps-text-muted:     var(--text-muted,     color-mix(in srgb, currentColor 62%, transparent));
 --tps-text-faint:     var(--text-subtle,    color-mix(in srgb, currentColor 48%, transparent));
 --tps-text-whisper:   var(--text-disabled,  color-mix(in srgb, currentColor 34%, transparent));
 
-/* ── Color: surfaces ─────────────────────────────────────────────── */
+/* \u2500\u2500 Color: surfaces \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500 */
 --tps-bg-input:       var(--input-bg-color,
                       color-mix(in srgb, currentColor 6%, transparent));
 --tps-bg-hover:       var(--hover-subtle,
@@ -137,7 +40,7 @@ var tokens_default = `/*
 --tps-bg-active:      var(--active-bg-color,
                       color-mix(in srgb, currentColor 12%, transparent));
 
-/* ── Color: borders / dividers ───────────────────────────────────── */
+/* \u2500\u2500 Color: borders / dividers \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500 */
 --tps-divider:        var(--divider-color,
                       var(--thin-divider-color,
                       color-mix(in srgb, currentColor 14%, transparent)));
@@ -148,16 +51,16 @@ var tokens_default = `/*
                       var(--selection-border,
                       color-mix(in srgb, currentColor 32%, transparent)));
 
-/* ── Color: accent (Thymer uses --logo-color) ─────────────────────── */
+/* \u2500\u2500 Color: accent (Thymer uses --logo-color) \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500 */
 /* Fallback is a real color, never currentColor: an accent that degrades into
    the text color fails invisibly. Deliberately the brand mark, not the theme's
-   --color-primary-500 — that one is a muted slate on themes like
+   --color-primary-500 \u2014 that one is a muted slate on themes like
    basalt-bedrock, which would make checked rows harder to read, not easier. */
 --tps-accent:         var(--logo-color, #04d1ab);
 --tps-accent-soft:    color-mix(in srgb, var(--tps-accent) 15%, transparent);
 --tps-accent-strong:  color-mix(in srgb, var(--tps-accent) 80%, var(--tps-text));
 
-/* ── Color: semantic ──────────────────────────────────────────────── */
+/* \u2500\u2500 Color: semantic \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500 */
 --tps-danger:         var(--enum-red-fg, #ef4444);
 --tps-danger-soft:    color-mix(in srgb, var(--tps-danger) 15%, transparent);
 --tps-warning:        var(--text-warning,
@@ -171,7 +74,7 @@ var tokens_default = `/*
 --tps-panel-bg:       var(--panel-bg-color, transparent);
 --tps-swatch-inset:   color-mix(in srgb, var(--tps-text) 8%, transparent);
 
-/* ── Typography ───────────────────────────────────────────────────── */
+/* \u2500\u2500 Typography \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500 */
 /* Font is INHERITED from Thymer's panel chrome (see components.css). */
 
 --tps-fs-title:       18px;
@@ -199,7 +102,7 @@ var tokens_default = `/*
 --tps-ls-list:        0.08em;
 --tps-ls-title:       0;
 
-/* ── Spacing (8px scale) ──────────────────────────────────────────── */
+/* \u2500\u2500 Spacing (8px scale) \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500 */
 --tps-space-1:        4px;
 --tps-space-2:        8px;
 --tps-space-3:        12px;
@@ -208,14 +111,14 @@ var tokens_default = `/*
 --tps-space-6:        32px;
 --tps-space-7:        48px;
 
-/* ── Radii ────────────────────────────────────────────────────────── */
+/* \u2500\u2500 Radii \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500 */
 --tps-radius-sm:      4px;
 --tps-radius-md:      6px;
 --tps-radius-lg:      8px;
 --tps-radius-pill:    999px;
 --tps-radius-circle:  50%;
 
-/* ── Motion ───────────────────────────────────────────────────────── */
+/* \u2500\u2500 Motion \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500 */
 --tps-ease-out:       cubic-bezier(0.2, 0.6, 0.2, 1);
 --tps-ease-in-out:    cubic-bezier(0.4, 0, 0.2, 1);
 --tps-dur-fast:       80ms;
@@ -223,7 +126,7 @@ var tokens_default = `/*
 
 --tps-shadow-thumb:   0 1px 3px color-mix(in srgb, var(--tps-text) 28%, transparent);
 
-/* ── Component dimensions ─────────────────────────────────────────── */
+/* \u2500\u2500 Component dimensions \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500 */
 --tps-control-h-sm:   28px;
 --tps-control-h-md:   32px;
 --tps-input-w:        64px;
@@ -243,16 +146,18 @@ var tokens_default = `/*
 }
 }
 `;
+
+// ../../shared/settings-ui/components.css
 var components_default = `/*
- * Thymer Plugin Panel — Component Primitives
+ * Thymer Plugin Panel \u2014 Component Primitives
  *
  * All primitives scope under .tps-panel. Plugin-specific styles live elsewhere.
  * Reads tokens from tokens.css.
  */
 
-/* ── Panel root ─────────────────────────────────────────────────────── */
+/* \u2500\u2500 Panel root \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500 */
 
-/* Inherit Thymer's font + sizing — DO NOT override. plugin-collection-icons
+/* Inherit Thymer's font + sizing \u2014 DO NOT override. plugin-collection-icons
  demonstrates the right approach: simply \`font-family: inherit\`. Forcing a
  custom var fights both Thymer's body font AND the .ti icon font. */
 .tps-panel {
@@ -281,7 +186,7 @@ box-sizing: border-box;
 font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, "Courier New", monospace;
 }
 
-/* ── Title block ────────────────────────────────────────────────────── */
+/* \u2500\u2500 Title block \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500 */
 
 .tps-title {
 font-size: var(--tps-fs-title);
@@ -299,7 +204,7 @@ color: var(--tps-text-muted);
 margin: 0 0 var(--tps-space-3);
 }
 
-/* ── Canonical plugin header ───────────────────────────────────────── */
+/* \u2500\u2500 Canonical plugin header \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500 */
 
 .tps-plugin-header {
 position: relative;
@@ -544,11 +449,11 @@ text-decoration-color: transparent;
 filter: brightness(1.2);
 }
 
-/* ── Header controls: scope pill + bug report + kill switch ────────── */
+/* \u2500\u2500 Header controls: scope pill + bug report + kill switch \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500 */
 
 /* Settings-scope cluster. Resting: one dim "All devices" pill. Diverged:
- pill lights amber (full-perimeter border + tint — never a single-edge
- accent) and the ↑ push / ↺ discard icon buttons appear beside it. Amber
+ pill lights amber (full-perimeter border + tint \u2014 never a single-edge
+ accent) and the \u2191 push / \u21BA discard icon buttons appear beside it. Amber
  rides Thymer's orange enum tokens so it tracks the theme. */
 .tps-scope {
 display: inline-flex;
@@ -580,7 +485,7 @@ background: var(--tps-text-muted);
 opacity: 0.55;
 }
 
-/* "This device" is a normal, saved state (per-device settings), NOT a warning —
+/* "This device" is a normal, saved state (per-device settings), NOT a warning \u2014
  so it wears the calm brand accent, not an alarming amber. Full-perimeter
  border, never a single-edge accent. */
 .tps-scope-pill[data-diverged="true"] {
@@ -612,7 +517,7 @@ transition: color var(--tps-dur-fast, 80ms) var(--tps-ease-out, ease-out),
 }
 
 /* Inline-SVG icons: a viewBox-centered vector in a block box has no font
- metrics — no baseline, no ascent/descent ink drift. The 14px vector in the
+ metrics \u2014 no baseline, no ascent/descent ink drift. The 14px vector in the
  22px button gives an exact 4px inset on every side. */
 .tps-panel .tps-scope-svg {
 display: flex;
@@ -652,7 +557,7 @@ background: var(--enum-green-bg, rgba(63, 166, 83, 0.12));
 }
 
 /* Armed state must beat the generic :hover recolor (same specificity, order-
- dependent) — scope it up so the icon reddens with the box, hovered or not. */
+ dependent) \u2014 scope it up so the icon reddens with the box, hovered or not. */
 .tps-panel .tps-scope-btn--discard[data-armed="true"],
 .tps-panel .tps-scope-btn--discard[data-armed="true"]:hover {
 color: var(--enum-red-fg, #d64545);
@@ -665,7 +570,7 @@ opacity: 0.5;
 cursor: default;
 }
 
-/* ── Header controls: bug report + kill switch ─────────────────────── */
+/* \u2500\u2500 Header controls: bug report + kill switch \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500 */
 
 /* Last flex item of the attr row; margin-left:auto pins the group to the
  right edge, align-self:center opts out of the row's baseline alignment. */
@@ -767,10 +672,10 @@ opacity: 0.55;
 pointer-events: none;
 }
 
-/* Off-state "safe mode": dim the body, keep it interactive — edits stage in the
+/* Off-state "safe mode": dim the body, keep it interactive \u2014 edits stage in the
  plugin's local drafts and apply on re-enable. Keyed off the pill's aria state
  so the optimistic flip dims instantly and heal re-renders stay correct with
- no JS. The header (pill, bug button, off-note) stays full opacity — exclude
+ no JS. The header (pill, bug button, off-note) stays full opacity \u2014 exclude
  any direct child containing it (collection-icons wraps the header in a row
  element, so exclude by content, not class). */
 .tps-panel:has(.tps-plugin-header .tps-switch[aria-checked="false"]) > :not(:has(.tps-plugin-header)) {
@@ -791,7 +696,7 @@ color: var(--tps-text-muted);
 display: block;
 }
 
-/* ── Feedback dialog (panel-scoped modal) ──────────────────────────── */
+/* \u2500\u2500 Feedback dialog (panel-scoped modal) \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500 */
 
 /* The overlay positions against the .tps-panel root (the scroll container). */
 .tps-panel {
@@ -834,7 +739,7 @@ padding: var(--tps-space-4);
 box-shadow: 0 12px 32px rgba(0, 0, 0, 0.35);
 }
 
-/* Rows keep their natural height — when content doesn't fit (e.g. the system
+/* Rows keep their natural height \u2014 when content doesn't fit (e.g. the system
  report drawer opens in a short panel) the CARD scrolls; rows must never be
  squeezed into overlapping each other. Only the description field flexes. */
 .tps-feedback-card > * {
@@ -976,7 +881,7 @@ border: 1px solid var(--tps-divider);
 border-radius: var(--tps-radius-sm, 4px);
 }
 
-/* Themed thin scrollbars — the card (short panels) and the report pre both scroll. */
+/* Themed thin scrollbars \u2014 the card (short panels) and the report pre both scroll. */
 .tps-feedback-card,
 .tps-feedback-report {
 scrollbar-width: thin;
@@ -1008,7 +913,7 @@ justify-content: flex-end;
 gap: var(--tps-space-2);
 }
 
-/* ── Section ────────────────────────────────────────────────────────── */
+/* \u2500\u2500 Section \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500 */
 
 .tps-section {
 padding: 0;
@@ -1120,7 +1025,7 @@ visibility: hidden;
 display: none;
 }
 
-/* ── Option row (checkbox / radio + label + desc) ───────────────────── */
+/* \u2500\u2500 Option row (checkbox / radio + label + desc) \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500 */
 
 .tps-opt {
 display: grid;
@@ -1226,7 +1131,7 @@ margin-bottom: var(--tps-space-3);
 grid-template-columns: minmax(0, 1fr);
 }
 
-/* ── Numeric stepper ────────────────────────────────────────────────── */
+/* \u2500\u2500 Numeric stepper \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500 */
 
 .tps-num {
 display: flex;
@@ -1337,7 +1242,7 @@ text-align: left;
 justify-self: start;
 }
 
-/* ── Slider row ─────────────────────────────────────────────────────── */
+/* \u2500\u2500 Slider row \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500 */
 
 /* Shared range styling for sliderRow and any other range input in a panel.
  Exclude hue pickers that paint their own gradient track. */
@@ -1496,7 +1401,7 @@ text-align: right;
 font-variant-numeric: tabular-nums;
 }
 
-/* ── Swatch + grid ──────────────────────────────────────────────────── */
+/* \u2500\u2500 Swatch + grid \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500 */
 
 .tps-swatch-grid {
 display: grid;
@@ -1525,7 +1430,7 @@ transform: scale(1.1);
 box-shadow: 0 0 0 2px var(--tps-accent);
 }
 
-/* ── List rows ──────────────────────────────────────────────────────── */
+/* \u2500\u2500 List rows \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500 */
 
 .tps-list {
 display: flex;
@@ -1572,7 +1477,7 @@ text-overflow: ellipsis;
 white-space: nowrap;
 }
 
-/* ── Tabs / segmented control ───────────────────────────────────────── */
+/* \u2500\u2500 Tabs / segmented control \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500 */
 
 .tps-tabs {
 display: inline-flex;
@@ -1609,7 +1514,7 @@ color: var(--tps-accent);
 border-color: color-mix(in srgb, var(--tps-accent) 50%, transparent);
 }
 
-/* ── Buttons ────────────────────────────────────────────────────────── */
+/* \u2500\u2500 Buttons \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500 */
 
 .tps-button {
 display: inline-flex;
@@ -1663,7 +1568,7 @@ border-color: color-mix(in srgb, var(--tps-danger) 40%, transparent);
 color: var(--tps-danger);
 }
 
-/* ── Focus rings (custom controls only — native inputs use accent-color) ─ */
+/* \u2500\u2500 Focus rings (custom controls only \u2014 native inputs use accent-color) \u2500 */
 
 .tps-tab:focus-visible,
 .tps-button:focus-visible,
@@ -1674,7 +1579,7 @@ outline: 2px solid var(--tps-accent);
 outline-offset: 2px;
 }
 
-/* ── Inset card variant (rare — for palette-picker body, etc.) ─────── */
+/* \u2500\u2500 Inset card variant (rare \u2014 for palette-picker body, etc.) \u2500\u2500\u2500\u2500\u2500\u2500\u2500 */
 
 .tps-card {
 padding: var(--tps-space-3);
@@ -1683,15 +1588,17 @@ background: var(--tps-bg-input);
 border: 1px solid var(--tps-divider);
 }
 `;
+
+// ../../shared/settings-ui/color-field.css
 var color_field_default = `/*
- * colorField — shared color picker (Theme | Tailwind | Custom).
+ * colorField \u2014 shared color picker (Theme | Tailwind | Custom).
  * Scoped under .tps-panel .tps-color-field; styled through --tps-* tokens.
  * Every selectable swatch is the same .tps-cf-dot across all three tabs.
  */
 
 .tps-panel .tps-color-field { display: block; }
 
-/* ── Tabs ────────────────────────────────────────────────────────────── */
+/* \u2500\u2500 Tabs \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500 */
 .tps-panel .tps-cf-tabs {
 display: grid; grid-auto-flow: column; grid-auto-columns: 1fr; gap: 4px;
 background: var(--tps-bg-input, rgba(127,127,127,0.06));
@@ -1713,11 +1620,11 @@ background: var(--tps-panel-bg, var(--bg-default, #fff));
 color: var(--tps-text, inherit); box-shadow: 0 1px 2px rgba(0,0,0,0.12);
 }
 
-/* ── Panes ───────────────────────────────────────────────────────────── */
+/* \u2500\u2500 Panes \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500 */
 .tps-panel .tps-cf-pane { display: none; }
 .tps-panel .tps-cf-pane.is-active { display: block; }
 
-/* ── Featured theme picks ────────────────────────────────────────────── */
+/* \u2500\u2500 Featured theme picks \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500 */
 .tps-panel .tps-cf-featured {
 display: grid; grid-template-columns: 1fr 1fr; gap: 8px;
 margin-bottom: var(--tps-space-3, 12px);
@@ -1744,7 +1651,7 @@ font-size: var(--tps-fs-body, 13px); font-weight: var(--tps-fw-semibold, 600);
 white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
 }
 
-/* ── Groups + the universal swatch dot ───────────────────────────────── */
+/* \u2500\u2500 Groups + the universal swatch dot \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500 */
 .tps-panel .tps-cf-group { margin-bottom: var(--tps-space-3, 12px); }
 .tps-panel .tps-cf-group-head { display: flex; align-items: baseline; gap: 8px; margin-bottom: var(--tps-space-2, 8px); }
 .tps-panel .tps-cf-group-label {
@@ -1753,8 +1660,8 @@ color: var(--tps-text-faint, var(--tps-text-muted, rgba(127,127,127,0.6))); font
 }
 .tps-panel .tps-cf-group-hint { font-size: var(--tps-fs-section, 11px); color: var(--tps-text-faint, rgba(127,127,127,0.5)); }
 
-/* ── Swatches: square dots that fill the row width (22 across in the Tailwind
- *    hue row); every swatch elsewhere matches that width. ────────────────── */
+/* \u2500\u2500 Swatches: square dots that fill the row width (22 across in the Tailwind
+ *    hue row); every swatch elsewhere matches that width. \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500 */
 .tps-panel .tps-cf-dots {
 display: grid; grid-template-columns: repeat(22, minmax(0, 1fr)); gap: 5px;
 /* explicit resets so a stale accumulated .tps-cf-dots rule (old edge-to-edge
@@ -1778,7 +1685,7 @@ box-shadow: inset 0 0 0 1px var(--tps-swatch-inset, rgba(127,127,127,0.18)),
             0 0 0 2px var(--tps-panel-bg, #fff), 0 0 0 4px var(--tps-accent, currentColor);
 }
 
-/* ── Lightness "tints": full-width ramp, shade number inside (do not touch) ─ */
+/* \u2500\u2500 Lightness "tints": full-width ramp, shade number inside (do not touch) \u2500 */
 .tps-panel .tps-cf-ramp {
 display: grid; grid-template-columns: repeat(11, minmax(0, 1fr));
 border-radius: var(--tps-radius-md, 8px); overflow: hidden;
@@ -1796,7 +1703,7 @@ transition: box-shadow var(--tps-dur-fast, 80ms) var(--tps-ease-out, ease);
 outline: none; z-index: 4;
 box-shadow: inset 0 0 0 2px var(--tps-panel-bg, #fff), inset 0 0 0 4px var(--tps-accent, currentColor);
 }
-/* Faint secondary ring on the inverted ("invert lightness") mirror shade —
+/* Faint secondary ring on the inverted ("invert lightness") mirror shade \u2014
  present alongside the prominent ring on the actually-selected shade. */
 .tps-panel .tps-cf-ramp-cell.is-sel-mirror {
 z-index: 3;
@@ -1804,7 +1711,7 @@ box-shadow: inset 0 0 0 2px var(--tps-panel-bg, #fff),
             inset 0 0 0 3px color-mix(in srgb, var(--tps-accent, currentColor) 42%, transparent);
 }
 
-/* ── Invert-lightness toggle ─────────────────────────────────────────── */
+/* \u2500\u2500 Invert-lightness toggle \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500 */
 .tps-panel .tps-cf-invert {
 display: flex; align-items: center; gap: 8px; margin-top: var(--tps-space-3, 12px);
 cursor: pointer; font-size: var(--tps-fs-hint, 12px); color: var(--tps-text, inherit); font-weight: var(--tps-fw-medium, 500);
@@ -1816,7 +1723,7 @@ cursor: pointer; font-size: var(--tps-fs-hint, 12px); color: var(--tps-text, inh
 .tps-panel .tps-cf-invert.is-disabled { opacity: 0.42; cursor: default; }
 .tps-panel .tps-cf-invert.is-disabled .tps-cf-invert-cb { cursor: default; }
 
-/* ── Custom palette ──────────────────────────────────────────────────── */
+/* \u2500\u2500 Custom palette \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500 */
 .tps-panel .tps-cf-custom-row { min-height: 30px; margin-bottom: var(--tps-space-3, 12px); }
 .tps-panel .tps-cf-custom-empty {
 grid-column: 1 / -1; display: flex; align-items: center; padding: 0 10px; min-height: 30px;
@@ -1847,7 +1754,7 @@ margin-left: auto; font-size: var(--tps-fs-section, 11px);
 color: var(--tps-text-faint, rgba(127,127,127,0.5)); font-variant-numeric: tabular-nums;
 }
 
-/* ── Hex input ───────────────────────────────────────────────────────── */
+/* \u2500\u2500 Hex input \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500 */
 .tps-panel .tps-cf-hexbox {
 display: inline-flex; align-items: center; gap: 8px; box-sizing: border-box; height: 32px;
 background: var(--tps-bg-input, rgba(127,127,127,0.06));
@@ -1866,7 +1773,7 @@ font-variant-numeric: tabular-nums;
 }
 .tps-panel .tps-cf-hex-input::placeholder { color: var(--tps-text-faint, rgba(127,127,127,0.5)); }
 
-/* ── Universal: No color ─────────────────────────────────────────────── */
+/* \u2500\u2500 Universal: No color \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500 */
 .tps-panel .tps-cf-divider {
 height: 1px; margin: var(--tps-space-3, 12px) 0; background: var(--tps-divider, rgba(127,127,127,0.12));
 }
@@ -1890,7 +1797,7 @@ content: ""; position: absolute; left: 50%; top: -3px; width: 1.5px; height: 21p
 background: var(--tps-danger, #e2555f); transform: rotate(45deg);
 }
 
-/* ── Instant tooltip (drawn by the component, not native title delay) ─── */
+/* \u2500\u2500 Instant tooltip (drawn by the component, not native title delay) \u2500\u2500\u2500 */
 .tps-panel .tps-cf-tip {
 position: fixed; z-index: 2147483000; transform: translate(-50%, calc(-100% - 8px));
 padding: 3px 8px; border-radius: var(--tps-radius-sm, 5px);
@@ -1908,6 +1815,8 @@ box-shadow: 0 2px 8px rgba(0,0,0,0.35);
 .tps-panel .tps-cf-remove { transition: none; }
 }
 `;
+
+// ../../shared/settings-ui/feedback.js
 var MAX_URL_LENGTH = 7600;
 function el(tag, props, ...children) {
   const node = document.createElement(tag);
@@ -1955,16 +1864,16 @@ async function collectSystemReport({ pluginName = "", pluginVersion = "", disabl
   const ua = navigator.userAgent || "";
   const lines = [];
   lines.push(`Plugin: ${pluginName} v${pluginVersion}${disabled ? " (kill switch: OFF)" : ""}`);
-  lines.push(`App: ${/electron/i.test(ua) ? "Thymer desktop app (Electron)" : "Thymer web"}${location && location.host ? ` · ${location.host}` : ""}`);
+  lines.push(`App: ${/electron/i.test(ua) ? "Thymer desktop app (Electron)" : "Thymer web"}${location && location.host ? ` \xB7 ${location.host}` : ""}`);
   lines.push(`UA: ${ua}`);
-  lines.push(`Platform: ${navigator.platform || "?"} · lang ${navigator.language || "?"} · tz ${Intl.DateTimeFormat().resolvedOptions().timeZone || "?"}`);
+  lines.push(`Platform: ${navigator.platform || "?"} \xB7 lang ${navigator.language || "?"} \xB7 tz ${Intl.DateTimeFormat().resolvedOptions().timeZone || "?"}`);
   const dpr = Math.round((window.devicePixelRatio || 1) * 100) / 100;
-  lines.push(`Screen (css px): ${screen.width}x${screen.height} @${dpr}x (≈${Math.round(screen.width * dpr)}x${Math.round(screen.height * dpr)} device px) · viewport ${window.innerWidth}x${window.innerHeight}`);
+  lines.push(`Screen (css px): ${screen.width}x${screen.height} @${dpr}x (\u2248${Math.round(screen.width * dpr)}x${Math.round(screen.height * dpr)} device px) \xB7 viewport ${window.innerWidth}x${window.innerHeight}`);
   try {
     const dark = window.matchMedia && window.matchMedia("(prefers-color-scheme: dark)").matches;
     const reducedMotion = window.matchMedia && window.matchMedia("(prefers-reduced-motion: reduce)").matches;
     const themeClasses = Array.from(document.body.classList).filter((c) => /theme/i.test(c)).join(" ");
-    lines.push(`Appearance: ${dark ? "dark" : "light"}${reducedMotion ? " · reduced-motion" : ""}${themeClasses ? ` · body: ${themeClasses}` : ""}`);
+    lines.push(`Appearance: ${dark ? "dark" : "light"}${reducedMotion ? " \xB7 reduced-motion" : ""}${themeClasses ? ` \xB7 body: ${themeClasses}` : ""}`);
   } catch {
   }
   try {
@@ -1974,7 +1883,7 @@ async function collectSystemReport({ pluginName = "", pluginVersion = "", disabl
       /** @type {any} */
       navigator.deviceMemory
     );
-    if (devMem) bits.push(devMem >= 8 ? `RAM ≥8GB (API cap)` : `~${devMem}GB RAM`);
+    if (devMem) bits.push(devMem >= 8 ? `RAM \u22658GB (API cap)` : `~${devMem}GB RAM`);
     const heap = (
       /** @type {any} */
       performance.memory
@@ -1982,7 +1891,7 @@ async function collectSystemReport({ pluginName = "", pluginVersion = "", disabl
     if (heap && heap.usedJSHeapSize) bits.push(`JS heap ${Math.round(heap.usedJSHeapSize / 1048576)}MB of ${Math.round(heap.jsHeapSizeLimit / 1048576)}MB limit`);
     bits.push(navigator.onLine === false ? "OFFLINE" : "online");
     if (typeof performance.now === "function") bits.push(`session up ${Math.round(performance.now() / 6e4)}m`);
-    lines.push(`System: ${bits.join(" · ")}`);
+    lines.push(`System: ${bits.join(" \xB7 ")}`);
   } catch {
   }
   try {
@@ -2011,7 +1920,7 @@ async function collectSystemReport({ pluginName = "", pluginVersion = "", disabl
         return ver ? `${name} v${ver}` : name;
       }).filter(Boolean);
       if (listed.length) {
-        lines.push(`Global plugins, all installed (${plugins.length}): ${listed.join(", ")}${plugins.length > 25 ? ", …" : ""}`);
+        lines.push(`Global plugins, all installed (${plugins.length}): ${listed.join(", ")}${plugins.length > 25 ? ", \u2026" : ""}`);
       }
     }
     if (data && typeof /** @type {any} */
@@ -2055,7 +1964,7 @@ ${report}
   while (url.length > MAX_URL_LENGTH && desc.length > 200) {
     desc = `${desc.slice(0, Math.max(200, desc.length - 500)).trimEnd()}
 
-[description truncated — URL length limit]`;
+[description truncated \u2014 URL length limit]`;
     url = urlFor(desc);
   }
   return url;
@@ -2070,7 +1979,7 @@ function openFeedbackDialog({ host, opener, pluginName = "", pluginVersion = "",
   const discordInput = el("input", { class: "tps-feedback-input", type: "text", placeholder: "e.g. akaready", autocomplete: "off", spellcheck: "false" });
   const emailInput = el("input", { class: "tps-feedback-input", type: "email", placeholder: "e.g. you@example.com", autocomplete: "off", spellcheck: "false" });
   const descInput = el("textarea", { class: "tps-feedback-textarea", rows: "5", placeholder: "What happened? What did you expect instead?" });
-  const reportPre = el("pre", { class: "tps-feedback-report" }, "Collecting…");
+  const reportPre = el("pre", { class: "tps-feedback-report" }, "Collecting\u2026");
   reportPromise.then((text) => {
     reportPre.textContent = text;
   }).catch(() => {
@@ -2168,6 +2077,8 @@ function openFeedbackDialog({ host, opener, pluginName = "", pluginVersion = "",
   descInput.focus();
 }
 __name(openFeedbackDialog, "openFeedbackDialog");
+
+// ../../shared/settings-ui/helpers.js
 var PANEL_CSS = tokens_default + "\n" + components_default + "\n" + color_field_default;
 function h(tag, props, ...children) {
   const el2 = document.createElement(tag);
@@ -2307,7 +2218,7 @@ function pluginHeader({
     killSwitch ? h(
       "p",
       { class: "tps-plugin-header-off-note" },
-      "Plugin is off — settings stay editable and your changes apply when you switch it back on."
+      "Plugin is off \u2014 settings stay editable and your changes apply when you switch it back on."
     ) : null
   ];
   return h("div", { class: "tps-plugin-header" }, ...children);
@@ -2326,7 +2237,7 @@ function scopeCluster(scope) {
     {
       class: "tps-scope-pill tooltip",
       "data-diverged": String(!!scope.diverged),
-      "data-tooltip": scope.diverged ? "Custom settings for this device, saved automatically. Your other devices are unaffected." : "Using your shared defaults — the same on all your devices. Edits here apply to this device only.",
+      "data-tooltip": scope.diverged ? "Custom settings for this device, saved automatically. Your other devices are unaffected." : "Using your shared defaults \u2014 the same on all your devices. Edits here apply to this device only.",
       "data-tooltip-dir": "top"
     },
     h("span", { class: "tps-scope-dot", "aria-hidden": "true" }),
@@ -2417,7 +2328,7 @@ function renderKillSwitch(killSwitch) {
     role: "switch",
     "aria-checked": String(!!killSwitch.on),
     "aria-label": killSwitch.label || "Plugin enabled",
-    title: killSwitch.on ? "Plugin enabled — click to disable all of its effects" : "Plugin disabled — click to re-enable"
+    title: killSwitch.on ? "Plugin enabled \u2014 click to disable all of its effects" : "Plugin disabled \u2014 click to re-enable"
   }, h("span", { class: "tps-switch-knob" }));
   const unlock = /* @__PURE__ */ __name(() => {
     sw.removeAttribute("data-busy");
@@ -2543,7 +2454,7 @@ function section({ label, hint, collapsible, defaultOpen = true, open, onToggle,
     // that case opts out of the remembered-state machinery entirely.
     dataset: open == null ? { open: String(initialOpen), sectionKey: persistKey || label } : { open: String(initialOpen) }
   });
-  const chev = h("span", { class: "tps-section-chev", "aria-hidden": "true" }, "▸");
+  const chev = h("span", { class: "tps-section-chev", "aria-hidden": "true" }, "\u25B8");
   const labelEl = h("span", { class: "tps-section-label" }, label);
   const summaryEl = h("span", { class: "tps-section-summary" });
   const paintSummary = /* @__PURE__ */ __name((isOpen) => {
@@ -2633,7 +2544,7 @@ function numberRow({ label, value, min, max, step = 1, unit, defaultValue, onCha
       input.value = String(clamp(v));
       onChange && onChange(Number(input.value));
     }, "onClick")
-  }, "−");
+  }, "\u2212");
   const plus = h("button", {
     type: "button",
     class: "tps-num-step",
@@ -2744,12 +2655,15 @@ function button({ label, variant = "ghost", size = "sm", onClick, disabled }) {
   }, label);
 }
 __name(button, "button");
-function pingInstall(_slug) {
-}
+
+// telemetry removed in this private copy (no GoatCounter / )
+function pingInstall(_slug) {}
 __name(pingInstall, "pingInstall");
-function pingActive(_slug) {
-}
+function pingActive(_slug) {}
 __name(pingActive, "pingActive");
+
+
+// ../../shared/plugin-version.js
 var CONFIG_WRITE_QUEUES_KEY = "__tpsPluginConfigWriteQueues";
 function configWriteIdentity(plugin) {
   let workspace = "default";
@@ -2928,6 +2842,8 @@ async function healPluginIdentityNow(plugin, identity) {
   }
 }
 __name(healPluginIdentityNow, "healPluginIdentityNow");
+
+// ../../shared/plugin-kill-switch.js
 var MARKER_SYNC_HORIZON_MS = 9e4;
 function isPluginDisabled(conf) {
   if (!conf || typeof conf !== "object") return false;
@@ -3023,6 +2939,8 @@ async function setPluginDisabledNow(plugin, disabled, pluginVersion, customPatch
   }
 }
 __name(setPluginDisabledNow, "setPluginDisabledNow");
+
+// ../../shared/plugin-settings.js
 function createSettingsStore(plugin, {
   slug,
   key = "settings",
@@ -3325,6 +3243,7 @@ function createSettingsStore(plugin, {
         const mm = mirrored ? asMap(mirrored) : null;
         const mirrorSlot = mm ? resolveDeviceSlotKey(mm) : null;
         if (mm && bagIsAbsent(custom)) {
+          // Synced bag gone entirely: rebuild the whole bag from the mirror.
           restoredFromMirror = true;
           custom = { ...custom, [key]: prune(mm) };
           if (!recoveryAttempted()) {
@@ -3332,6 +3251,11 @@ function createSettingsStore(plugin, {
             void saveCustomNow(() => ({ [key]: prune(mm) }));
           }
         } else if (mm && mirrorSlot && !resolveDeviceSlotKey(asMap(readBag(custom)))) {
+          // Synced bag exists but has no slot for this device while the mirror
+          // (written only after a successful save) does: the config snapshot we
+          // were handed is stale. Without this the device fell back to
+          // shared/DEFAULTS and the mirror was then overwritten with that stale
+          // bag — the "my settings reverted after reload" symptom.
           const merged = asMap(readBag(custom));
           merged.byDevice[mirrorSlot] = mm.byDevice[mirrorSlot];
           merged.aliases = { ...merged.aliases, ...mm.aliases };
@@ -3604,6 +3528,8 @@ function createSettingsStore(plugin, {
   return store;
 }
 __name(createSettingsStore, "createSettingsStore");
+
+// ../../shared/settings-ui/tailwind-palette.js
 var TW_SHADES = Object.freeze([50, 100, 200, 300, 400, 500, 600, 700, 800, 900, 950]);
 var TW_MID_INDEX = 5;
 function mirrorShadeIdx(idx) {
@@ -3675,6 +3601,8 @@ function nearestTailwind(hex) {
   return best;
 }
 __name(nearestTailwind, "nearestTailwind");
+
+// settings.js
 var DEFAULTS = Object.freeze({
   // --- structural -------------------------------------------------------
   enabled: true,
@@ -4172,6 +4100,8 @@ function buildFamilyPool() {
   return pool.length ? pool : [["#39ff14", "#00d4ff", "#b14aff", "#ff2e88"]];
 }
 __name(buildFamilyPool, "buildFamilyPool");
+
+// styles.js
 var ROOT_CLASS = "plg-cursor-smith";
 var BODY_ACTIVE_CLASS = "cs-active";
 var BODY_HIDE_NATIVE_CLASS = "cs-hide-native";
@@ -4222,7 +4152,7 @@ body.${BODY_ACTIVE_CLASS} .${ROOT_CLASS}-panel .cs-demo {
  There is deliberately NO animation property. A CSS animation runs on the
  compositor, outside the rAF frame governor, so it would hold the display at
  full refresh rate the whole time the torch is on regardless of which gear
- the render loop picked — and because this element carries mix-blend-mode,
+ the render loop picked \u2014 and because this element carries mix-blend-mode,
  every such frame forces a re-composite of the blended layer against its
  backdrop rather than a cheap opacity change. If flicker is wanted, drive
  --torch-intensity from the torch tick so it stays under the governor. */
@@ -4269,7 +4199,7 @@ var PANEL_LOCAL_CSS = `
 	font-weight: 600;
 }
 .${ROOT_CLASS}-panel .cs-preset-active .cs-preset-name::before {
-	content: '●';
+	content: '\u25CF';
 	margin-right: 6px;
 	color: var(--tps-accent, #04d1ab);
 }
@@ -4316,12 +4246,12 @@ var PANEL_LOCAL_CSS = `
 	flex: 1 1 auto;
 	min-width: 0;
 }
-/* NOTE: never use backticks in these comments — this whole stylesheet is a JS
+/* NOTE: never use backticks in these comments \u2014 this whole stylesheet is a JS
  template literal and a stray backtick terminates it. (Same family as the
  no-HTML-in-injectCSS-comments rule in CLAUDE.md.)
 
  position:sticky resolves against the nearest SCROLLING ancestor. The shared
- panel root declares overflow:auto, which would make it that ancestor — but
+ panel root declares overflow:auto, which would make it that ancestor \u2014 but
  Thymer's panel body gives it no definite height, so height:100% resolves to
  auto, the root grows to fit its content, and it never scrolls internally. A
  sticky child then has nothing to stick within and simply scrolls away with
@@ -4331,7 +4261,7 @@ var PANEL_LOCAL_CSS = `
  scroller, sticky would already have worked.)
 
  Dropping the declaration for our panel only hands the job to Thymer's own
- .panel-scroller-y. Safe precisely because this element is not scrolling —
+ .panel-scroller-y. Safe precisely because this element is not scrolling \u2014
  there is no overflow here for visible to spill. Doubled class to outrank
  the shared .tps-panel rule. */
 .${ROOT_CLASS}-panel.${ROOT_CLASS}-panel {
@@ -4342,7 +4272,7 @@ var PANEL_LOCAL_CSS = `
  Tuning a blink rate or a smear means typing in it over and over; having to
  scroll back up between every adjustment made it useless.
 
- Needs an opaque background — the settings scroll UNDER it, and the panel's
+ Needs an opaque background \u2014 the settings scroll UNDER it, and the panel's
  own surface is what they must disappear behind. The negative margins plus
  matching padding let that background bleed to the panel's edges while the
  content stays on the normal inset. */
@@ -4383,7 +4313,7 @@ var PANEL_LOCAL_CSS = `
 	border-color: var(--tps-accent, #04d1ab);
 }
 
-/* Palette chips. Each is its own gradient preview, so the swatch IS the label —
+/* Palette chips. Each is its own gradient preview, so the swatch IS the label \u2014
  a grid of named buttons would say "Sunset" without showing what that means. */
 .${ROOT_CLASS}-panel .cs-palette-grid {
 	display: grid;
@@ -4424,6 +4354,8 @@ var PANEL_LOCAL_CSS = `
 	color: var(--text-muted, rgba(127, 127, 127, 0.9));
 }
 `;
+
+// caret.js
 var CARET_EL_SEL = "div.listview-caret-self, .listview-caret-self, div.listview-caret";
 var FOCUSED_PANEL_SEL = ".panel.focused-panel, .panel.has-focus";
 var LISTITEM_SEL = ".listitem[data-guid]";
@@ -4449,6 +4381,7 @@ function isDesktopAppDoc(doc) {
   }
 }
 __name(isDesktopAppDoc, "isDesktopAppDoc");
+/** The row Thymer's editor state (g_range / g_item) says holds the caret. */
 function gRangeRow(doc) {
   try {
     const win = doc.defaultView || window;
@@ -4492,9 +4425,9 @@ __name(isGutterStubRect, "isGutterStubRect");
 function firstTextPillLeft(row) {
   if (!(row instanceof HTMLElement)) return null;
   for (const sel of [".lineitem-text", ".lineitem-datetime", ".lineitem-ref"]) {
-    const el2 = row.querySelector(sel);
-    if (el2 instanceof HTMLElement) {
-      const b = el2.getBoundingClientRect();
+    const el = row.querySelector(sel);
+    if (el instanceof HTMLElement) {
+      const b = el.getBoundingClientRect();
       if (b.width > 2) return b.left;
     }
   }
@@ -4727,6 +4660,10 @@ function thymerCaretCoords(e) {
     if (!row) {
       row = doc.querySelector(".listitem.listitem-with-caret[data-guid]");
     }
+    // With "hide native" on, Thymer's caret div sits at opacity 0 — its rect
+    // still measures, but some builds collapse it. The editor state (g_range /
+    // g_item) is authoritative for which row holds the caret, so never bail
+    // just because no visible native rect was found.
     if (!row) row = gRangeRow(doc);
     const isStub = !r || isGutterStubRect(r, row);
     let x = r ? r.left : 0;
@@ -4895,7 +4832,7 @@ function formFieldCaretCoords(e, el2) {
     mirror.textContent = "";
     mirror.appendChild(doc.createTextNode(value.substring(0, selStart)));
     const marker = doc.createElement("span");
-    marker.textContent = "​";
+    marker.textContent = "\u200B";
     mirror.appendChild(marker);
     const markerRect = marker.getBoundingClientRect();
     const mirrorRect = mirror.getBoundingClientRect();
@@ -5111,6 +5048,15 @@ function releaseHostCaret(e) {
   e._hostCaretPrev = null;
 }
 __name(releaseHostCaret, "releaseHostCaret");
+/**
+ * Native form controls and contenteditable hosts paint the OS caret on their
+ * own, independent of Thymer's .listview-caret layers, so the hide-native
+ * class does nothing for them and the canvas cursor lands beside the I-beam.
+ * While the engine is drawing over such a host (generic source), blank the
+ * host's own caret inline; put it back the moment the host stops being the
+ * draw target. The command palette input is left alone on purpose: 1.3.4
+ * dropped that rule because the overlay went blank there.
+ */
 function syncHostCaret(e, host) {
   let target = null;
   if (host && e._caretSource === "generic" && e.lastActive && isTextCaretHost(host)) {
@@ -5133,6 +5079,8 @@ function syncHostCaret(e, host) {
   }
 }
 __name(syncHostCaret, "syncHostCaret");
+
+// colors.js
 function hexToRgba(hex, alpha) {
   let h2 = (hex || "#39ff14").replace("#", "");
   if (h2.length === 3) h2 = h2.split("").map((c) => c + c).join("");
@@ -5282,6 +5230,8 @@ function heatColor(heat, baseHex) {
   return `#${(1 << 24 | Math.round(r) << 16 | Math.round(g) << 8 | Math.round(b)).toString(16).slice(1)}`;
 }
 __name(heatColor, "heatColor");
+
+// effects.js
 var THUNDER_LIFE_MS = 280;
 var THUNDER_MAX_ANGLE = 0.95;
 var THUNDER_MIN_REACH = 150;
@@ -5827,6 +5777,8 @@ function drawStardust(e) {
   });
 }
 __name(drawStardust, "drawStardust");
+
+// draw.js
 var DIRTY_RECT_CLEAR = true;
 function gradientStops(e) {
   const s = e.settings;
@@ -6216,6 +6168,8 @@ function draw(e) {
   e._dirtyPrev = cx1 > cx0 && cy1 > cy0 ? { x: cx0, y: cy0, w: cx1 - cx0, h: cy1 - cy0 } : null;
 }
 __name(draw, "draw");
+
+// host.js
 var MODAL_SEL = ".bp3-overlay:not(.bp3-overlay-inline), .bp3-dialog, .rm-modal, .bp3-drawer";
 var MODAL_POLL_MS = 120;
 function ensureCanvas(e) {
@@ -6494,6 +6448,17 @@ function installCaretObserver(e) {
   };
 }
 __name(installCaretObserver, "installCaretObserver");
+/**
+ * Thymer keeps overlay components mounted-but-hidden. The linked-references
+ * footer alone leaves three `.cmdpal--inline.dropdown` nodes in the tree at
+ * display:none (funnel menu, gear menu, search autocomplete), and the journal
+ * day page always renders that footer. A bare `querySelector(MODAL_SEL)`
+ * therefore reported "a modal is open" permanently, which pinned _modalOpen
+ * true, made caretCoords skip the Thymer editor path, and left the journal
+ * with no cursor at all: the native caret is hidden by cs-hide-native, and
+ * the generic path has nothing to draw on because the editor's activeElement
+ * is #virtualinput-wrapper, not a text host. Match only painted elements.
+ */
 function modalIsOpen(doc) {
   for (const node of doc.querySelectorAll(MODAL_SEL)) {
     if (!isVisiblyRendered(node)) continue;
@@ -6503,6 +6468,14 @@ function modalIsOpen(doc) {
   return false;
 }
 __name(modalIsOpen, "modalIsOpen");
+/**
+ * Visibility costs style and layout reads, so it must not run in the observer
+ * callback — that fires on every DOM mutation, i.e. per keystroke. The
+ * observer only marks the state stale; the frame loop recomputes here, at
+ * most every MODAL_POLL_MS. The TTL is also the backstop for a dropdown that
+ * opens by flipping display on an already-mounted node, which produces no
+ * childList record at all.
+ */
 function readModalOpen(e) {
   const doc = e._doc || document;
   const now = Date.now();
@@ -6615,6 +6588,8 @@ function destroyTorchOverlay(e) {
   e._lastOverlayRect = "";
 }
 __name(destroyTorchOverlay, "destroyTorchOverlay");
+
+// torch.js
 var TORCH_PULSE_FRAME_MS = 33;
 function applyOverlayStyle(e) {
   if (!e.overlay) return;
@@ -6753,13 +6728,17 @@ function stopTorch(e) {
   destroyTorchOverlay(e);
 }
 __name(stopTorch, "stopTorch");
+
+// engine.js
 var SMEAR_LEAD_BOOST_CAP = 6;
 var TAPER_FULL_LAG = 14;
 var ENERGY_FRAME_MS = 33;
 var ROW_TYPE_STEP = { text: 0, heading: 1, task: -1, code: 2, quote: -2, list: 0.5 };
 var COMBO_IDLE_MS = 1200;
-var _a;
-var CursorEngine = (_a = class {
+var CursorEngine = class {
+  static {
+    __name(this, "CursorEngine");
+  }
   /**
    * @param {{settings: Record<string, any>, doc?: Document, zIndex?: number,
    *          onFatal?: (err: any) => void}} opts
@@ -6982,6 +6961,11 @@ var CursorEngine = (_a = class {
     try {
       const doc = this.canvas && this.canvas.ownerDocument || this._doc;
       if (doc.hidden || doc.visibilityState === "hidden") return false;
+      // Electron (frameless / hiddenInset titlebar, or a DevTools/CDP client
+      // attached) reports document.hasFocus() === false while the user is
+      // typing into the visible window. Treating that as "blurred" cleared the
+      // canvas every frame: hidden native caret + blank overlay = no caret.
+      // On the desktop app a visible document is a focused document.
       if (isDesktopAppDoc(doc)) return true;
       return doc.hasFocus();
     } catch {
@@ -7733,7 +7717,9 @@ var CursorEngine = (_a = class {
   resize() {
     resizeCanvas(this);
   }
-}, __name(_a, "CursorEngine"), _a);
+};
+
+// ../../shared/settings-ui/theme-vars.js
 var DEFAULT_THEME_SOURCES = [
   ":root",
   "body",
@@ -7838,6 +7824,8 @@ function resolveRenderedColor(cssColor, root = document.body) {
   return "";
 }
 __name(resolveRenderedColor, "resolveRenderedColor");
+
+// ../../shared/settings-ui/theme-swatches.js
 var THEME_GROUPS = (
   /** @type {ThemeGroupDef[]} */
   Object.freeze([
@@ -7927,6 +7915,8 @@ function resolveThemeGroups({ exclude = [] } = {}) {
   return groups;
 }
 __name(resolveThemeGroups, "resolveThemeGroups");
+
+// ../../shared/settings-ui/tooltip.js
 var TIP_SELECTOR = "[data-tps-tip],[data-cf-tip]";
 var STYLE_ID = "tps-tip-css";
 var WIN_FLAG = "__tpsInstantTooltip";
@@ -7982,6 +7972,8 @@ function injectTooltipCss() {
   (document.head || document.documentElement).appendChild(style);
 }
 __name(injectTooltipCss, "injectTooltipCss");
+
+// ../../shared/settings-ui/color-field.js
 var MAX_CUSTOM = 44;
 function colorField({ value = null, onPick, featured = [], allowNone = true, customSwatches = [], onCustomSwatchesChange } = {}) {
   const emit = /* @__PURE__ */ __name((r) => {
@@ -8079,7 +8071,7 @@ function colorField({ value = null, onPick, featured = [], allowNone = true, cus
     { class: "tps-cf-invert" },
     invertCheckbox,
     h("span", null, "Invert lightness in light/dark"),
-    h("span", { class: "tps-cf-invert-hint" }, "e.g. 900 in light → 100 in dark")
+    h("span", { class: "tps-cf-invert-hint" }, "e.g. 900 in light \u2192 100 in dark")
   );
   invertCheckbox.addEventListener("change", () => {
     invertLightness = invertCheckbox.checked;
@@ -8100,7 +8092,7 @@ function colorField({ value = null, onPick, featured = [], allowNone = true, cus
       const cell = h("button", {
         type: "button",
         class: "tps-cf-ramp-cell",
-        dataset: { si: String(si), cfTip: `${curFamily}-${s} · ${hex}` },
+        dataset: { si: String(si), cfTip: `${curFamily}-${s} \xB7 ${hex}` },
         "aria-label": `${curFamily} ${s}`,
         style: { background: hex, color: textOn(hex) }
       }, String(s));
@@ -8148,7 +8140,7 @@ function colorField({ value = null, onPick, featured = [], allowNone = true, cus
   function renderCustomRow() {
     customRow.textContent = "";
     if (!customList.length) {
-      customRow.appendChild(h("span", { class: "tps-cf-custom-empty" }, "No saved colors yet — add a hex, then select one and press Remove to delete it."));
+      customRow.appendChild(h("span", { class: "tps-cf-custom-empty" }, "No saved colors yet \u2014 add a hex, then select one and press Remove to delete it."));
     }
     customList.forEach((hex, i) => {
       const dot = h("button", {
@@ -8369,6 +8361,8 @@ function renderedToHex(str) {
   return `#${t(parts[0])}${t(parts[1])}${t(parts[2])}`;
 }
 __name(renderedToHex, "renderedToHex");
+
+// ../../shared/settings-ui/palettes.js
 var PALETTE_PRESETS = Object.freeze([
   { id: "rainbow", label: "Rainbow", shadeIdx: 5, families: ["red", "orange", "amber", "yellow", "lime", "green", "emerald", "teal", "cyan", "sky", "blue", "indigo", "violet", "purple", "fuchsia", "pink", "rose"] },
   { id: "sunset", label: "Sunset", shadeIdx: 5, families: ["rose", "red", "orange", "amber", "yellow"] },
@@ -8420,6 +8414,8 @@ function samplePalette(preset, count, opts = {}) {
   return out;
 }
 __name(samplePalette, "samplePalette");
+
+// panel.js
 var UPSTREAM_REPO = "https://github.com/Sadsnake1/cursor-smith";
 var UPSTREAM_AUTHOR = "https://github.com/Sadsnake1";
 var link = /* @__PURE__ */ __name((href, text) => h("a", { href, target: "_blank", rel: "noopener noreferrer" }, text), "link");
@@ -8516,7 +8512,7 @@ function renderPanel(root, ctl) {
     rows: 3,
     spellcheck: "false",
     "aria-label": "Cursor preview",
-    placeholder: "Type here to see your cursor…\nPress Enter for Thunderstrike."
+    placeholder: "Type here to see your cursor\u2026\nPress Enter for Thunderstrike."
   });
   if (prevValue) demo.value = prevValue;
   const presetsBody = buildPresets(ctl);
@@ -8539,7 +8535,7 @@ function renderPanel(root, ctl) {
     s.cursorStyle === "Box" ? checkShape("boxHollow", "Hollow", "Outline only, no fill.") : null,
     s.cursorStyle === "Box" && s.boxHollow ? sub([num("boxHollowWidth", "Outline width", { min: 1, max: 8, step: 0.5, unit: "px" })]) : null,
     s.cursorStyle === "Box" && !s.boxHollow ? check("showChar", "Show the letter inside", "Draws the character under the cursor in inverted colour.") : null,
-    s.cursorStyle === "Line" ? check("lineSerifs", "Serifs", "Caps on the stem — the classic I-beam.") : null,
+    s.cursorStyle === "Line" ? check("lineSerifs", "Serifs", "Caps on the stem \u2014 the classic I-beam.") : null,
     s.cursorStyle === "Underline" ? num("underlineWidthPx", "Bar thickness", { min: 0, max: 12, step: 0.5, unit: "px" }) : null,
     s.cursorStyle === "Underline" ? optionNote("0 scales the bar with the line height.") : null
   ];
@@ -8587,14 +8583,14 @@ function renderPanel(root, ctl) {
   const blinkBody = [
     checkShape("blinkingEnabled", "Blinking"),
     ...s.blinkingEnabled ? [sub([
-      slider("blinkSpeed", "Speed", { min: 0.1, max: 5, step: 0.1, format: /* @__PURE__ */ __name((v) => v.toFixed(1) + "×", "format") }),
+      slider("blinkSpeed", "Speed", { min: 0.1, max: 5, step: 0.1, format: /* @__PURE__ */ __name((v) => v.toFixed(1) + "\xD7", "format") }),
       slider("blinkOnOffBalance", "Balance", { min: 0.1, max: 0.9, step: 0.01, format: /* @__PURE__ */ __name((v) => Math.round(v * 100) + "% lit", "format") }),
       num("blinkDelayMs", "Delay after typing", { min: 0, max: 5e3, step: 50, unit: "ms" }),
       optionNote("How long the cursor stays fully lit after any move or keystroke before blinking resumes."),
       checkShape("blinkBreathing", "Breathing", "Shrink and swell instead of fading out, so the cursor never disappears."),
       s.blinkBreathing ? sub([slider("blinkBreathDepth", "Breath depth", { min: 0.05, max: 0.5, step: 0.01, format: /* @__PURE__ */ __name((v) => Math.round(v * 100) + "%", "format") })]) : null
     ])] : [],
-    check("hideNativeCaret", "Hide Thymer's own caret", "Turn this off to see both at once — useful when diagnosing alignment."),
+    check("hideNativeCaret", "Hide Thymer's own caret", "Turn this off to see both at once \u2014 useful when diagnosing alignment."),
     check("hideOnWindowBlur", "Hide when the window loses focus", "What every other writing app does.")
   ];
   const smoothBody = [
@@ -8637,22 +8633,22 @@ function renderPanel(root, ctl) {
     ...s.stardustEnabled ? [sub([
       checkShape("stardustAlwaysOn", "Always on", "Stream continuously instead of only while idle."),
       s.stardustAlwaysOn ? null : num("stardustDelayMs", "Idle delay", { min: 0, max: 1e4, step: 100, unit: "ms" }),
-      slider("stardustRate", "Density", { min: 0.2, max: 3, step: 0.1, format: /* @__PURE__ */ __name((v) => v.toFixed(1) + "×", "format") }),
+      slider("stardustRate", "Density", { min: 0.2, max: 3, step: 0.1, format: /* @__PURE__ */ __name((v) => v.toFixed(1) + "\xD7", "format") }),
       checkShape("stardustOrbit", "Orbit", "Motes circle the cursor like fireflies instead of drifting up."),
       s.stardustOrbit ? sub([num("stardustOrbitRadius", "Orbit radius", { min: 6, max: 80, step: 1, unit: "px" })]) : null
     ])] : [],
     checkShape("speedDemon", "Speed demon", "The cursor heats toward white-hot as you type faster."),
     ...s.speedDemon ? [sub([
-      slider("speedDemonSensitivity", "Sensitivity", { min: 0.5, max: 2, step: 0.1, format: /* @__PURE__ */ __name((v) => v.toFixed(1) + "×", "format") }),
+      slider("speedDemonSensitivity", "Sensitivity", { min: 0.5, max: 2, step: 0.1, format: /* @__PURE__ */ __name((v) => v.toFixed(1) + "\xD7", "format") }),
       checkShape("speedDemonSparks", "Fire sparks", "Throw embers off the cursor at high heat."),
       ...s.speedDemonSparks ? [sub([
-        slider("speedDemonSparkQuantity", "Spark quantity", { min: 0, max: 3, step: 0.1, format: /* @__PURE__ */ __name((v) => v.toFixed(1) + "×", "format") }),
+        slider("speedDemonSparkQuantity", "Spark quantity", { min: 0, max: 3, step: 0.1, format: /* @__PURE__ */ __name((v) => v.toFixed(1) + "\xD7", "format") }),
         num("speedDemonSparkTrail", "Spark trail", { min: 0, max: 30, step: 1, unit: "px" })
       ])] : []
     ])] : [],
     checkShape("energyEffect", "Energy beam", "A brightness wave travelling along the cursor."),
     ...s.energyEffect ? [sub([
-      slider("energySpeed", "Beam speed", { min: 0.2, max: 3, step: 0.1, format: /* @__PURE__ */ __name((v) => v.toFixed(1) + "×", "format") }),
+      slider("energySpeed", "Beam speed", { min: 0.2, max: 3, step: 0.1, format: /* @__PURE__ */ __name((v) => v.toFixed(1) + "\xD7", "format") }),
       s.gradientEnabled ? check("energyAurora", "Aurora", "Warp and cross-mix the gradient instead of scrolling it rigidly.") : optionNote("Turn Gradient on for the Aurora variant.")
     ])] : [],
     checkShape("crtEffect", "CRT effect", "A phosphor trail behind the cursor, and the glow halo."),
@@ -8667,9 +8663,9 @@ function renderPanel(root, ctl) {
       color("selectionColorDark", "Dark theme"),
       color("selectionColorLight", "Light theme")
     ])] : [],
-    checkShape("rowTypeTint", "Tint by row type", "Headings, tasks, code and quotes each shift the cursor’s hue."),
+    checkShape("rowTypeTint", "Tint by row type", "Headings, tasks, code and quotes each shift the cursor\u2019s hue."),
     ...s.rowTypeTint ? [sub([
-      slider("rowTypeTintAmount", "Shift", { min: 0, max: 180, step: 5, format: /* @__PURE__ */ __name((v) => v + "°", "format") }),
+      slider("rowTypeTintAmount", "Shift", { min: 0, max: 180, step: 5, format: /* @__PURE__ */ __name((v) => v + "\xB0", "format") }),
       optionNote("Plain text keeps your colour; every other row type moves away from it.")
     ])] : []
   ];
@@ -8701,9 +8697,9 @@ function renderPanel(root, ctl) {
     checkShape("soundEnabled", "Typewriter sound", "A synthesised click on every keystroke."),
     ...s.soundEnabled ? [sub([
       slider("soundVolume", "Volume", { min: 0.01, max: 1, step: 0.01, format: /* @__PURE__ */ __name((v) => Math.round(v * 100) + "%", "format") }),
-      slider("soundPitch", "Pitch", { min: 0.4, max: 2.5, step: 0.05, format: /* @__PURE__ */ __name((v) => v.toFixed(2) + "×", "format") }),
+      slider("soundPitch", "Pitch", { min: 0.4, max: 2.5, step: 0.05, format: /* @__PURE__ */ __name((v) => v.toFixed(2) + "\xD7", "format") }),
       slider("soundVariation", "Variation", { min: 0, max: 1, step: 0.01, format: /* @__PURE__ */ __name((v) => Math.round(v * 100) + "%", "format") }),
-      optionNote("Never included when you roll a random look — a surprise noise is not consent.")
+      optionNote("Never included when you roll a random look \u2014 a surprise noise is not consent.")
     ])] : []
   ];
   const torchBody = [
@@ -8723,7 +8719,7 @@ function renderPanel(root, ctl) {
       slider("overlayIntensity", "Warmth", { min: 0, max: 1, step: 0.01, format: /* @__PURE__ */ __name((v) => Math.round(v * 100) + "%", "format") }),
       color("overlayColor", "Light colour"),
       slider("overlaySpeed", "Follow speed", { min: 0.02, max: 1, step: 0.01, format: /* @__PURE__ */ __name((v) => Math.round(v * 100) + "%", "format") }),
-      checkShape("overlayBlinkSync", "Blink sync", "The light breathes with the cursor’s blink."),
+      checkShape("overlayBlinkSync", "Blink sync", "The light breathes with the cursor\u2019s blink."),
       s.overlayBlinkSync ? sub([slider("overlayBlinkDepth", "Blink depth", { min: 0.05, max: 0.6, step: 0.01, format: /* @__PURE__ */ __name((v) => Math.round(v * 100) + "%", "format") })]) : null
     ])] : []
   ];
@@ -8805,7 +8801,7 @@ function buildPresets(ctl) {
   const nameInput = h("input", {
     type: "text",
     class: "cs-text-input",
-    placeholder: "Name this look…",
+    placeholder: "Name this look\u2026",
     value: ctl.pendingPresetName || "",
     // Kept on the controller rather than in this closure, so changing a
     // setting mid-way doesn't erase what has been typed when the panel
@@ -8820,7 +8816,7 @@ function buildPresets(ctl) {
   const importInput = h("input", {
     type: "text",
     class: "cs-text-input",
-    placeholder: "Paste a share code…",
+    placeholder: "Paste a share code\u2026",
     onKeyDown: /* @__PURE__ */ __name((e) => {
       if (e.key === "Enter") importPreset();
     }, "onKeyDown")
@@ -8834,7 +8830,7 @@ function buildPresets(ctl) {
     ctl.set({ presets: { ...presets, [name]: pickLook(s) }, activePreset: name });
     ctl.pendingPresetName = "";
     ctl.rerender();
-    ctl.toast(`Saved “${name}”.`);
+    ctl.toast(`Saved \u201C${name}\u201D.`);
   }
   __name(savePreset, "savePreset");
   function importPreset() {
@@ -8848,7 +8844,7 @@ function buildPresets(ctl) {
     while (Object.prototype.hasOwnProperty.call(presets, name)) name = `${decoded.name} ${n++}`;
     ctl.set({ presets: { ...presets, [name]: decoded.snap } });
     ctl.rerender();
-    ctl.toast(`Imported “${name}”.`);
+    ctl.toast(`Imported \u201C${name}\u201D.`);
   }
   __name(importPreset, "importPreset");
   function loadPreset(name, snapshot) {
@@ -8856,7 +8852,7 @@ function buildPresets(ctl) {
     if (!snap) return;
     ctl.set({ ...normalizePresetSnapshot(snap), activePreset: snapshot ? "" : name });
     ctl.rerender();
-    ctl.toast(`Loaded “${name}”.`);
+    ctl.toast(`Loaded \u201C${name}\u201D.`);
   }
   __name(loadPreset, "loadPreset");
   function editPreset(name) {
@@ -8870,7 +8866,7 @@ function buildPresets(ctl) {
     delete next[name];
     ctl.set({ presets: next, activePreset: s.activePreset === name ? "" : s.activePreset });
     ctl.rerender();
-    ctl.toast(`Deleted “${name}”.`);
+    ctl.toast(`Deleted \u201C${name}\u201D.`);
   }
   __name(deletePreset, "deletePreset");
   function copyCode(name, snapshot) {
@@ -8910,7 +8906,7 @@ function buildPresets(ctl) {
     optionNote("Your presets"),
     ...userRows.length ? userRows : [optionNote("None yet. Dial the cursor in below, then save it here.")],
     h("div", { class: "cs-input-row" }, nameInput, button({ label: "Save", onClick: savePreset })),
-    optionNote("A preset stores every look and effect setting — not the plugin on/off state or the two caret-hiding options."),
+    optionNote("A preset stores every look and effect setting \u2014 not the plugin on/off state or the two caret-hiding options."),
     h("div", { class: "cs-input-row" }, importInput, button({ label: "Import", onClick: importPreset })),
     h(
       "div",
@@ -8926,408 +8922,36 @@ function buildPresets(ctl) {
 }
 __name(buildPresets, "buildPresets");
 
-// src/extension.js
-var VERSION = "0.1.0";
-var CANVAS_Z_INDEX = 40;
-var VERSION_FLAG = "__ROAM_CURSOR_SMITH_VERSION";
-var activeLifecycle = null;
-var runtime = null;
-function isMobileHost(extensionAPI) {
-  try {
-    if (globalThis.roamAlphaAPI?.platform?.isMobile) return true;
-  } catch {
-  }
-  try {
-    if (extensionAPI?.platform?.isMobile) return true;
-  } catch {
-  }
-  return false;
-}
-function canStartEngine() {
-  return typeof document !== "undefined" && !!document.body && typeof document.createElement === "function" && typeof MutationObserver === "function" && typeof requestAnimationFrame === "function";
-}
-function copyToClipboard(text) {
-  try {
-    const clip = globalThis.navigator?.clipboard;
-    if (clip && typeof clip.writeText === "function") {
-      void clip.writeText(text);
-      return;
-    }
-  } catch {
-  }
-  try {
-    const ta = document.createElement("textarea");
-    ta.value = text;
-    document.body.append(ta);
-    ta.select();
-    document.execCommand("copy");
-    ta.remove();
-  } catch {
-  }
-}
-function injectSheet(lifecycle, cssText) {
-  if (typeof document === "undefined" || !document.createElement) return;
-  const style = document.createElement("style");
-  style.setAttribute("data-cursor-smith", "panel");
-  style.textContent = cssText;
-  lifecycle.node(style, document.head || document.body);
-}
-var CursorSmithRuntime = class {
-  constructor({ extensionAPI, lifecycle, mobile }) {
-    this.extensionAPI = extensionAPI;
-    this.lifecycle = lifecycle;
-    this.mobile = mobile;
-    this._settings = normalizeSettings(loadOptions(extensionAPI) ?? {});
-    this._engine = null;
-    this._overlay = null;
-    this._panelEl = null;
-    this._toastEl = null;
-    this._fatalNotice = false;
-    this.pendingPresetName = "";
-    this.lifecycle.add(() => this.teardown());
-  }
-  teardown() {
-    this.closeSettings();
-    this.stopEngine();
-    this.clearBodyClasses();
-    try {
-      delete globalThis[VERSION_FLAG];
-    } catch {
-      try {
-        globalThis[VERSION_FLAG] = void 0;
-      } catch {
-      }
-    }
-  }
-  clearBodyClasses() {
-    try {
-      document.body?.classList?.remove(BODY_ACTIVE_CLASS, BODY_HIDE_NATIVE_CLASS);
-    } catch {
-    }
-  }
-  applyBodyClasses() {
-    const live = !!this._engine && !!this._settings.enabled && !this.mobile;
-    try {
-      document.body?.classList?.toggle(BODY_ACTIVE_CLASS, live);
-      document.body?.classList?.toggle(
-        BODY_HIDE_NATIVE_CLASS,
-        live && !!this._settings.hideNativeCaret
-      );
-    } catch {
-    }
-  }
-  startEngine() {
-    if (this.mobile || !this._settings.enabled || this._engine || !canStartEngine()) return;
-    try {
-      this._engine = new CursorEngine({
-        settings: this._settings,
-        doc: document,
-        zIndex: CANVAS_Z_INDEX,
-        onFatal: (err) => this.engineFailed(err)
-      });
-      this._engine.start();
-      this.applyBodyClasses();
-    } catch (err) {
-      console.error("[cursor-smith] engine failed to start:", err);
-      this.stopEngine();
-    }
-  }
-  stopEngine() {
-    if (!this._engine) {
-      this.applyBodyClasses();
-      return;
-    }
-    try {
-      this._engine.stop();
-    } catch {
-    }
-    this._engine = null;
-    this.applyBodyClasses();
-  }
-  engineFailed(err) {
-    console.error("[cursor-smith] engine stopped after repeated frame errors:", err);
-    this.stopEngine();
-    this.clearBodyClasses();
-    if (this._fatalNotice) return;
-    this._fatalNotice = true;
-    const palette = this.extensionAPI?.ui?.commandPalette;
-    if (palette) {
-      void this.lifecycle.command(palette, {
-        label: "Cursor Smith: engine stopped (see console)",
-        callback: () => this.openSettings()
-      }).catch((error) => console.error(error));
-    }
-  }
-  applySettings() {
-    if (this.mobile || !this._settings.enabled) {
-      this.stopEngine();
-      return;
-    }
-    if (!this._engine) this.startEngine();
-    else this._engine.setSettings(this._settings);
-    this.applyBodyClasses();
-  }
-  _set(patch) {
-    this._settings = normalizeSettings({ ...this._settings, ...patch });
-    void persistOptions(this.extensionAPI, this._settings);
-    this.applySettings();
-  }
-  _setLive(patch) {
-    this._settings = { ...this._settings, ...patch };
-    this.applySettings();
-  }
-  toast(message) {
-    console.info("[cursor-smith]", message);
-    if (this._toastEl) this._toastEl.textContent = message;
-  }
-  openSettings() {
-    if (this._overlay?.isConnected) return;
-    if (typeof document === "undefined" || !document.body || !document.createElement) return;
-    const overlay = document.createElement("div");
-    overlay.className = "cs-panel-overlay";
-    overlay.setAttribute("role", "dialog");
-    overlay.setAttribute("aria-label", "Cursor Smith settings");
-    overlay.addEventListener("click", (ev) => {
-      if (ev.target === overlay) this.closeSettings();
-    });
-    const panelRoot = document.createElement("div");
-    panelRoot.className = `cs-panel ${ROOT_CLASS}-panel`;
-    const toastEl = document.createElement("div");
-    toastEl.className = "cs-toast";
-    overlay.append(panelRoot, toastEl);
-    document.body.append(overlay);
-    this._overlay = overlay;
-    this._panelEl = panelRoot;
-    this._toastEl = toastEl;
-    this.renderPanel();
-  }
-  closeSettings() {
-    try {
-      this._overlay?.remove();
-    } catch {
-    }
-    this._overlay = null;
-    this._panelEl = null;
-    this._toastEl = null;
-  }
-  onEscape(ev) {
-    if (ev.key === "Escape" && this._overlay?.isConnected) {
-      ev.stopPropagation();
-      this.closeSettings();
-    }
-  }
-  renderPanel() {
-    if (!this._panelEl) return;
-    const plugin = this;
-    try {
-      renderPanel(this._panelEl, {
-        version: VERSION,
-        conf: {
-          repository: "https://github.com/Svyk/roam-cursor-smith"
-        },
-        settings: this._settings,
-        disabled: !this._settings.enabled,
-        data: void 0,
-        scopeArgs: () => null,
-        set: (patch) => this._set(patch),
-        setLive: (patch) => this._setLive(patch),
-        rerender: () => this.renderPanel(),
-        randomize: () => this.randomize(),
-        resetLook: () => this.resetLook(),
-        toggleDisabled: (nextOn) => {
-          this._set({ enabled: !!nextOn });
-          this.renderPanel();
-        },
-        toast: (msg) => this.toast(msg),
-        copyToClipboard,
-        get pendingPresetName() {
-          return plugin.pendingPresetName;
-        },
-        set pendingPresetName(v) {
-          plugin.pendingPresetName = v;
-        }
-      });
-    } catch (err) {
-      console.error("[cursor-smith] settings panel failed:", err);
-    }
-  }
-  randomize() {
-    this._set({ ...randomizeLook(), activePreset: "" });
-    this.renderPanel();
-    this.toast("Rolled a new look.");
-  }
-  resetLook() {
-    this._set({ ...normalizePresetSnapshot(DEFAULTS), activePreset: "" });
-    this.renderPanel();
-    this.toast("Reset to defaults.");
-  }
-  toggleEnabled() {
-    const next = !this._settings.enabled;
-    this._set({ enabled: next });
-    this.renderPanel();
-    this.toast(next ? "Cursor Smith on." : "Cursor Smith off.");
-  }
-  cyclePreset() {
-    const presets = this._settings.presets || {};
-    const names = Object.keys(presets);
-    if (!names.length) {
-      this.toast("No presets saved yet.");
-      return;
-    }
-    const idx = names.indexOf(this._settings.activePreset);
-    const next = names[(idx + 1) % names.length];
-    this._set({ ...pickLook(presets[next]), activePreset: next });
-    this.renderPanel();
-    this.toast(`Preset: ${next}`);
-  }
-  diagnoseCaret() {
-    const describe = (el2) => {
-      if (!el2 || typeof el2.getBoundingClientRect !== "function") return null;
-      const r = el2.getBoundingClientRect();
-      let cs = {};
-      try {
-        cs = getComputedStyle(el2);
-      } catch {
-      }
-      return {
-        tag: el2.tagName,
-        cls: el2.className,
-        id: el2.id,
-        rect: {
-          x: Math.round(r.left),
-          y: Math.round(r.top),
-          w: Math.round(r.width),
-          h: Math.round(r.height)
-        },
-        css: {
-          display: cs.display,
-          visibility: cs.visibility,
-          opacity: cs.opacity
-        }
-      };
-    };
-    const log = [];
-    const sample = (reason) => {
-      const active = document.activeElement;
-      const textarea = active && (active.tagName === "TEXTAREA" || active.tagName === "INPUT") ? active : null;
-      log.push({
-        reason,
-        t: Math.round(performance.now()),
-        carets: [],
-        listviewCarets: [],
-        active: active ? describe(active) : null,
-        textarea: textarea ? {
-          id: textarea.id,
-          cls: textarea.className,
-          selectionStart: textarea.selectionStart,
-          selectionEnd: textarea.selectionEnd
-        } : null,
-        engine: this._engine ? {
-          gear: this._engine._canvasGear,
-          source: this._engine._caretSource,
-          hasCaret: !!this._engine.lastActive
-        } : null
-      });
-    };
-    sample("start");
-    const mo = typeof MutationObserver === "function" ? new MutationObserver(() => {
-      if (log.length < 60) sample("mutation");
-    }) : null;
-    try {
-      mo?.observe(document.body, {
-        subtree: true,
-        attributes: true,
-        attributeFilter: ["class", "style"],
-        childList: true
-      });
-    } catch {
-    }
-    const onKey = () => {
-      if (log.length < 60) sample("keydown");
-    };
-    window.addEventListener("keydown", onKey, true);
-    this.toast("Diagnosing for 5s — click into a block and type.");
-    this.lifecycle.timeout(() => {
-      try {
-        mo?.disconnect();
-      } catch {
-      }
-      window.removeEventListener("keydown", onKey, true);
-      sample("end");
-      const text = JSON.stringify(log, null, 2);
-      console.log("[cursor-smith] caret diagnostic\n" + text);
-      copyToClipboard(text);
-      this.toast(`Caret diagnostic: ${log.length} samples, copied to clipboard.`);
-    }, 5e3);
-  }
-};
-async function onload({ extensionAPI, extension }) {
-  if (!extensionAPI) throw new TypeError("Roam did not provide extensionAPI");
-  if (activeLifecycle) await activeLifecycle.dispose();
-  const lifecycle = createLifecycle();
-  activeLifecycle = lifecycle;
-  const mobile = isMobileHost(extensionAPI);
-  try {
-    globalThis[VERSION_FLAG] = VERSION;
-    injectSheet(lifecycle, PANEL_CSS + "\n" + PANEL_LOCAL_CSS);
-    runtime = new CursorSmithRuntime({ extensionAPI, lifecycle, mobile });
-    const palette = extensionAPI.ui.commandPalette;
-    await lifecycle.command(palette, {
-      label: "Cursor Smith: Settings",
-      callback: () => runtime.openSettings()
-    });
-    await lifecycle.command(palette, {
-      label: "Cursor Smith: Toggle on/off",
-      callback: () => runtime.toggleEnabled()
-    });
-    await lifecycle.command(palette, {
-      label: "Cursor Smith: Random look",
-      callback: () => runtime.randomize()
-    });
-    await lifecycle.command(palette, {
-      label: "Cursor Smith: Cycle preset",
-      callback: () => runtime.cyclePreset()
-    });
-    await lifecycle.command(palette, {
-      label: "Cursor Smith: Diagnose caret (5s)",
-      callback: () => runtime.diagnoseCaret()
-    });
-    if (typeof document !== "undefined") {
-      lifecycle.event(document, "keydown", (ev) => runtime.onEscape(ev), true);
-    }
-    if (!mobile) runtime.startEngine();
-    console.info(`[cursor-smith] Loaded v${extension?.version || VERSION}`);
-  } catch (error) {
-    if (activeLifecycle === lifecycle) activeLifecycle = null;
-    runtime = null;
-    await lifecycle.dispose().catch((cleanupError) => console.error(cleanupError));
-    throw error;
-  }
-  return async () => {
-    if (activeLifecycle === lifecycle) activeLifecycle = null;
-    runtime = null;
-    await lifecycle.dispose();
-  };
-}
-async function onunload() {
-  const lifecycle = activeLifecycle;
-  activeLifecycle = null;
-  runtime = null;
-  if (lifecycle) await lifecycle.dispose();
-  try {
-    delete globalThis[VERSION_FLAG];
-  } catch {
-  }
-  try {
-    document.body?.classList?.remove(BODY_ACTIVE_CLASS, BODY_HIDE_NATIVE_CLASS);
-  } catch {
-  }
-  console.info("[cursor-smith] Unloaded");
-}
-var extension_default = { onload, onunload };
+
 export {
-  VERSION,
-  extension_default as default,
-  onload,
-  onunload
+  CursorEngine,
+  DEFAULTS,
+  STRUCTURAL,
+  LOOK_KEYS,
+  NUM_SPECS,
+  ENUMS,
+  HEX_KEYS,
+  normalizeSettings,
+  normalizePresetSnapshot,
+  normalizePresets,
+  pickLook,
+  randomizeLook,
+  presetToCode,
+  codeToPreset,
+  BUILTIN_PRESETS,
+  renderPanel,
+  STATIC_CSS,
+  PANEL_CSS,
+  PANEL_LOCAL_CSS,
+  ROOT_CLASS,
+  BODY_ACTIVE_CLASS,
+  BODY_HIDE_NATIVE_CLASS,
+  WRAP_CLASS,
+  CANVAS_CLASS,
+  TORCH_CLASS,
+  CARET_EL_SEL,
+  caretCoords,
+  genericCaretCoords,
+  formFieldCaretCoords,
+  isTextCaretHost,
 };

@@ -1,6 +1,14 @@
 MIT License
 
-Copyright (c) 2026 Svyatoslav Kleshchev
+Copyright (c) 2026 Sadsnake1
+Copyright (c) 2026 akaready (Thymer port)
+Copyright (c) 2026 Svyatoslav Kleshchev (Roam port)
+
+This extension is a port of Cursor-Smith by Sadsnake1
+(https://github.com/Sadsnake1/cursor-smith) via the Thymer port
+(https://github.com/Svyk/thymer-cursor-smith). The original work is
+licensed MIT and that license is reproduced in full below; the ports
+are released under the same terms.
 
 Permission is hereby granted, free of charge, to any person obtaining a copy
 of this software and associated documentation files (the "Software"), to deal

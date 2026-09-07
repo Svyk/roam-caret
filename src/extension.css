@@ -1,9 +1,188 @@
 /* Roam injects this stylesheet on load and removes it on unload. */
-:root {
-  --example-extension-accent: var(--roam-color-primary, #106ba3);
+
+body.cs-active.cs-hide-native textarea.rm-block__input,
+body.cs-active.cs-hide-native textarea[id^="block-input-"],
+body.cs-active.cs-hide-native .rm-block__input
+{ caret-color: transparent !important; }
+
+.cs-cursor-wrap {
+  position: fixed;
+  overflow: hidden;
+  pointer-events: none;
+  top: 0;
+  left: 0;
+  width: 0;
+  height: 0;
+  z-index: 40; /* PROVISIONAL */
 }
 
-.example-extension__accent {
-  color: var(--example-extension-accent);
+.cs-cursor-canvas {
+  position: absolute;
+  top: 0;
+  left: 0;
+  pointer-events: none;
 }
 
+.cs-torch-overlay {
+  position: fixed;
+  pointer-events: none;
+  top: 0;
+  left: 0;
+  width: 0;
+  height: 0;
+  z-index: 39; /* PROVISIONAL */
+  background: radial-gradient(
+    circle var(--torch-radius, 250px) at var(--torch-x, 50%) var(--torch-y, 50%),
+    rgba(var(--torch-warm, 255, 150, 60), var(--torch-intensity, 0.1)) 0%,
+    rgba(0, 0, 0, var(--torch-darkness, 0.7)) 100%
+  );
+  mix-blend-mode: multiply;
+  opacity: 1;
+  transition: opacity 0.2s ease;
+}
+
+.cs-torch-overlay.cs-torch-hidden {
+  opacity: 0 !important;
+  display: none !important;
+}
+
+.cs-panel-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 50; /* PROVISIONAL */
+  display: flex;
+  align-items: flex-start;
+  justify-content: center;
+  padding: 24px 16px;
+  overflow: auto;
+  background: color-mix(in srgb, currentColor 28%, transparent);
+}
+
+.cs-panel.cs-panel {
+  --tps-text: var(--bc-light-gray-5, currentColor);
+  --tps-text-muted: var(--cl-gray-550, color-mix(in srgb, currentColor 62%, transparent));
+  --tps-text-faint: color-mix(in srgb, currentColor 48%, transparent);
+  --tps-accent: var(--roam-color-primary, var(--cl-blue, #106ba3));
+  --tps-panel-bg: var(--bc-main, currentColor);
+  --tps-bg-input: var(--bc-hover, color-mix(in srgb, currentColor 6%, transparent));
+  --tps-bg-hover: var(--bc-hover, color-mix(in srgb, currentColor 8%, transparent));
+  --tps-border: var(--bc-menu, color-mix(in srgb, currentColor 22%, transparent));
+  --tps-divider: var(--bc-menu, color-mix(in srgb, currentColor 14%, transparent));
+  position: relative;
+  z-index: 50; /* PROVISIONAL */
+  width: min(560px, 100%);
+  max-height: calc(100vh - 48px);
+  overflow: auto;
+  box-sizing: border-box;
+  padding: 12px 14px 20px;
+  border: 1px solid var(--tps-border);
+  border-radius: 8px;
+  background: var(--bc-main, var(--app-bg, Canvas));
+  color: var(--tps-text);
+  box-shadow: 0 12px 40px color-mix(in srgb, currentColor 18%, transparent);
+}
+
+.cs-panel .tps-panel.tps-panel {
+  --tps-text: var(--bc-light-gray-5, currentColor);
+  --tps-text-muted: var(--cl-gray-550, color-mix(in srgb, currentColor 62%, transparent));
+  --tps-accent: var(--roam-color-primary, var(--cl-blue, #106ba3));
+  --tps-panel-bg: var(--bc-main, currentColor);
+  --tps-bg-input: var(--bc-hover, color-mix(in srgb, currentColor 6%, transparent));
+  --tps-border: var(--bc-menu, color-mix(in srgb, currentColor 22%, transparent));
+  overflow: visible;
+  background: transparent;
+  color: inherit;
+}
+
+body.cs-active .plg-cursor-smith-panel .cs-demo {
+  caret-color: transparent;
+}
+
+.plg-cursor-smith-panel .cs-preset-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 8px;
+  border: 1px solid var(--bc-menu, rgba(127, 127, 127, 0.12));
+  border-radius: 6px;
+  background: var(--bc-hover, rgba(127, 127, 127, 0.06));
+  margin-bottom: 6px;
+}
+
+.plg-cursor-smith-panel .cs-preset-row.cs-preset-active {
+  border-color: var(--roam-color-primary, var(--tps-accent, #106ba3));
+}
+
+.plg-cursor-smith-panel .cs-preset-name {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-weight: 600;
+}
+
+.plg-cursor-smith-panel .cs-text-input {
+  flex: 1 1 auto;
+  min-width: 0;
+  box-sizing: border-box;
+  padding: 5px 8px;
+  border-radius: 6px;
+  border: 1px solid var(--bc-menu, rgba(127, 127, 127, 0.12));
+  background: var(--bc-hover, rgba(127, 127, 127, 0.06));
+  color: inherit;
+  font: inherit;
+  font-size: 12px;
+}
+
+.plg-cursor-smith-panel .cs-demo {
+  display: block;
+  width: 100%;
+  box-sizing: border-box;
+  resize: vertical;
+  min-height: 68px;
+  padding: 8px 10px;
+  border-radius: 6px;
+  border: 1px solid var(--bc-menu, rgba(127, 127, 127, 0.12));
+  background: var(--bc-hover, rgba(127, 127, 127, 0.06));
+  color: inherit;
+  font: inherit;
+  line-height: 1.5;
+}
+
+.plg-cursor-smith-panel .cs-palette-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(104px, 1fr));
+  gap: 6px;
+  margin: 8px 0;
+}
+
+.plg-cursor-smith-panel .cs-palette-chip {
+  position: relative;
+  height: 30px;
+  padding: 0;
+  border: 1px solid var(--bc-menu, rgba(127, 127, 127, 0.12));
+  border-radius: 6px;
+  cursor: pointer;
+  overflow: hidden;
+}
+
+.cs-toast {
+  position: sticky;
+  bottom: 0;
+  margin-top: 8px;
+  font-size: 12px;
+  color: var(--cl-gray-550, currentColor);
+}
+
+.cs-panel-overlay > .cs-toast {
+  position: fixed;
+  bottom: 16px;
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 50; /* PROVISIONAL */
+  padding: 6px 10px;
+  border-radius: 6px;
+  background: var(--bc-main, Canvas);
+  border: 1px solid var(--bc-menu, color-mix(in srgb, currentColor 22%, transparent));
+}
