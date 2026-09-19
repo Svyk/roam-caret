@@ -1,5 +1,7 @@
 import { createLifecycle } from "./lifecycle.js";
 import { loadOptions, persistOptions } from "./settings.js";
+import { createCaretMeasurer } from "./caret-measure.js";
+import { installLiteCaret } from "./caret-lite.js";
 import {
   BODY_ACTIVE_CLASS,
   BODY_HIDE_NATIVE_CLASS,
@@ -8,6 +10,7 @@ import {
   PANEL_CSS,
   PANEL_LOCAL_CSS,
   ROOT_CLASS,
+  needsCanvas,
   normalizePresetSnapshot,
   normalizeSettings,
   pickLook,
@@ -15,7 +18,7 @@ import {
   renderPanel,
 } from "./cursor-smith.js";
 
-export const VERSION = "0.1.1";
+export const VERSION = "0.2.0";
 const CANVAS_Z_INDEX = 40; // PROVISIONAL
 const VERSION_FLAG = "__ROAM_CURSOR_SMITH_VERSION";
 
@@ -34,11 +37,14 @@ function isMobileHost(extensionAPI) {
   return false;
 }
 
-function canStartEngine() {
+function canStartLite() {
   return typeof document !== "undefined"
     && !!document.body
-    && typeof document.createElement === "function"
-    && typeof MutationObserver === "function"
+    && typeof document.createElement === "function";
+}
+
+function canStartEngine() {
+  return canStartLite()
     && typeof requestAnimationFrame === "function";
 }
 
@@ -62,14 +68,6 @@ function copyToClipboard(text) {
   }
 }
 
-function injectSheet(lifecycle, cssText) {
-  if (typeof document === "undefined" || !document.createElement) return;
-  const style = document.createElement("style");
-  style.setAttribute("data-cursor-smith", "panel");
-  style.textContent = cssText;
-  lifecycle.node(style, document.head || document.body);
-}
-
 class CursorSmithRuntime {
   constructor({ extensionAPI, lifecycle, mobile }) {
     this.extensionAPI = extensionAPI;
@@ -77,8 +75,13 @@ class CursorSmithRuntime {
     this.mobile = mobile;
     this._settings = normalizeSettings(loadOptions(extensionAPI) ?? {});
     this._engine = null;
+    this._lite = null;
+    this._measurer = null;
+    this._mode = null;
+    this._pumpInstalled = false;
     this._overlay = null;
     this._panelEl = null;
+    this._panelStyle = null;
     this._toastEl = null;
     this._fatalNotice = false;
     this.pendingPresetName = "";
@@ -87,7 +90,10 @@ class CursorSmithRuntime {
 
   teardown() {
     this.closeSettings();
+    this._removePanelStyle();
+    this.stopLite();
     this.stopEngine();
+    this.stopMeasurer();
     this.clearBodyClasses();
     try {
       delete globalThis[VERSION_FLAG];
@@ -107,7 +113,7 @@ class CursorSmithRuntime {
   }
 
   applyBodyClasses() {
-    const live = !!this._engine && !!this._settings.enabled && !this.mobile;
+    const live = (!!this._engine || !!this._lite) && !!this._settings.enabled && !this.mobile;
     try {
       document.body?.classList?.toggle(BODY_ACTIVE_CLASS, live);
       document.body?.classList?.toggle(
@@ -118,13 +124,93 @@ class CursorSmithRuntime {
     }
   }
 
+  ensureMeasurer() {
+    if (this._measurer || typeof document === "undefined") return;
+    try {
+      this._measurer = createCaretMeasurer({
+        doc: document,
+        win: document.defaultView || globalThis,
+        lifecycle: this.lifecycle,
+      });
+    } catch (err) {
+      console.error("[cursor-smith] measurer failed to start:", err);
+      this._measurer = null;
+    }
+  }
+
+  stopMeasurer() {
+    try {
+      this._measurer?.dispose();
+    } catch {
+    }
+    this._measurer = null;
+  }
+
+  ensurePump() {
+    if (this._pumpInstalled || typeof document === "undefined") return;
+    const pump = () => {
+      try {
+        const el = document.activeElement;
+        if (this._measurer && el) this._measurer.measure(el);
+      } catch {
+      }
+    };
+    this._pumpInstalled = true;
+    this.lifecycle.event(document, "focusin", pump, true);
+    this.lifecycle.event(document, "input", pump, true);
+    this.lifecycle.event(document, "selectionchange", pump);
+    this.lifecycle.event(document, "keyup", pump, true);
+    const win = document.defaultView || globalThis;
+    if (typeof win?.addEventListener === "function") {
+      this.lifecycle.event(win, "scroll", pump, true);
+      this.lifecycle.event(win, "resize", pump);
+    }
+  }
+
+  startLite() {
+    if (this.mobile || !this._settings.enabled || this._lite || !canStartLite()) return;
+    this.ensureMeasurer();
+    this.ensurePump();
+    if (!this._measurer) return;
+    try {
+      this._lite = installLiteCaret({
+        doc: document,
+        win: document.defaultView || globalThis,
+        measurer: this._measurer,
+        lifecycle: this.lifecycle,
+        getSettings: () => this._settings,
+      });
+      this._lite.refresh();
+      this.applyBodyClasses();
+    } catch (err) {
+      console.error("[cursor-smith] lite caret failed to start:", err);
+      this.stopLite();
+    }
+  }
+
+  stopLite() {
+    if (!this._lite) {
+      this.applyBodyClasses();
+      return;
+    }
+    try {
+      this._lite.dispose();
+    } catch {
+    }
+    this._lite = null;
+    this.applyBodyClasses();
+  }
+
   startEngine() {
     if (this.mobile || !this._settings.enabled || this._engine || !canStartEngine()) return;
+    this.ensureMeasurer();
+    this.ensurePump();
     try {
       this._engine = new CursorEngine({
         settings: this._settings,
         doc: document,
         zIndex: CANVAS_Z_INDEX,
+        measurer: this._measurer,
         onFatal: (err) => this.engineFailed(err),
       });
       this._engine.start();
@@ -165,11 +251,25 @@ class CursorSmithRuntime {
 
   applySettings() {
     if (this.mobile || !this._settings.enabled) {
+      this.stopLite();
       this.stopEngine();
+      this._mode = "off";
       return;
     }
-    if (!this._engine) this.startEngine();
-    else this._engine.setSettings(this._settings);
+    const nextMode = needsCanvas(this._settings) ? "canvas" : "lite";
+    if (this._mode && this._mode !== nextMode && this._mode !== "off") {
+      this.toast(nextMode === "canvas" ? "Canvas mode: effects on" : "Lite mode");
+    }
+    this._mode = nextMode;
+    if (nextMode === "canvas") {
+      this.stopLite();
+      if (!this._engine) this.startEngine();
+      else this._engine.setSettings(this._settings);
+    } else {
+      this.stopEngine();
+      if (!this._lite) this.startLite();
+      else this._lite.refresh();
+    }
     this.applyBodyClasses();
   }
 
@@ -189,9 +289,33 @@ class CursorSmithRuntime {
     if (this._toastEl) this._toastEl.textContent = message;
   }
 
+  _injectPanelStyle() {
+    if (this._panelStyle?.isConnected) return;
+    if (typeof document === "undefined" || !document.createElement) return;
+    if (!this._panelStyle) {
+      const style = document.createElement("style");
+      style.setAttribute("data-cursor-smith", "panel");
+      style.textContent = PANEL_CSS + "\n" + PANEL_LOCAL_CSS;
+      this._panelStyle = style;
+    }
+    try {
+      (document.head || document.body).append(this._panelStyle);
+    } catch {
+    }
+  }
+
+  _removePanelStyle() {
+    try {
+      if (this._panelStyle?.isConnected) this._panelStyle.remove();
+    } catch {
+    }
+    this._panelStyle = null;
+  }
+
   openSettings() {
     if (this._overlay?.isConnected) return;
     if (typeof document === "undefined" || !document.body || !document.createElement) return;
+    this._injectPanelStyle();
     const overlay = document.createElement("div");
     overlay.className = "cs-panel-overlay";
     overlay.setAttribute("role", "dialog");
@@ -226,6 +350,7 @@ class CursorSmithRuntime {
     this._overlay = null;
     this._panelEl = null;
     this._toastEl = null;
+    this._removePanelStyle();
   }
 
   onEscape(ev) {
@@ -346,6 +471,9 @@ class CursorSmithRuntime {
           selectionStart: textarea.selectionStart,
           selectionEnd: textarea.selectionEnd,
         } : null,
+        mode: this._mode,
+        parked: this._engine ? !!this._engine._parked : null,
+        latest: this._measurer?.latest?.() || null,
         engine: this._engine ? {
           gear: this._engine._canvasGear,
           source: this._engine._caretSource,
@@ -397,7 +525,6 @@ export async function onload({ extensionAPI, extension }) {
   const mobile = isMobileHost(extensionAPI);
   try {
     globalThis[VERSION_FLAG] = VERSION;
-    injectSheet(lifecycle, PANEL_CSS + "\n" + PANEL_LOCAL_CSS);
     runtime = new CursorSmithRuntime({ extensionAPI, lifecycle, mobile });
     const palette = extensionAPI.ui.commandPalette;
     await lifecycle.command(palette, {
@@ -423,7 +550,7 @@ export async function onload({ extensionAPI, extension }) {
     if (typeof document !== "undefined") {
       lifecycle.event(document, "keydown", (ev) => runtime.onEscape(ev), true);
     }
-    if (!mobile) runtime.startEngine();
+    if (!mobile) runtime.applySettings();
     console.info(`[cursor-smith] Loaded v${extension?.version || VERSION}`);
   } catch (error) {
     if (activeLifecycle === lifecycle) activeLifecycle = null;
@@ -455,4 +582,8 @@ export async function onunload() {
   console.info("[cursor-smith] Unloaded");
 }
 
-export default { onload, onunload };
+export function getRuntime() {
+  return runtime;
+}
+
+export default { onload, onunload, getRuntime };

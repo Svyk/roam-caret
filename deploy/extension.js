@@ -1,4 +1,4 @@
-/* Cursor Smith v0.1.1 | MIT | generated; edit src/ */
+/* Cursor Smith v0.2.0 | MIT | generated; edit src/ */
 
 // src/lifecycle.js
 function isPromiseLike(value) {
@@ -93,6 +93,421 @@ function loadOptions(extensionAPI) {
 }
 async function persistOptions(extensionAPI, value) {
   await extensionAPI.settings.set(OPTIONS_KEY, value);
+}
+
+// src/caret-measure.js
+var MARKER_CHAR = "​";
+var SKIP_HOST_SELECTOR = ".rg-root, .pxd-root";
+var MIRROR_PROPERTIES = Object.freeze([
+  "boxSizing",
+  "width",
+  "paddingTop",
+  "paddingRight",
+  "paddingBottom",
+  "paddingLeft",
+  "borderTopWidth",
+  "borderRightWidth",
+  "borderBottomWidth",
+  "borderLeftWidth",
+  "fontFamily",
+  "fontSize",
+  "fontWeight",
+  "fontStyle",
+  "fontVariant",
+  "letterSpacing",
+  "textTransform",
+  "textIndent",
+  "lineHeight",
+  "tabSize",
+  "direction"
+]);
+function isTextTarget(element) {
+  if (!element || !element.tagName) return false;
+  if (element.tagName === "TEXTAREA") return true;
+  if (element.tagName !== "INPUT") return false;
+  const type = (element.getAttribute?.("type") || "text").toLowerCase();
+  return ["text", "search", "url", "tel", "email", "number"].includes(type);
+}
+function isSkippedHost(el2) {
+  return !!el2?.closest?.(SKIP_HOST_SELECTOR);
+}
+function px(value, fallback = 0) {
+  const parsed = Number.parseFloat(value);
+  return Number.isFinite(parsed) ? parsed : fallback;
+}
+function projectCaretRect({
+  box,
+  offsetW,
+  offsetH,
+  markerLeft,
+  markerTop,
+  scrollLeft,
+  scrollTop,
+  borderLeft,
+  borderTop,
+  padLeft,
+  padTop,
+  padRight,
+  padBottom,
+  glyphWidth,
+  lineHeightPx,
+  hasGlyph,
+  glyph
+}) {
+  const scaleX = offsetW ? box.width / offsetW : 1;
+  const scaleY = offsetH ? box.height / offsetH : 1;
+  const x = box.left + (borderLeft + markerLeft - scrollLeft) * scaleX;
+  const y = box.top + (borderTop + markerTop - scrollTop) * scaleY;
+  const width = glyphWidth * scaleX;
+  const height = lineHeightPx * scaleY;
+  const boxRight = box.right ?? box.left + box.width;
+  const boxBottom = box.bottom ?? box.top + box.height;
+  const content = {
+    left: box.left + (borderLeft + padLeft) * scaleX,
+    top: box.top + (borderTop + padTop) * scaleY,
+    right: boxRight - (borderLeft + padRight) * scaleX,
+    bottom: boxBottom - (borderTop + padBottom) * scaleY
+  };
+  const visible = x + width > content.left && x < content.right && y + height > content.top && y < content.bottom;
+  return {
+    x,
+    y,
+    width,
+    height,
+    glyph: hasGlyph ? glyph : "",
+    visible
+  };
+}
+function readMetrics(computed) {
+  const fontSizePx = px(computed.fontSize, 16);
+  return {
+    borderLeft: px(computed.borderLeftWidth),
+    borderTop: px(computed.borderTopWidth),
+    padLeft: px(computed.paddingLeft),
+    padTop: px(computed.paddingTop),
+    padRight: px(computed.paddingRight),
+    padBottom: px(computed.paddingBottom),
+    lineHeightPx: px(computed.lineHeight) || fontSizePx * 1.2 || 19,
+    fontFamily: computed.fontFamily || "",
+    fontSize: computed.fontSize || "",
+    fontWeight: computed.fontWeight || "",
+    fontStyle: computed.fontStyle || "",
+    color: computed.color || "",
+    fontSizePx
+  };
+}
+function glyphAt(value, start) {
+  const underCaret = value[start] && value[start] !== "\n" ? value[start] : "0";
+  const hasGlyph = underCaret !== "0" || value[start] === "0";
+  return { underCaret, hasGlyph };
+}
+function createCaretMeasurer({ doc, win, lifecycle } = {}) {
+  const documentRef = doc || globalThis.document;
+  const windowRef = win || documentRef?.defaultView || globalThis;
+  const subscribers = /* @__PURE__ */ new Set();
+  let cachedEl = null;
+  let metrics = null;
+  let latestRect = null;
+  let disposed = false;
+  const mirror = documentRef.createElement("div");
+  const style = mirror.style;
+  style.position = "absolute";
+  style.top = "0";
+  style.left = "-99999px";
+  style.visibility = "hidden";
+  style.height = "auto";
+  style.whiteSpace = "pre-wrap";
+  style.overflowWrap = "break-word";
+  mirror.setAttribute("aria-hidden", "true");
+  const parent = documentRef.body || documentRef.documentElement || globalThis.document?.body;
+  if (lifecycle) lifecycle.node(mirror, parent);
+  else parent.append(mirror);
+  const invalidate = () => {
+    cachedEl = null;
+    metrics = null;
+  };
+  if (windowRef?.addEventListener) {
+    windowRef.addEventListener("resize", invalidate);
+  }
+  const notify = (rect) => {
+    for (const fn of subscribers) fn(rect);
+  };
+  const measure = (el2) => {
+    if (disposed) return null;
+    if (!isTextTarget(el2) || isSkippedHost(el2)) return null;
+    if (el2 !== cachedEl) {
+      const computedStyle = windowRef.getComputedStyle(el2);
+      for (const name of MIRROR_PROPERTIES) style[name] = computedStyle[name];
+      metrics = readMetrics(computedStyle);
+      cachedEl = el2;
+    }
+    const value = el2.value ?? "";
+    const start = Math.min(el2.selectionStart ?? value.length, value.length);
+    const { underCaret, hasGlyph } = glyphAt(value, start);
+    mirror.textContent = value.slice(0, start);
+    const marker = documentRef.createElement("span");
+    marker.style.display = "inline-block";
+    marker.style.width = "0";
+    marker.style.height = `${metrics.lineHeightPx}px`;
+    marker.style.verticalAlign = "top";
+    marker.textContent = MARKER_CHAR;
+    mirror.appendChild(marker);
+    const glyphEl = documentRef.createElement("span");
+    glyphEl.textContent = underCaret;
+    mirror.appendChild(glyphEl);
+    const box = el2.getBoundingClientRect();
+    const glyphWidth = glyphEl.offsetWidth || metrics.fontSizePx * 0.6 || 8;
+    const rect = {
+      ...projectCaretRect({
+        box,
+        offsetW: el2.offsetWidth || 0,
+        offsetH: el2.offsetHeight || 0,
+        markerLeft: marker.offsetLeft || 0,
+        markerTop: marker.offsetTop || 0,
+        scrollLeft: el2.scrollLeft || 0,
+        scrollTop: el2.scrollTop || 0,
+        borderLeft: metrics.borderLeft,
+        borderTop: metrics.borderTop,
+        padLeft: metrics.padLeft,
+        padTop: metrics.padTop,
+        padRight: metrics.padRight,
+        padBottom: metrics.padBottom,
+        glyphWidth,
+        lineHeightPx: metrics.lineHeightPx,
+        hasGlyph,
+        glyph: underCaret
+      }),
+      fontFamily: metrics.fontFamily,
+      fontSize: metrics.fontSize,
+      fontWeight: metrics.fontWeight,
+      fontStyle: metrics.fontStyle,
+      color: metrics.color,
+      el: el2
+    };
+    latestRect = rect;
+    notify(rect);
+    return rect;
+  };
+  return {
+    measure,
+    latest() {
+      return latestRect;
+    },
+    subscribe(fn) {
+      subscribers.add(fn);
+      return () => subscribers.delete(fn);
+    },
+    isSkippedHost,
+    dispose() {
+      if (disposed) return;
+      disposed = true;
+      subscribers.clear();
+      cachedEl = null;
+      metrics = null;
+      latestRect = null;
+      if (windowRef?.removeEventListener) {
+        windowRef.removeEventListener("resize", invalidate);
+      }
+      mirror.remove();
+    }
+  };
+}
+
+// src/caret-lite.js
+function isPasswordField(el2) {
+  if (!el2) return false;
+  const type = String(el2.type || el2.getAttribute?.("type") || "").toLowerCase();
+  return type === "password";
+}
+function isDark(doc, win) {
+  const root = doc?.documentElement;
+  const body = doc?.body;
+  if (root?.classList?.contains("bp3-dark")) return true;
+  if (body?.classList?.contains("bt-theme-dark")) return true;
+  if (body?.classList?.contains("rm-dark-theme")) return true;
+  if (body?.classList?.contains("roam-body") && body?.classList?.contains("dark")) return true;
+  const prefersDark = !!win?.matchMedia?.("(prefers-color-scheme: dark)")?.matches;
+  return prefersDark && !root?.classList?.contains("bp3-light");
+}
+function hasRangeSelection(el2) {
+  if (el2?.selectionStart == null || el2?.selectionEnd == null) return false;
+  return el2.selectionStart !== el2.selectionEnd;
+}
+function installLiteCaret({ doc, win, measurer, lifecycle, getSettings } = {}) {
+  const documentRef = doc || globalThis.document;
+  const windowRef = win || documentRef?.defaultView || globalThis;
+  let settings = typeof getSettings === "function" ? getSettings() || {} : {};
+  let active = null;
+  let disposed = false;
+  const overlay = documentRef.createElement("div");
+  overlay.className = "cs-lite-caret";
+  const style = overlay.style;
+  style.pointerEvents = "none";
+  style.position = "fixed";
+  style.top = "0";
+  style.left = "0";
+  style.zIndex = "40";
+  style.willChange = "transform";
+  style.transformOrigin = "0 0";
+  style.display = "none";
+  const glyph = documentRef.createElement("span");
+  glyph.className = "cs-lite-glyph";
+  overlay.appendChild(glyph);
+  const parent = documentRef.body || documentRef.documentElement;
+  if (lifecycle?.node) lifecycle.node(overlay, parent);
+  else parent.append(overlay);
+  const motionQuery = windowRef?.matchMedia?.("(prefers-reduced-motion: reduce)");
+  let reducedMotion = !!motionQuery?.matches;
+  const readSettings = () => {
+    if (typeof getSettings === "function") settings = getSettings() || {};
+    return settings;
+  };
+  const hide = () => {
+    overlay.style.display = "none";
+  };
+  const syncBlink = ({ ping } = {}) => {
+    const shouldBlink = !!settings.blinkingEnabled && !reducedMotion;
+    if (ping) overlay.classList.remove("cs-lite-blink");
+    if (shouldBlink) {
+      if (ping) void overlay.offsetWidth;
+      overlay.classList.add("cs-lite-blink");
+    } else {
+      overlay.classList.remove("cs-lite-blink");
+    }
+  };
+  const applyTransform = (rect, el2) => {
+    if (!el2 || isPasswordField(el2) || !isTextTarget(el2) || isSkippedHost(el2) || hasRangeSelection(el2) || !rect || !rect.visible) {
+      hide();
+      return;
+    }
+    const color = isDark(documentRef, windowRef) ? settings.colorDark || "" : settings.colorLight || "";
+    const cursorStyle = settings.cursorStyle || "Box";
+    let x = rect.x;
+    let y = rect.y;
+    let width = rect.width;
+    let height = rect.height;
+    if (cursorStyle === "Line") {
+      width = settings.caretWidthPx ?? 2;
+      height = rect.height;
+      overlay.style.borderRadius = "";
+      overlay.style.border = "";
+      overlay.style.background = color;
+    } else if (cursorStyle === "Underline") {
+      const bar = settings.underlineWidthPx || 2;
+      width = rect.width;
+      height = bar;
+      y = rect.y + rect.height - bar;
+      overlay.style.borderRadius = "";
+      overlay.style.border = "";
+      overlay.style.background = color;
+    } else {
+      overlay.style.borderRadius = "1px";
+      if (settings.boxHollow) {
+        overlay.style.background = "transparent";
+        overlay.style.border = `${settings.boxHollowWidth || 2}px solid ${color}`;
+      } else {
+        overlay.style.border = "";
+        overlay.style.background = color;
+      }
+    }
+    overlay.style.display = "";
+    overlay.style.transform = `translate(${x}px, ${y}px)`;
+    overlay.style.width = `${width}px`;
+    overlay.style.height = `${height}px`;
+    overlay.style.boxShadow = settings.glow ? `0 0 6px ${color}` : "";
+    if (settings.showChar) {
+      glyph.textContent = rect.glyph || "";
+      glyph.style.display = "block";
+    } else {
+      glyph.textContent = "";
+      glyph.style.display = "none";
+    }
+  };
+  const measureAndApply = (el2, { ping } = {}) => {
+    if (disposed) return;
+    readSettings();
+    const target = el2 || documentRef.activeElement;
+    if (!target || isPasswordField(target) || !isTextTarget(target)) {
+      hide();
+      return;
+    }
+    active = target;
+    const rect = measurer.measure(target);
+    applyTransform(rect, target);
+    syncBlink({ ping });
+  };
+  const onFocusIn = (event) => {
+    const target = event?.target;
+    if (!target || isPasswordField(target) || !isTextTarget(target)) return;
+    active = target;
+    measureAndApply(target, { ping: true });
+  };
+  const onFocusOut = (event) => {
+    const next = event?.relatedTarget || documentRef.activeElement;
+    if (next && isTextTarget(next) && !isPasswordField(next)) return;
+    active = null;
+    hide();
+  };
+  const onInput = (event) => {
+    const target = event?.target || documentRef.activeElement;
+    measureAndApply(target, { ping: true });
+  };
+  const onRefreshEvent = () => {
+    measureAndApply(documentRef.activeElement);
+  };
+  const onMotionChange = () => {
+    reducedMotion = !!motionQuery?.matches;
+    syncBlink();
+  };
+  const refresh = () => {
+    if (disposed) return;
+    readSettings();
+    const target = documentRef.activeElement;
+    if (target && isTextTarget(target) && !isPasswordField(target)) {
+      active = target;
+      const rect = measurer.measure(target);
+      applyTransform(rect, target);
+      syncBlink({ ping: true });
+      return;
+    }
+    hide();
+  };
+  const docListeners = [
+    ["focusin", onFocusIn, false],
+    ["focusout", onFocusOut, false],
+    ["input", onInput, true],
+    ["selectionchange", onRefreshEvent, false],
+    ["keyup", onRefreshEvent, true],
+    ["mouseup", onRefreshEvent, true]
+  ];
+  for (const [type, fn, capture] of docListeners) {
+    documentRef.addEventListener(type, fn, capture);
+  }
+  windowRef.addEventListener("scroll", onRefreshEvent, true);
+  windowRef.addEventListener("resize", onRefreshEvent);
+  motionQuery?.addEventListener?.("change", onMotionChange);
+  const dispose = () => {
+    if (disposed) return;
+    disposed = true;
+    for (const [type, fn, capture] of docListeners) {
+      documentRef.removeEventListener(type, fn, capture);
+    }
+    windowRef.removeEventListener("scroll", onRefreshEvent, true);
+    windowRef.removeEventListener("resize", onRefreshEvent);
+    motionQuery?.removeEventListener?.("change", onMotionChange);
+    overlay.remove();
+    active = null;
+  };
+  return {
+    refresh,
+    dispose,
+    get overlay() {
+      return overlay;
+    },
+    get active() {
+      return active;
+    }
+  };
 }
 
 // src/cursor-smith.js
@@ -3723,16 +4138,16 @@ var DEFAULTS = Object.freeze({
   snapOnNewline: true,
   moveDelayMs: 0,
   // --- motion smear ------------------------------------------------------
-  smear: true,
+  smear: false,
   smearStiffness: 0.6,
   smearTrailingStiffness: 0.4,
   smearDamping: 0.8,
   smearTaper: false,
   smearTaperAmount: 0.7,
   // --- after effects -----------------------------------------------------
-  popLetters: true,
+  popLetters: false,
   popRainbow: false,
-  flameTrail: true,
+  flameTrail: false,
   backspaceDisintegrate: false,
   thunderstrike: false,
   thunderstrikeSize: 2,
@@ -3796,9 +4211,35 @@ var DEFAULTS = Object.freeze({
   soundPitch: 1,
   soundVariation: 0.25,
   // --- preset bookkeeping ------------------------------------------------
-  activePreset: ""
+  activePreset: "",
+  schemaVersion: 2
 });
-var STRUCTURAL = /* @__PURE__ */ new Set(["enabled", "activePreset", "hideNativeCaret", "hideOnWindowBlur"]);
+var SCHEMA_VERSION = 2;
+var CANVAS_EFFECT_KEYS = Object.freeze([
+  "smear",
+  "popLetters",
+  "flameTrail",
+  "stardustEnabled",
+  "energyEffect",
+  "torchEffect",
+  "smoothEnabled",
+  "crtEffect",
+  "ghostEnabled",
+  "shakeEnabled",
+  "speedDemon",
+  "comboEnabled",
+  "backspaceDisintegrate",
+  "thunderstrike"
+]);
+function needsCanvas(settings) {
+  if (!settings) return false;
+  for (const key of CANVAS_EFFECT_KEYS) {
+    if (settings[key] === true) return true;
+  }
+  return false;
+}
+__name(needsCanvas, "needsCanvas");
+var STRUCTURAL = /* @__PURE__ */ new Set(["enabled", "activePreset", "hideNativeCaret", "hideOnWindowBlur", "schemaVersion"]);
 var LOOK_KEYS = Object.freeze(Object.keys(DEFAULTS).filter((k) => !STRUCTURAL.has(k)));
 var NUM_SPECS = {
   gradientCount: { min: 2, max: 4, step: 1 },
@@ -3945,9 +4386,18 @@ function normalizePresets(raw) {
 __name(normalizePresets, "normalizePresets");
 function normalizeSettings(raw) {
   const s = migrateLegacyKeys(raw);
+  const migrating = !Object.prototype.hasOwnProperty.call(s, "schemaVersion");
   const out = {};
   for (const k of Object.keys(DEFAULTS)) out[k] = coerce(k, s[k]);
   out.presets = normalizePresets(s.presets);
+  if (migrating) {
+    out.smear = false;
+    out.popLetters = false;
+    out.flameTrail = false;
+    const named = BUILTIN_PRESETS[out.activePreset];
+    if (named && needsCanvas({ ...DEFAULTS, ...named })) out.activePreset = "";
+    out.schemaVersion = SCHEMA_VERSION;
+  }
   if (!Object.prototype.hasOwnProperty.call(out.presets, out.activePreset)) out.activePreset = "";
   return out;
 }
@@ -3973,6 +4423,7 @@ function codeToPreset(code) {
 }
 __name(codeToPreset, "codeToPreset");
 var BUILTIN_PRESETS = Object.freeze({
+  Fast: normalizePresetSnapshot(DEFAULTS),
   "Jell-O": {
     cursorStyle: "Box",
     colorDark: "#31edae",
@@ -4200,8 +4651,7 @@ var STATIC_CSS = `
 	pointer-events: none;
 }
 
-/* Thymer .listview-caret* hide rules stripped for the Roam port. Native hide
- lives in src/extension.css, scoped to Roam block textareas. */
+/* Native hide lives in src/extension.css, scoped to Roam block textareas. */
 
 /* ---- settings preview ------------------------------------------------------
  The demo textarea is a real form control, so the OS I-beam paints regardless
@@ -4424,9 +4874,6 @@ var PANEL_LOCAL_CSS = `
 	color: var(--text-muted, rgba(127, 127, 127, 0.9));
 }
 `;
-var CARET_EL_SEL = "div.listview-caret-self, .listview-caret-self, div.listview-caret";
-var FOCUSED_PANEL_SEL = ".panel.focused-panel, .panel.has-focus";
-var LISTITEM_SEL = ".listitem[data-guid]";
 function isTextCaretHost(el2) {
   if (!el2) return false;
   if (el2.isContentEditable) return true;
@@ -4449,652 +4896,25 @@ function isDesktopAppDoc(doc) {
   }
 }
 __name(isDesktopAppDoc, "isDesktopAppDoc");
-function gRangeRow(doc) {
-  try {
-    const win = doc.defaultView || window;
-    const gRange = win.g_range;
-    const gItem = win.g_item;
-    let guid = null;
-    if (gRange != null && typeof gRange === "object" && gRange.first_pos) {
-      const li = gRange.first_pos.list_item;
-      if (li && li.state) guid = li.state.guid;
-    }
-    if (!guid && gItem != null && typeof gItem === "object" && gItem.state) guid = gItem.state.guid;
-    if (!guid) return null;
-    const row = doc.querySelector(`.listitem[data-guid="${guid}"]`);
-    return row instanceof HTMLElement ? row : null;
-  } catch {
-    return null;
-  }
-}
-__name(gRangeRow, "gRangeRow");
-var isDegenerate = /* @__PURE__ */ __name((r) => !r || r.width === 0 && r.height === 0 && r.top === 0 && r.left === 0, "isDegenerate");
-function isGutterStubRect(r, row) {
-  if (!r) return true;
-  if (r.width < 3 && r.height < 8) return true;
-  if (r.width >= 1 && r.width <= 6 && r.height <= 8) return true;
-  if (row instanceof HTMLElement) {
-    const line = row.querySelector(":scope > .line-div") || row.querySelector(".line-div");
-    if (line instanceof HTMLElement) {
-      const lineLeft = line.getBoundingClientRect().left;
-      if (Math.abs(r.left - lineLeft) <= 10) {
-        const pill = row.querySelector(".lineitem-text, .lineitem-datetime");
-        if (pill instanceof HTMLElement) {
-          const pillLeft = pill.getBoundingClientRect().left;
-          if (pillLeft > r.left + 8) return true;
-        }
-      }
-    }
-  }
-  return false;
-}
-__name(isGutterStubRect, "isGutterStubRect");
-function firstTextPillLeft(row) {
-  if (!(row instanceof HTMLElement)) return null;
-  for (const sel of [".lineitem-text", ".lineitem-datetime", ".lineitem-ref"]) {
-    const el2 = row.querySelector(sel);
-    if (el2 instanceof HTMLElement) {
-      const b = el2.getBoundingClientRect();
-      if (b.width > 2) return b.left;
-    }
-  }
-  return null;
-}
-__name(firstTextPillLeft, "firstTextPillLeft");
-function thymerCaretEl(doc) {
-  try {
-    let best = null;
-    let bestRect = null;
-    let bestScore = -1;
-    const panel2 = doc.querySelector(FOCUSED_PANEL_SEL);
-    const markedRow = panel2?.querySelector(".listitem.listitem-with-caret[data-guid]");
-    for (const node of doc.querySelectorAll(CARET_EL_SEL)) {
-      if (!(node instanceof HTMLElement)) continue;
-      const rect = node.getBoundingClientRect();
-      if (!(rect.height > 0.5)) continue;
-      const row = node.closest?.(LISTITEM_SEL) || markedRow;
-      const stub = isGutterStubRect(rect, row);
-      let score = panel2 && panel2.contains(node) ? 2 : 1;
-      if (markedRow instanceof HTMLElement && !stub) {
-        const pill = markedRow.querySelector(".lineitem-text, .lineitem-datetime, .lineitem-ref");
-        if (pill instanceof HTMLElement) {
-          const b = pill.getBoundingClientRect();
-          if (rect.left >= b.left - 2 && rect.left <= b.right + 2) score += 4;
-        }
-      }
-      if (node.classList.contains("listview-caret-self")) score += 1;
-      if (stub) score -= 10;
-      if (score > bestScore) {
-        best = node;
-        bestRect = rect;
-        bestScore = score;
-      }
-    }
-    return best && bestRect ? { el: best, rect: bestRect } : null;
-  } catch {
-    return null;
-  }
-}
-__name(thymerCaretEl, "thymerCaretEl");
-function getLineTextRect(row) {
-  if (!(row instanceof HTMLElement)) return null;
-  const line = row.querySelector(":scope > .line-div") || row.querySelector(".line-div");
-  if (!(line instanceof HTMLElement)) return null;
-  const lineBox = line.getBoundingClientRect();
-  if (lineBox.width < 1 && lineBox.height < 1) return null;
-  try {
-    const range = line.ownerDocument.createRange();
-    range.selectNodeContents(line);
-    const rects = Array.from(range.getClientRects()).filter((r) => r.width > 0.5 && r.height > 0.5);
-    if (rects.length) {
-      let top = Infinity;
-      for (const r of rects) top = Math.min(top, r.top);
-      let bottom = top;
-      for (const r of rects) {
-        if (Math.abs(r.top - top) <= 1.25) bottom = Math.max(bottom, r.bottom);
-      }
-      const height = bottom - top;
-      if (height >= 1) return { top, height };
-    }
-  } catch {
-  }
-  const cs = getComputedStyle(line);
-  let lh = Number.parseFloat(cs.lineHeight);
-  if (!Number.isFinite(lh) || lh <= 0) {
-    const fs = Number.parseFloat(cs.fontSize);
-    lh = Number.isFinite(fs) ? fs * 1.2 : Math.min(lineBox.height || 20, 28);
-  }
-  return { top: lineBox.top, height: Math.min(lh, lineBox.height || lh) };
-}
-__name(getLineTextRect, "getLineTextRect");
-function rowAtPoint(doc, r) {
-  const mid = (r.top + r.bottom) / 2;
-  try {
-    const hit = doc.elementFromPoint(Math.max(0, r.left + 1), mid);
-    const byPoint = hit && hit.closest ? hit.closest(LISTITEM_SEL) : null;
-    if (byPoint instanceof HTMLElement) return byPoint;
-  } catch {
-  }
-  try {
-    const panel2 = doc.querySelector(FOCUSED_PANEL_SEL) || doc.body;
-    const marked = panel2.querySelector(".listitem.listitem-with-caret[data-guid]");
-    if (marked instanceof HTMLElement) {
-      const b = marked.getBoundingClientRect();
-      if (mid >= b.top - 1 && mid <= b.bottom + 1) return marked;
-    }
-  } catch {
-  }
-  return null;
-}
-__name(rowAtPoint, "rowAtPoint");
-function thymerCharAt(doc, r) {
-  try {
-    const x = r.left + 1;
-    const y = (r.top + r.bottom) / 2;
-    const fromPoint = (
-      /** @type {any} */
-      doc.caretRangeFromPoint
-    );
-    const cr = typeof fromPoint === "function" ? fromPoint.call(doc, x, y) : null;
-    const node = cr && cr.startContainer;
-    if (node && node.nodeType === 3) {
-      const off = cr.startOffset;
-      const ch = (node.data || "").charAt(off);
-      const rect = adjacentCharRect(doc, node, off);
-      return {
-        char: ch && ch !== "\n" ? ch : "",
-        charRect: rect ? Object.assign(rect, { el: node.parentElement }) : null
-      };
-    }
-  } catch {
-  }
-  return { char: "", charRect: null };
-}
-__name(thymerCharAt, "thymerCharAt");
-function thymerCaretPos(doc, el2, row) {
-  try {
-    const guid = row && row.getAttribute("data-guid") || "";
-    const dx = el2.dataset ? el2.dataset.x || "" : "";
-    const dy = el2.dataset ? el2.dataset.y || "" : "";
-    let off = "";
-    const sel = (doc.defaultView || window).getSelection();
-    if (sel && sel.focusNode) off = String(sel.focusOffset);
-    const key = "t:" + guid + ":" + dx + ":" + dy + ":" + off;
-    return guid || dx || dy || off ? key : null;
-  } catch {
-    return null;
-  }
-}
-__name(thymerCaretPos, "thymerCaretPos");
-function gRangeCaretRect(doc) {
-  try {
-    const win = doc.defaultView || window;
-    const gRange = win.g_range;
-    const gItem = win.g_item;
-    if (gRange == null && gItem == null) return null;
-    let guid = null;
-    let graphemeOffset = 0;
-    let listItem = null;
-    let targetLinespan = null;
-    if (gRange != null && typeof gRange === "object" && gRange.first_pos) {
-      const fp = gRange.first_pos;
-      listItem = fp.list_item;
-      if (listItem && listItem.state) guid = listItem.state.guid;
-      graphemeOffset = fp.grapheme_offset ?? 0;
-      targetLinespan = fp.linespan;
-      const linespans = listItem?.linespans || gItem?.linespans;
-      if (linespans && targetLinespan != null) {
-        let absOffset = 0;
-        let found = false;
-        for (const span of linespans) {
-          if (span === targetLinespan) {
-            absOffset += graphemeOffset;
-            found = true;
-            break;
-          }
-          const len = span.text?.length ?? span.str?.length ?? span.length ?? 0;
-          absOffset += len;
-        }
-        if (found) graphemeOffset = absOffset;
-      }
-    }
-    if (!guid && gItem != null && typeof gItem === "object" && gItem.state) {
-      guid = gItem.state.guid;
-    }
-    if (!guid) return null;
-    const row = doc.querySelector(`.listitem[data-guid="${guid}"]`);
-    if (!(row instanceof HTMLElement)) return null;
-    const line = row.querySelector(":scope > .line-div") || row.querySelector(".line-div");
-    if (!(line instanceof HTMLElement)) return null;
-    const tw = doc.createTreeWalker(line, NodeFilter.SHOW_TEXT);
-    let remaining = graphemeOffset;
-    let textNode = null;
-    let nodeOffset = 0;
-    while (tw.nextNode()) {
-      const node = tw.currentNode;
-      const len = (node.data || "").length;
-      if (remaining <= len) {
-        textNode = node;
-        nodeOffset = remaining;
-        break;
-      }
-      remaining -= len;
-    }
-    if (!textNode) {
-      const lb = getLineTextRect(row);
-      const x = firstTextPillLeft(row);
-      if (!lb || x == null) return null;
-      return { left: x, top: lb.top, bottom: lb.top + lb.height };
-    }
-    const range = doc.createRange();
-    range.setStart(textNode, nodeOffset);
-    range.setEnd(textNode, nodeOffset);
-    let rect = range.getClientRects()[0] || range.getBoundingClientRect();
-    if (isDegenerate(rect) || rect.height < 1) {
-      const lb = getLineTextRect(row);
-      const x = firstTextPillLeft(row);
-      if (!lb || x == null) return null;
-      return { left: x, top: lb.top, bottom: lb.top + lb.height };
-    }
-    if (rect.width === 0) {
-      const adj = adjacentCharRect(doc, textNode, nodeOffset);
-      if (adj) return { left: adj.left, top: adj.top, bottom: adj.bottom };
-      const lb = getLineTextRect(row);
-      if (lb) return { left: rect.left, top: lb.top, bottom: lb.top + lb.height };
-    }
-    return { left: rect.left, top: rect.top, bottom: rect.bottom };
-  } catch {
-    return null;
-  }
-}
-__name(gRangeCaretRect, "gRangeCaretRect");
-function thymerCaretCoords(e) {
-  try {
-    const doc = e.canvas?.ownerDocument ?? document;
-    const active = doc.activeElement;
-    if (isTextCaretHost(active) && !active.closest("#virtualinput-wrapper, #virtualinput, .listitem")) {
-      return null;
-    }
-    const found = thymerCaretEl(doc);
-    let el2 = null;
-    let r = null;
-    if (found) {
-      el2 = found.el;
-      r = found.rect;
-    }
-    const win = doc.defaultView || window;
-    let row = el2?.closest?.(LISTITEM_SEL) || (r ? rowAtPoint(doc, r) : null);
-    if (!row) {
-      row = doc.querySelector(".listitem.listitem-with-caret[data-guid]");
-    }
-    if (!row) row = gRangeRow(doc);
-    const isStub = !r || isGutterStubRect(r, row);
-    let x = r ? r.left : 0;
-    let top = r ? r.top : 0;
-    let bottom = r ? r.bottom : 0;
-    if (isStub) {
-      const gr = gRangeCaretRect(doc);
-      if (gr) {
-        x = gr.left;
-        top = gr.top;
-        bottom = gr.bottom;
-      } else if (row) {
-        const lb = getLineTextRect(row);
-        const pillX = firstTextPillLeft(row);
-        if (lb) {
-          top = lb.top;
-          bottom = lb.top + lb.height;
-        } else if (!r) {
-          const rb = row.getBoundingClientRect();
-          top = rb.top;
-          bottom = rb.bottom;
-        }
-        if (pillX != null) x = pillX;
-        else if (!r) x = row.getBoundingClientRect().left;
-      } else {
-        return null;
-      }
-    }
-    const measureRect = r || { left: x, top, bottom, height: bottom - top };
-    const { char, charRect } = thymerCharAt(doc, measureRect);
-    const styleSrc = charRect && charRect.el || row && (row.querySelector("span.lineitem-text") || row.querySelector(":scope > .line-div")) || el2;
-    const style = win.getComputedStyle(
-      /** @type {Element} */
-      styleSrc || doc.body
-    );
-    if (charRect && !isStub) {
-      top = charRect.top;
-      bottom = charRect.bottom;
-    } else if (!isStub && row) {
-      const lb = getLineTextRect(row);
-      if (lb && r && Math.abs(lb.top - r.top) <= r.height) {
-        top = lb.top;
-        bottom = lb.top + lb.height;
-      }
-    }
-    const height = Math.max(4, bottom - top);
-    const fontSize = parseFloat(style.fontSize) || 14;
-    const fontFamily = style.fontFamily || "inherit";
-    const measured = char ? measureCharWidth(e, char, fontFamily, fontSize, style.fontWeight, style.fontStyle) : null;
-    const charWidth = measured || Math.max(4, fontSize * 0.55);
-    return {
-      x,
-      top,
-      bottom: top + height,
-      h: height,
-      w: e.styleFor("cursorStyle") === "Line" ? e.styleFor("caretWidthPx") : charWidth,
-      actualCharWidth: charWidth,
-      char,
-      textColor: style.color || "#ffffff",
-      fontSize,
-      fontFamily,
-      focused: true,
-      rowType: rowTypeOf(row),
-      pos: el2 ? thymerCaretPos(doc, el2, row) : null
-    };
-  } catch {
-    return null;
-  }
-}
-__name(thymerCaretCoords, "thymerCaretCoords");
-function rowTypeOf(row) {
-  if (!row) return "text";
-  const cl = row.classList;
-  if (cl.contains("listitem-heading")) return "heading";
-  if (cl.contains("listitem-task")) return "task";
-  if (cl.contains("listitem-code")) return "code";
-  if (cl.contains("listitem-quote")) return "quote";
-  if (cl.contains("listitem-ulist") || cl.contains("listitem-olist")) return "list";
-  return "text";
-}
-__name(rowTypeOf, "rowTypeOf");
-function adjacentCharRect(doc, node, offset) {
-  if (!node || node.nodeType !== 3) return null;
-  const text = node.data || "";
-  try {
-    if (offset < text.length) {
-      const r = doc.createRange();
-      r.setStart(node, offset);
-      r.setEnd(node, offset + 1);
-      const rect = r.getClientRects()[0] || r.getBoundingClientRect();
-      if (!isDegenerate(rect)) return { left: rect.left, top: rect.top, bottom: rect.bottom };
-    }
-    if (offset > 0) {
-      const r = doc.createRange();
-      r.setStart(node, offset - 1);
-      r.setEnd(node, offset);
-      const rect = r.getClientRects()[0] || r.getBoundingClientRect();
-      if (!isDegenerate(rect)) return { left: rect.right, top: rect.top, bottom: rect.bottom };
-    }
-  } catch {
-  }
-  return null;
-}
-__name(adjacentCharRect, "adjacentCharRect");
-function formFieldCaretCoords(e, el2) {
-  try {
-    const doc = el2.ownerDocument;
-    const win = doc.defaultView || window;
-    const style = win.getComputedStyle(el2);
-    const rect = el2.getBoundingClientRect();
-    const isTextarea = el2.tagName === "TEXTAREA";
-    const value = el2.value != null ? String(el2.value) : "";
-    let selStart = value.length;
-    try {
-      const a = el2.selectionStart;
-      const b = el2.selectionEnd;
-      if (typeof a === "number" && typeof b === "number") {
-        selStart = el2.selectionDirection === "backward" ? a : b;
-      }
-    } catch {
-    }
-    let mirror = e._formMirror;
-    if (!mirror || mirror.ownerDocument !== doc) {
-      mirror?.remove();
-      mirror = doc.createElement("div");
-      mirror.setAttribute("aria-hidden", "true");
-      mirror.style.position = "absolute";
-      mirror.style.visibility = "hidden";
-      mirror.style.top = "0";
-      mirror.style.left = "0";
-      mirror.style.zIndex = "-1";
-      mirror.style.pointerEvents = "none";
-      doc.body.appendChild(mirror);
-      e._formMirror = mirror;
-    }
-    const props = [
-      "boxSizing",
-      "width",
-      "height",
-      "paddingTop",
-      "paddingRight",
-      "paddingBottom",
-      "paddingLeft",
-      "borderTopWidth",
-      "borderRightWidth",
-      "borderBottomWidth",
-      "borderLeftWidth",
-      "fontStyle",
-      "fontVariant",
-      "fontWeight",
-      "fontStretch",
-      "fontSize",
-      "lineHeight",
-      "fontFamily",
-      "letterSpacing",
-      "textIndent",
-      "textTransform",
-      "wordSpacing",
-      "tabSize"
-    ];
-    for (const p of props) mirror.style[p] = style[p];
-    mirror.style.whiteSpace = isTextarea ? "pre-wrap" : "pre";
-    mirror.style.wordWrap = isTextarea ? "break-word" : "normal";
-    mirror.style.overflow = "hidden";
-    if (!isTextarea) mirror.style.height = "auto";
-    mirror.textContent = "";
-    mirror.appendChild(doc.createTextNode(value.substring(0, selStart)));
-    const marker = doc.createElement("span");
-    marker.textContent = "​";
-    mirror.appendChild(marker);
-    const markerRect = marker.getBoundingClientRect();
-    const mirrorRect = mirror.getBoundingClientRect();
-    const offsetX = markerRect.left - mirrorRect.left;
-    const offsetY = markerRect.top - mirrorRect.top;
-    const fontSize = parseFloat(style.fontSize) || 14;
-    const lineHeight = parseFloat(style.lineHeight) || fontSize * 1.2 || 16;
-    const left = rect.left + offsetX - (el2.scrollLeft || 0);
-    let top;
-    let height;
-    if (isTextarea) {
-      top = rect.top + offsetY - (el2.scrollTop || 0);
-      height = lineHeight;
-    } else {
-      height = Math.min(lineHeight, rect.height) || fontSize * 1.2;
-      top = rect.top + (rect.height - height) / 2;
-    }
-    const clampedLeft = Math.min(Math.max(left, rect.left), rect.right);
-    const clampedTop = Math.min(Math.max(top, rect.top), rect.bottom - 1);
-    return { left: clampedLeft, top: clampedTop, bottom: clampedTop + height };
-  } catch {
-    return null;
-  }
-}
-__name(formFieldCaretCoords, "formFieldCaretCoords");
-function selectionFallbackCoords(e) {
-  const doc = e.canvas?.ownerDocument ?? document;
-  const active = doc.activeElement;
-  if (!active) return null;
-  if (!isTextCaretHost(active)) return null;
-  const isFormField = active.tagName === "TEXTAREA" || active.tagName === "INPUT";
-  if (isFormField) {
-    const fieldRect = formFieldCaretCoords(e, active);
-    if (fieldRect) return fieldRect;
-  }
-  const win = doc.defaultView || window;
-  const sel = win.getSelection();
-  if (sel && sel.rangeCount > 0 && active.isContentEditable) {
-    const spanRect = adjacentCharRect(doc, sel.focusNode, sel.focusOffset);
-    if (spanRect) return spanRect;
-    let range;
-    try {
-      range = doc.createRange();
-      range.setStart(
-        /** @type {Node} */
-        sel.focusNode,
-        sel.focusOffset
-      );
-      range.collapse(true);
-    } catch {
-      range = sel.getRangeAt(0).cloneRange();
-      range.collapse(true);
-    }
-    let rect2 = range.getClientRects()[0] || range.getBoundingClientRect();
-    if (isDegenerate(rect2)) {
-      const node = range.startContainer;
-      const lineEl = node.nodeType === 1 ? (
-        /** @type {Element} */
-        node
-      ) : node.parentElement;
-      if (lineEl && lineEl !== active) {
-        const lineRect = lineEl.getBoundingClientRect();
-        if (!isDegenerate(lineRect)) rect2 = lineRect;
-      }
-    }
-    if (!isDegenerate(rect2)) {
-      return { left: rect2.left, top: rect2.top, bottom: rect2.bottom || rect2.top + rect2.height };
-    }
-  }
-  const rect = active.getBoundingClientRect();
-  if (!rect) return null;
-  const style = win.getComputedStyle(active);
-  const approxLineHeight = parseFloat(style.lineHeight) || parseFloat(style.fontSize) * 1.4 || 20;
-  if (rect.height > approxLineHeight * 3) return null;
-  return { left: rect.left, top: rect.top, bottom: rect.bottom };
-}
-__name(selectionFallbackCoords, "selectionFallbackCoords");
-function nodeKey(e, node) {
-  if (!node) return "0";
-  if (!e._nodeIds) {
-    e._nodeIds = /* @__PURE__ */ new WeakMap();
-    e._nodeIdSeq = 0;
-  }
-  let id = e._nodeIds.get(node);
-  if (id === void 0) {
-    id = ++e._nodeIdSeq;
-    e._nodeIds.set(node, id);
-  }
-  return String(id);
-}
-__name(nodeKey, "nodeKey");
-function genericCaretPos(e, active, doc) {
-  try {
-    const el2 = nodeKey(e, active);
-    if (active.tagName === "TEXTAREA" || active.tagName === "INPUT") {
-      return el2 + ":" + (active.selectionStart ?? 0) + ":" + (active.selectionEnd ?? 0);
-    }
-    const win = doc.defaultView || window;
-    const sel = win.getSelection();
-    if (sel && sel.focusNode) {
-      return el2 + ":" + nodeKey(e, sel.focusNode) + ":" + sel.focusOffset;
-    }
-    return el2 + ":0";
-  } catch {
-    return null;
-  }
-}
-__name(genericCaretPos, "genericCaretPos");
-function measureCharWidth(e, char, fontFamily, fontSize, fontWeight, fontStyle) {
-  try {
-    if (!e._measureCtx) {
-      const canvas = (e.canvas?.ownerDocument ?? document).createElement("canvas");
-      e._measureCtx = canvas.getContext("2d");
-    }
-    const weight = fontWeight && fontWeight !== "normal" ? fontWeight + " " : "";
-    const style = fontStyle && fontStyle !== "normal" ? fontStyle + " " : "";
-    e._measureCtx.font = `${style}${weight}${fontSize}px ${fontFamily}`;
-    const w = e._measureCtx.measureText(char).width;
-    return w > 0 ? w : null;
-  } catch {
-    return null;
-  }
-}
-__name(measureCharWidth, "measureCharWidth");
-function genericCaretChar(active) {
-  try {
-    if (active.tagName === "INPUT" || active.tagName === "TEXTAREA") {
-      const value = active.value != null ? String(active.value) : "";
-      let selStart = value.length;
-      try {
-        const a = active.selectionStart;
-        const b = active.selectionEnd;
-        if (typeof a === "number" && typeof b === "number") {
-          selStart = active.selectionDirection === "backward" ? a : b;
-        }
-      } catch {
-      }
-      const ch = value.charAt(selStart);
-      return ch && ch !== "\n" ? ch : "";
-    }
-    if (active.isContentEditable) {
-      const doc = active.ownerDocument;
-      const win = doc.defaultView || window;
-      const sel = win.getSelection();
-      if (sel && sel.focusNode && sel.focusNode.nodeType === 3) {
-        const text = sel.focusNode.data || "";
-        const ch = text.charAt(sel.focusOffset);
-        return ch && ch !== "\n" ? ch : "";
-      }
-    }
-  } catch {
-  }
-  return "";
-}
-__name(genericCaretChar, "genericCaretChar");
-function genericCaretCoords(e) {
-  try {
-    const doc = e.canvas?.ownerDocument ?? document;
-    const active = doc.activeElement;
-    if (!isTextCaretHost(active)) return null;
-    const c = selectionFallbackCoords(e);
-    if (!c) return null;
-    const win = doc.defaultView || window;
-    const sampleX = Math.min(c.left + 2, doc.documentElement.clientWidth - 1);
-    const sampleY = (c.top + c.bottom) / 2;
-    const elAtCaret = doc.elementFromPoint ? doc.elementFromPoint(sampleX, sampleY) : null;
-    const styleSource = elAtCaret && active?.contains?.(elAtCaret) ? elAtCaret : active;
-    const style = win.getComputedStyle(
-      /** @type {Element} */
-      styleSource
-    );
-    const fontSize = parseFloat(style.fontSize) || 14;
-    const fontFamily = style.fontFamily || "inherit";
-    const char = genericCaretChar(active);
-    const measured = char ? measureCharWidth(e, char, fontFamily, fontSize, style.fontWeight, style.fontStyle) : null;
-    const charWidth = measured || Math.max(4, fontSize * 0.55);
-    const height = Math.max(4, c.bottom - c.top || fontSize * 1.2);
-    return {
-      x: c.left,
-      top: c.top,
-      bottom: c.top + height,
-      h: height,
-      w: e.styleFor("cursorStyle") === "Line" ? e.styleFor("caretWidthPx") : charWidth,
-      actualCharWidth: charWidth,
-      char,
-      textColor: style.color || "#ffffff",
-      fontSize,
-      fontFamily,
-      focused: true,
-      pos: genericCaretPos(e, active, doc)
-    };
-  } catch {
-    return null;
-  }
-}
-__name(genericCaretCoords, "genericCaretCoords");
 function caretCoords(e) {
-  e._caretSource = "generic";
-  return genericCaretCoords(e);
+  if (!e.measurer?.latest) return null;
+  const rect = e.measurer.latest();
+  if (!rect) return null;
+  const h2 = rect.height;
+  const charWidth = rect.width;
+  return {
+    x: rect.x,
+    top: rect.y,
+    bottom: rect.y + h2,
+    h: h2,
+    w: e.styleFor("cursorStyle") === "Line" ? e.styleFor("caretWidthPx") : charWidth,
+    actualCharWidth: charWidth,
+    char: rect.glyph || "",
+    textColor: rect.color || "#ffffff",
+    fontSize: parseFloat(rect.fontSize) || 14,
+    fontFamily: rect.fontFamily || "inherit",
+    focused: true
+  };
 }
 __name(caretCoords, "caretCoords");
 function releaseHostCaret(e) {
@@ -5954,8 +5774,8 @@ function breathScale(e, now) {
 __name(breathScale, "breathScale");
 function underlineThickness(e, lineHeight) {
   const h2 = Math.max(1, Math.round(lineHeight || 0));
-  const px = e.settings.underlineWidthPx || 0;
-  if (px > 0) return Math.max(1, Math.min(Math.round(px), h2));
+  const px2 = e.settings.underlineWidthPx || 0;
+  if (px2 > 0) return Math.max(1, Math.min(Math.round(px2), h2));
   return Math.max(2, Math.round(h2 * 0.15));
 }
 __name(underlineThickness, "underlineThickness");
@@ -6216,8 +6036,6 @@ function draw(e) {
   e._dirtyPrev = cx1 > cx0 && cy1 > cy0 ? { x: cx0, y: cy0, w: cx1 - cx0, h: cy1 - cy0 } : null;
 }
 __name(draw, "draw");
-var MODAL_SEL = ".bp3-overlay:not(.bp3-overlay-inline), .bp3-dialog, .rm-modal, .bp3-drawer";
-var MODAL_POLL_MS = 120;
 function ensureCanvas(e) {
   const doc = e._doc || document;
   if (e.canvasWrapper && e.canvasWrapper.isConnected) return;
@@ -6311,18 +6129,6 @@ function getFullViewportRect(e, doc) {
   return { top, bottom, left: 0, right: win.innerWidth, width: win.innerWidth, height: bottom - top };
 }
 __name(getFullViewportRect, "getFullViewportRect");
-function getPanelRect(e, doc) {
-  const panel2 = doc.querySelector(FOCUSED_PANEL_SEL);
-  const el2 = panel2 && panel2.querySelector(".panel-scroller-y") || panel2;
-  if (!el2) return null;
-  const b = el2.getBoundingClientRect();
-  const { top: cTop, bottom: cBottom } = chromeInsets(e, doc);
-  const top = Math.max(b.top, cTop);
-  const bottom = Math.min(b.bottom, cBottom);
-  if (bottom <= top || b.right <= b.left) return null;
-  return { top, bottom, left: b.left, right: b.right, width: b.right - b.left, height: bottom - top };
-}
-__name(getPanelRect, "getPanelRect");
 function resolveClipChain(el2) {
   const chain = [];
   try {
@@ -6401,8 +6207,8 @@ function installWakeListeners(e) {
       e.kickShake();
     }
     if (ev.key === "Enter") e._enterPending = performance.now();
-    const isPasswordField = String(document.activeElement?.type || "").toLowerCase() === "password";
-    if (typeof ev.key === "string" && ev.key.length === 1 && !ev.ctrlKey && !ev.metaKey && !isPasswordField) {
+    const isPasswordField2 = String(document.activeElement?.type || "").toLowerCase() === "password";
+    if (typeof ev.key === "string" && ev.key.length === 1 && !ev.ctrlKey && !ev.metaKey && !isPasswordField2) {
       e._lastPrintableKey = ev.key;
     }
     const k = ev.key;
@@ -6456,82 +6262,6 @@ function installWakeListeners(e) {
   };
 }
 __name(installWakeListeners, "installWakeListeners");
-function installCaretObserver(e) {
-  const doc = e._doc || document;
-  const attached = /* @__PURE__ */ new WeakSet();
-  const perElement = [];
-  const attach = /* @__PURE__ */ __name((el2) => {
-    if (attached.has(el2)) return;
-    attached.add(el2);
-    e.markActivity();
-    const mo = new MutationObserver(() => e.markActivity());
-    mo.observe(el2, { attributes: true, attributeFilter: ["data-x", "data-y", "style", "class"] });
-    perElement.push(mo);
-  }, "attach");
-  const tree = new MutationObserver((muts) => {
-    for (const m of muts) {
-      for (const node of m.addedNodes) {
-        if (!(node instanceof Element)) continue;
-        if (node.classList.contains("listview-caret-self")) attach(node);
-        else node.querySelectorAll?.(CARET_EL_SEL).forEach(attach);
-      }
-    }
-  });
-  tree.observe(doc.body, { childList: true, subtree: true });
-  doc.querySelectorAll(CARET_EL_SEL).forEach(attach);
-  return () => {
-    try {
-      tree.disconnect();
-    } catch {
-    }
-    for (const mo of perElement) {
-      try {
-        mo.disconnect();
-      } catch {
-      }
-    }
-    perElement.length = 0;
-  };
-}
-__name(installCaretObserver, "installCaretObserver");
-function modalIsOpen(doc) {
-  for (const node of doc.querySelectorAll(MODAL_SEL)) {
-    if (!isVisiblyRendered(node)) continue;
-    const b = node.getBoundingClientRect();
-    if (b.width > 1 && b.height > 1) return true;
-  }
-  return false;
-}
-__name(modalIsOpen, "modalIsOpen");
-function readModalOpen(e) {
-  const doc = e._doc || document;
-  const now = Date.now();
-  if (!e._modalDirty && now - (e._modalT || 0) < MODAL_POLL_MS) return !!e._modalOpen;
-  e._modalDirty = false;
-  e._modalT = now;
-  e._modalOpen = modalIsOpen(doc);
-  return e._modalOpen;
-}
-__name(readModalOpen, "readModalOpen");
-function installModalObserver(e) {
-  const doc = e._doc || document;
-  const mark = /* @__PURE__ */ __name(() => {
-    e._modalDirty = true;
-  }, "mark");
-  mark();
-  readModalOpen(e);
-  const mo = new MutationObserver(mark);
-  mo.observe(doc.body, { childList: true, subtree: true });
-  return () => {
-    try {
-      mo.disconnect();
-    } catch {
-    }
-    e._modalOpen = false;
-    e._modalDirty = true;
-  };
-}
-__name(installModalObserver, "installModalObserver");
 function playKeyClick(e) {
   const s = e.settings;
   if (!s.soundEnabled) return;
@@ -6701,7 +6431,7 @@ function startTorch(e) {
             overlay.style.width = Math.round(rect.width) + "px";
             overlay.style.height = Math.round(rect.height) + "px";
           }
-          const hideForModal = readModalOpen(e);
+          const hideForModal = false;
           const pulse = !hideForModal && !!e.settings.overlayBlinkSync && !!e.settings.blinkingEnabled;
           let radius = e.settings.overlayRadius;
           if (pulse) {
@@ -6756,18 +6486,34 @@ __name(stopTorch, "stopTorch");
 var SMEAR_LEAD_BOOST_CAP = 6;
 var TAPER_FULL_LAG = 14;
 var ENERGY_FRAME_MS = 33;
+function nextSchedule(gear = "hot") {
+  switch (gear) {
+    case "warm":
+      return { type: "timeout", ms: 33 };
+    case "energy":
+      return { type: "timeout", ms: ENERGY_FRAME_MS };
+    case "idle":
+      return { type: "park" };
+    case "hot":
+    default:
+      return { type: "raf" };
+  }
+}
+__name(nextSchedule, "nextSchedule");
 var ROW_TYPE_STEP = { text: 0, heading: 1, task: -1, code: 2, quote: -2, list: 0.5 };
 var COMBO_IDLE_MS = 1200;
 var _a;
 var CursorEngine = (_a = class {
   /**
    * @param {{settings: Record<string, any>, doc?: Document, zIndex?: number,
+   *          measurer?: { latest: () => any, subscribe?: (fn: Function) => Function },
    *          onFatal?: (err: any) => void}} opts
    */
   constructor(opts) {
     this.settings = opts.settings;
     this._doc = opts.doc || document;
     this.zIndex = opts.zIndex ?? 40;
+    this.measurer = opts.measurer || null;
     this._onFatal = opts.onFatal || null;
     this.canvasWrapper = null;
     this.canvas = null;
@@ -6818,10 +6564,7 @@ var CursorEngine = (_a = class {
     this._lastTorchRadius = null;
     this._lastTorchPos = null;
     this._clipTop = 0;
-    this._formMirror = null;
-    this._measureCtx = null;
-    this._nodeIds = null;
-    this._nodeIdSeq = 0;
+    this._parked = false;
     this._clipChainFor = null;
     this._clipChain = [];
     this._chromeCache = null;
@@ -6906,11 +6649,8 @@ var CursorEngine = (_a = class {
     return step ? shiftHue(base, amount * step) : base;
   }
   /**
-   * Whether a non-collapsed selection exists. Thymer paints multi-line
-   * selections as .text-selection-self overlays while the native Selection
-   * stays COLLAPSED, so neither source alone is sufficient — both are checked.
-   * Cached per frame: this runs inside the colour path, which several
-   * primitives call per draw.
+   * Whether a non-collapsed selection exists. Cached per frame: this runs
+   * inside the colour path, which several primitives call per draw.
    */
   refreshSelectionState() {
     if (!this.settings.selectionColorEnabled) {
@@ -6922,7 +6662,6 @@ var CursorEngine = (_a = class {
     try {
       const sel = (doc.defaultView || window).getSelection();
       active = !!(sel && !sel.isCollapsed && String(sel).length > 0);
-      if (!active) active = !!doc.querySelector(".text-selection-self .text-selection");
     } catch {
     }
     this._selectionActive = active;
@@ -6957,6 +6696,10 @@ var CursorEngine = (_a = class {
       this._canvasIdleT = 0;
       if (this.active && this._canvasTick) this.canvasRaf = requestAnimationFrame(this._canvasTick);
     }
+    if (this._parked) {
+      this._parked = false;
+      if (this.active && this._canvasTick) this.canvasRaf = requestAnimationFrame(this._canvasTick);
+    }
     this.wakeTorch();
   }
   /** Torch-only wake: pointer movement retargets the spotlight but must not
@@ -6974,8 +6717,8 @@ var CursorEngine = (_a = class {
    * Probed per frame rather than cached from a blur listener: hasFocus() reads
    * a flag and forces no layout, so it costs nothing, and it cannot get stuck
    * out of sync if a focus event is ever missed. The focus/blur listeners only
-   * wake the loop so the change is picked up on the next frame rather than up
-   * to 100ms later at the idle heartbeat.
+   * wake the loop so the change is picked up on the next frame rather than
+   * staying parked until the next activity.
    */
   windowFocused() {
     if (!this.settings.hideOnWindowBlur) return true;
@@ -7513,21 +7256,26 @@ var CursorEngine = (_a = class {
     this._dirtyPrev = null;
     this._dirtyFull = true;
     this._tickErrors = 0;
+    this._parked = false;
     ensureCanvas(this);
     this._detach.push(installWakeListeners(this));
-    this._detach.push(installCaretObserver(this));
-    this._detach.push(installModalObserver(this));
+    if (this.measurer?.subscribe) this._detach.push(this.measurer.subscribe(() => this.markActivity()));
     const schedule = /* @__PURE__ */ __name(() => {
       if (!this.active) return;
-      const gear = this._canvasGear || "hot";
-      if (gear === "hot") {
+      const plan = nextSchedule(this._canvasGear || "hot");
+      if (plan.type === "park") {
+        this._parked = true;
+        return;
+      }
+      this._parked = false;
+      if (plan.type === "raf") {
         this.canvasRaf = requestAnimationFrame(tick);
         return;
       }
       this._canvasIdleT = setTimeout(() => {
         this._canvasIdleT = 0;
         if (this.active) this.canvasRaf = requestAnimationFrame(tick);
-      }, gear === "warm" ? 33 : gear === "energy" ? ENERGY_FRAME_MS : 100);
+      }, plan.ms);
     }, "schedule");
     const tick = /* @__PURE__ */ __name(() => {
       if (!this.active) return;
@@ -7564,20 +7312,6 @@ var CursorEngine = (_a = class {
   /** One frame of update + conditional draw. */
   frame() {
     const focused = this.windowFocused();
-    try {
-      const doc = this.canvas && this.canvas.ownerDocument || this._doc;
-      window.__csDebug = {
-        version: PLUGIN_VERSION,
-        lastActive: this.lastActive,
-        caretSource: this._caretSource,
-        focused,
-        hasFocus: doc.hasFocus(),
-        hidden: !!doc.hidden,
-        desktop: isDesktopAppDoc(doc),
-        gear: this._canvasGear
-      };
-    } catch {
-    }
     if (!focused) {
       releaseHostCaret(this);
       if (this.ctx && this.canvas && !this._suspendCleared) {
@@ -7703,6 +7437,7 @@ var CursorEngine = (_a = class {
   }
   stop() {
     this.active = false;
+    this._parked = false;
     if (this.canvasRaf) {
       cancelAnimationFrame(this.canvasRaf);
       this.canvasRaf = 0;
@@ -7722,11 +7457,6 @@ var CursorEngine = (_a = class {
     this._detach = [];
     closeAudio(this);
     releaseHostCaret(this);
-    try {
-      this._formMirror?.remove();
-    } catch {
-    }
-    this._formMirror = null;
     destroyCanvas(this);
   }
   /** Re-measure after a viewport change. */
@@ -8925,7 +8655,7 @@ function buildPresets(ctl) {
 __name(buildPresets, "buildPresets");
 
 // src/extension.js
-var VERSION = "0.1.1";
+var VERSION = "0.2.0";
 var CANVAS_Z_INDEX = 40;
 var VERSION_FLAG = "__ROAM_CURSOR_SMITH_VERSION";
 var activeLifecycle = null;
@@ -8941,8 +8671,11 @@ function isMobileHost(extensionAPI) {
   }
   return false;
 }
+function canStartLite() {
+  return typeof document !== "undefined" && !!document.body && typeof document.createElement === "function";
+}
 function canStartEngine() {
-  return typeof document !== "undefined" && !!document.body && typeof document.createElement === "function" && typeof MutationObserver === "function" && typeof requestAnimationFrame === "function";
+  return canStartLite() && typeof requestAnimationFrame === "function";
 }
 function copyToClipboard(text) {
   try {
@@ -8963,13 +8696,6 @@ function copyToClipboard(text) {
   } catch {
   }
 }
-function injectSheet(lifecycle, cssText) {
-  if (typeof document === "undefined" || !document.createElement) return;
-  const style = document.createElement("style");
-  style.setAttribute("data-cursor-smith", "panel");
-  style.textContent = cssText;
-  lifecycle.node(style, document.head || document.body);
-}
 var CursorSmithRuntime = class {
   constructor({ extensionAPI, lifecycle, mobile }) {
     this.extensionAPI = extensionAPI;
@@ -8977,8 +8703,13 @@ var CursorSmithRuntime = class {
     this.mobile = mobile;
     this._settings = normalizeSettings(loadOptions(extensionAPI) ?? {});
     this._engine = null;
+    this._lite = null;
+    this._measurer = null;
+    this._mode = null;
+    this._pumpInstalled = false;
     this._overlay = null;
     this._panelEl = null;
+    this._panelStyle = null;
     this._toastEl = null;
     this._fatalNotice = false;
     this.pendingPresetName = "";
@@ -8986,7 +8717,10 @@ var CursorSmithRuntime = class {
   }
   teardown() {
     this.closeSettings();
+    this._removePanelStyle();
+    this.stopLite();
     this.stopEngine();
+    this.stopMeasurer();
     this.clearBodyClasses();
     try {
       delete globalThis[VERSION_FLAG];
@@ -9004,7 +8738,7 @@ var CursorSmithRuntime = class {
     }
   }
   applyBodyClasses() {
-    const live = !!this._engine && !!this._settings.enabled && !this.mobile;
+    const live = (!!this._engine || !!this._lite) && !!this._settings.enabled && !this.mobile;
     try {
       document.body?.classList?.toggle(BODY_ACTIVE_CLASS, live);
       document.body?.classList?.toggle(
@@ -9014,13 +8748,88 @@ var CursorSmithRuntime = class {
     } catch {
     }
   }
+  ensureMeasurer() {
+    if (this._measurer || typeof document === "undefined") return;
+    try {
+      this._measurer = createCaretMeasurer({
+        doc: document,
+        win: document.defaultView || globalThis,
+        lifecycle: this.lifecycle
+      });
+    } catch (err) {
+      console.error("[cursor-smith] measurer failed to start:", err);
+      this._measurer = null;
+    }
+  }
+  stopMeasurer() {
+    try {
+      this._measurer?.dispose();
+    } catch {
+    }
+    this._measurer = null;
+  }
+  ensurePump() {
+    if (this._pumpInstalled || typeof document === "undefined") return;
+    const pump = () => {
+      try {
+        const el2 = document.activeElement;
+        if (this._measurer && el2) this._measurer.measure(el2);
+      } catch {
+      }
+    };
+    this._pumpInstalled = true;
+    this.lifecycle.event(document, "focusin", pump, true);
+    this.lifecycle.event(document, "input", pump, true);
+    this.lifecycle.event(document, "selectionchange", pump);
+    this.lifecycle.event(document, "keyup", pump, true);
+    const win = document.defaultView || globalThis;
+    if (typeof win?.addEventListener === "function") {
+      this.lifecycle.event(win, "scroll", pump, true);
+      this.lifecycle.event(win, "resize", pump);
+    }
+  }
+  startLite() {
+    if (this.mobile || !this._settings.enabled || this._lite || !canStartLite()) return;
+    this.ensureMeasurer();
+    this.ensurePump();
+    if (!this._measurer) return;
+    try {
+      this._lite = installLiteCaret({
+        doc: document,
+        win: document.defaultView || globalThis,
+        measurer: this._measurer,
+        lifecycle: this.lifecycle,
+        getSettings: () => this._settings
+      });
+      this._lite.refresh();
+      this.applyBodyClasses();
+    } catch (err) {
+      console.error("[cursor-smith] lite caret failed to start:", err);
+      this.stopLite();
+    }
+  }
+  stopLite() {
+    if (!this._lite) {
+      this.applyBodyClasses();
+      return;
+    }
+    try {
+      this._lite.dispose();
+    } catch {
+    }
+    this._lite = null;
+    this.applyBodyClasses();
+  }
   startEngine() {
     if (this.mobile || !this._settings.enabled || this._engine || !canStartEngine()) return;
+    this.ensureMeasurer();
+    this.ensurePump();
     try {
       this._engine = new CursorEngine({
         settings: this._settings,
         doc: document,
         zIndex: CANVAS_Z_INDEX,
+        measurer: this._measurer,
         onFatal: (err) => this.engineFailed(err)
       });
       this._engine.start();
@@ -9058,11 +8867,25 @@ var CursorSmithRuntime = class {
   }
   applySettings() {
     if (this.mobile || !this._settings.enabled) {
+      this.stopLite();
       this.stopEngine();
+      this._mode = "off";
       return;
     }
-    if (!this._engine) this.startEngine();
-    else this._engine.setSettings(this._settings);
+    const nextMode = needsCanvas(this._settings) ? "canvas" : "lite";
+    if (this._mode && this._mode !== nextMode && this._mode !== "off") {
+      this.toast(nextMode === "canvas" ? "Canvas mode: effects on" : "Lite mode");
+    }
+    this._mode = nextMode;
+    if (nextMode === "canvas") {
+      this.stopLite();
+      if (!this._engine) this.startEngine();
+      else this._engine.setSettings(this._settings);
+    } else {
+      this.stopEngine();
+      if (!this._lite) this.startLite();
+      else this._lite.refresh();
+    }
     this.applyBodyClasses();
   }
   _set(patch) {
@@ -9078,9 +8901,31 @@ var CursorSmithRuntime = class {
     console.info("[cursor-smith]", message);
     if (this._toastEl) this._toastEl.textContent = message;
   }
+  _injectPanelStyle() {
+    if (this._panelStyle?.isConnected) return;
+    if (typeof document === "undefined" || !document.createElement) return;
+    if (!this._panelStyle) {
+      const style = document.createElement("style");
+      style.setAttribute("data-cursor-smith", "panel");
+      style.textContent = PANEL_CSS + "\n" + PANEL_LOCAL_CSS;
+      this._panelStyle = style;
+    }
+    try {
+      (document.head || document.body).append(this._panelStyle);
+    } catch {
+    }
+  }
+  _removePanelStyle() {
+    try {
+      if (this._panelStyle?.isConnected) this._panelStyle.remove();
+    } catch {
+    }
+    this._panelStyle = null;
+  }
   openSettings() {
     if (this._overlay?.isConnected) return;
     if (typeof document === "undefined" || !document.body || !document.createElement) return;
+    this._injectPanelStyle();
     const overlay = document.createElement("div");
     overlay.className = "cs-panel-overlay";
     overlay.setAttribute("role", "dialog");
@@ -9114,6 +8959,7 @@ var CursorSmithRuntime = class {
     this._overlay = null;
     this._panelEl = null;
     this._toastEl = null;
+    this._removePanelStyle();
   }
   onEscape(ev) {
     if (ev.key === "Escape" && this._overlay?.isConnected) {
@@ -9225,6 +9071,9 @@ var CursorSmithRuntime = class {
           selectionStart: textarea.selectionStart,
           selectionEnd: textarea.selectionEnd
         } : null,
+        mode: this._mode,
+        parked: this._engine ? !!this._engine._parked : null,
+        latest: this._measurer?.latest?.() || null,
         engine: this._engine ? {
           gear: this._engine._canvasGear,
           source: this._engine._caretSource,
@@ -9272,7 +9121,6 @@ async function onload({ extensionAPI, extension }) {
   const mobile = isMobileHost(extensionAPI);
   try {
     globalThis[VERSION_FLAG] = VERSION;
-    injectSheet(lifecycle, PANEL_CSS + "\n" + PANEL_LOCAL_CSS);
     runtime = new CursorSmithRuntime({ extensionAPI, lifecycle, mobile });
     const palette = extensionAPI.ui.commandPalette;
     await lifecycle.command(palette, {
@@ -9298,7 +9146,7 @@ async function onload({ extensionAPI, extension }) {
     if (typeof document !== "undefined") {
       lifecycle.event(document, "keydown", (ev) => runtime.onEscape(ev), true);
     }
-    if (!mobile) runtime.startEngine();
+    if (!mobile) runtime.applySettings();
     console.info(`[cursor-smith] Loaded v${extension?.version || VERSION}`);
   } catch (error) {
     if (activeLifecycle === lifecycle) activeLifecycle = null;
@@ -9327,10 +9175,14 @@ async function onunload() {
   }
   console.info("[cursor-smith] Unloaded");
 }
-var extension_default = { onload, onunload };
+function getRuntime() {
+  return runtime;
+}
+var extension_default = { onload, onunload, getRuntime };
 export {
   VERSION,
   extension_default as default,
+  getRuntime,
   onload,
   onunload
 };

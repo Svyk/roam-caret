@@ -2,6 +2,8 @@
 
 Canvas-rendered text cursor for Roam Research. MIT port of [Cursor-Smith](https://github.com/Sadsnake1/cursor-smith) via the [Thymer Cursor Smith](https://github.com/Svyk/thymer-cursor-smith) plugin.
 
+v0.2.0 draws a CSS overlay by default (no canvas loop). The canvas engine starts only when an effect that needs it is on (smear, particles, torch, smooth, and the other `needsCanvas` flags). Saved 0.1.x options migrate once: smear / pop-letters / flame-trail turn off. Roam Grid and Plexus diagram textareas (`.rg-root`, `.pxd-root`) keep the native caret.
+
 ## Install
 
 In Roam: **Settings → Roam Depot → Developer mode → Developer Extensions → URL**. Enter:

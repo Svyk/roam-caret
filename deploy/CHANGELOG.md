@@ -4,6 +4,26 @@ All notable changes to this project follow [Keep a Changelog](https://keepachang
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-09-19
+
+### Added
+
+- Lite caret path: event-driven CSS `transform` overlay with no `requestAnimationFrame` when canvas-only effects are off.
+- Persistent offscreen caret measurer (`src/caret-measure.js`) shared by lite and canvas.
+- Builtin **Fast** preset. `needsCanvas()` chooses lite vs canvas.
+- `schemaVersion: 2` migrates 0.1.x saved options so smear / pop-letters / flame-trail default off once.
+
+### Changed
+
+- Default look is still Box + showChar. Smear, pop-letters, and flame-trail now default off.
+- Settings panel CSS injects only while the overlay is open.
+- Canvas engine reads the measurer cache and parks idle (no 100ms heartbeat).
+- Skip `.rg-root` / `.pxd-root` textareas (native caret; Beam zoom pitfall).
+
+### Removed
+
+- Thymer host path: `listview-caret`, `g_range`, body-subtree caret/modal observers, per-frame `window.__csDebug`.
+
 ## [0.1.1] - 2026-09-07
 
 ### Fixed

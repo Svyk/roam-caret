@@ -5,6 +5,12 @@ body.cs-active.cs-hide-native textarea[id^="block-input-"],
 body.cs-active.cs-hide-native .rm-block__input
 { caret-color: transparent !important; }
 
+body.cs-active.cs-hide-native .rg-root .rm-block__input,
+body.cs-active.cs-hide-native .pxd-root .rm-block__input,
+body.cs-active.cs-hide-native .rg-root textarea[id^="block-input-"],
+body.cs-active.cs-hide-native .pxd-root textarea[id^="block-input-"]
+{ caret-color: auto !important; }
+
 .cs-cursor-wrap {
   position: fixed;
   overflow: hidden;
@@ -191,4 +197,16 @@ body.cs-active .plg-cursor-smith-panel .cs-demo {
   border-radius: 6px;
   background: var(--bc-main, Canvas);
   border: 1px solid var(--bc-menu, color-mix(in srgb, currentColor 22%, transparent));
+}
+
+.cs-lite-caret {
+  position: fixed; top: 0; left: 0; z-index: 40;
+  pointer-events: none; box-sizing: border-box;
+  transform-origin: 0 0; will-change: transform;
+}
+.cs-lite-glyph { display: none; text-align: center; white-space: pre; pointer-events: none; }
+.cs-lite-caret.cs-lite-blink { animation: cs-lite-blink 1.06s step-end infinite; }
+@keyframes cs-lite-blink { 50% { opacity: 0; } }
+@media (prefers-reduced-motion: reduce) {
+  .cs-lite-caret.cs-lite-blink { animation: none; }
 }
