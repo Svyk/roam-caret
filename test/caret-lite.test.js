@@ -266,6 +266,30 @@ test("onRefreshEvent skips measure when signature is unchanged after input", () 
   assert.equal(measureCalls, 2);
 });
 
+test("page scroll remasures even when textarea signature is unchanged", () => {
+  const { lite, listeners, textarea, rect } = installHarness();
+  listeners.get("focusin")({ target: textarea });
+  assert.match(String(lite.overlay.style.transform), /translate\(10px, 20px\)/);
+
+  rect.x = 50;
+  rect.y = 80;
+  const origRaf = globalThis.requestAnimationFrame;
+  globalThis.requestAnimationFrame = (cb) => {
+    cb();
+    return 1;
+  };
+  try {
+    listeners.get("scroll")();
+    assert.match(
+      String(lite.overlay.style.transform),
+      /translate\(50px, 80px\)/,
+      "fixed overlay must follow getBoundingClientRect after ancestor/page scroll",
+    );
+  } finally {
+    globalThis.requestAnimationFrame = origRaf;
+  }
+});
+
 test("isDark caches prefers-color-scheme matchMedia at install time", () => {
   const { doc, win, body, listeners } = createFakeDoc();
   let darkMqCalls = 0;

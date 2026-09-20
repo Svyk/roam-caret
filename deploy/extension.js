@@ -1,4 +1,4 @@
-/* Roam Caret v0.3.1 | MIT | generated; edit src/ */
+/* Roam Caret v0.3.2 | MIT | generated; edit src/ */
 
 // src/lifecycle.js
 function isPromiseLike(value) {
@@ -3944,6 +3944,7 @@ function installLiteCaret({ doc, win, measurer, lifecycle, getSettings } = {}) {
   let active = null;
   let disposed = false;
   let lastSig = "";
+  let scrollRaf = 0;
   const overlay = documentRef.createElement("div");
   overlay.className = "cs-lite-caret";
   const style = overlay.style;
@@ -4079,6 +4080,23 @@ function installLiteCaret({ doc, win, measurer, lifecycle, getSettings } = {}) {
     lastSig = sig;
     measureAndApply(target);
   };
+  const remeasureScroll = () => {
+    const target = documentRef.activeElement;
+    measureAndApply(target);
+    lastSig = computeSig(target);
+  };
+  const onScrollOrResize = () => {
+    const raf = windowRef.requestAnimationFrame;
+    if (typeof raf !== "function") {
+      remeasureScroll();
+      return;
+    }
+    if (scrollRaf) return;
+    scrollRaf = raf(() => {
+      scrollRaf = 0;
+      remeasureScroll();
+    });
+  };
   const onMotionChange = () => {
     reducedMotion = !!motionQuery?.matches;
     syncBlink();
@@ -4107,17 +4125,26 @@ function installLiteCaret({ doc, win, measurer, lifecycle, getSettings } = {}) {
   for (const [type, fn, capture] of docListeners) {
     documentRef.addEventListener(type, fn, capture);
   }
-  windowRef.addEventListener("scroll", onRefreshEvent, true);
-  windowRef.addEventListener("resize", onRefreshEvent);
+  windowRef.addEventListener("scroll", onScrollOrResize, true);
+  windowRef.addEventListener("resize", onScrollOrResize);
+  const visualViewport = windowRef.visualViewport;
+  visualViewport?.addEventListener?.("scroll", onScrollOrResize);
+  visualViewport?.addEventListener?.("resize", onScrollOrResize);
   motionQuery?.addEventListener?.("change", onMotionChange);
   const dispose = () => {
     if (disposed) return;
     disposed = true;
+    if (scrollRaf) {
+      windowRef.cancelAnimationFrame?.(scrollRaf);
+      scrollRaf = 0;
+    }
     for (const [type, fn, capture] of docListeners) {
       documentRef.removeEventListener(type, fn, capture);
     }
-    windowRef.removeEventListener("scroll", onRefreshEvent, true);
-    windowRef.removeEventListener("resize", onRefreshEvent);
+    windowRef.removeEventListener("scroll", onScrollOrResize, true);
+    windowRef.removeEventListener("resize", onScrollOrResize);
+    visualViewport?.removeEventListener?.("scroll", onScrollOrResize);
+    visualViewport?.removeEventListener?.("resize", onScrollOrResize);
     motionQuery?.removeEventListener?.("change", onMotionChange);
     overlay.remove();
     active = null;
@@ -4499,7 +4526,7 @@ function renderStudio(root, ctl) {
 }
 
 // src/extension.js
-var VERSION = "0.3.1";
+var VERSION = "0.3.2";
 var CANVAS_Z_INDEX = 40;
 var VERSION_FLAG = "__ROAM_CURSOR_SMITH_VERSION";
 var activeLifecycle = null;

@@ -4,6 +4,11 @@ All notable changes to this project follow [Keep a Changelog](https://keepachang
 
 ## [Unreleased]
 
+## [0.3.2] - 2026-09-19
+
+### Fixed
+- Lite caret remeasures on page scroll.
+
 ## [0.3.1] - 2026-09-19
 
 ### Fixed
