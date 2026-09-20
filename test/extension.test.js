@@ -422,37 +422,3 @@ test("depot import merges preset and clears cs-import-code", async () => {
   await cleanup();
 });
 
-test("depot match-svy reads theme variables and leaves colors when vars are empty", async () => {
-  installMinimalDom();
-  const api = fakeExtensionApi();
-  const cleanup = await extension.onload({ extensionAPI: api, extension: { version: VERSION } });
-  const runtime = getRuntime();
-
-  const orig = globalThis.getComputedStyle;
-  globalThis.getComputedStyle = () => ({
-    getPropertyValue: (name) => {
-      if (name.includes("light")) return "#00695e";
-      if (name.includes("dark")) return "#48d0c0";
-      return "";
-    },
-  });
-  globalThis.window.getComputedStyle = globalThis.getComputedStyle;
-
-  const config = lastPanelConfig(api);
-  const matchRow = config.settings.find((row) => row.id === "cs-match-svy");
-  matchRow.action.onClick();
-
-  assert.equal(runtime._settings.colorLight, "#00695e");
-  assert.equal(runtime._settings.colorDark, "#48d0c0");
-
-  globalThis.getComputedStyle = () => ({ getPropertyValue: () => "" });
-  globalThis.window.getComputedStyle = globalThis.getComputedStyle;
-  matchRow.action.onClick();
-  assert.equal(runtime._settings.colorLight, "#00695e");
-  assert.equal(runtime._settings.colorDark, "#48d0c0");
-
-  globalThis.getComputedStyle = orig;
-  globalThis.window.getComputedStyle = orig;
-
-  await cleanup();
-});

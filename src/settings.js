@@ -2,7 +2,6 @@ import {
   DEFAULTS,
   BUILTIN_PRESETS,
   hexToRgba,
-  normalizeHex,
 } from "./cursor-smith.js";
 
 export { hexToRgba };
@@ -65,28 +64,19 @@ export async function mirrorToDepot(extensionAPI, settings, keys) {
   return writes;
 }
 
-export function readSvyBeamColors(getComputedStyleFn, root = globalThis.document?.documentElement) {
-  if (typeof getComputedStyleFn !== "function" || !root) return null;
-  const style = getComputedStyleFn(root);
-  const colorLight = normalizeHex(style.getPropertyValue("--svy-beam-caret-light").trim(), null);
-  const colorDark = normalizeHex(style.getPropertyValue("--svy-beam-caret-dark").trim(), null);
-  if (colorLight == null || colorDark == null) return null;
-  return { colorLight, colorDark };
-}
-
 export function createPreviewComponent(React = globalThis.window?.React) {
   if (typeof React?.createElement !== "function") return null;
   const h = React.createElement;
   return function RoamCaretPreview() {
-    return h(
-      "div",
-      null,
+    return h("div", { className: "cs-demo-wrap" },
       h("textarea", {
         className: "cs-demo",
-        rows: 2,
-        placeholder: "Type here to see the caret",
+        rows: 4,
+        spellCheck: false,
+        autoCorrect: "off",
+        autoCapitalize: "off",
+        placeholder: "Type here",
       }),
-      h("p", { style: { fontSize: "12px", opacity: 0.8, margin: "6px 0 0" } }, "Live preview of the current caret look"),
     );
   };
 }
@@ -201,18 +191,11 @@ export function buildDepotPanel({
       },
     },
     {
-      id: "cs-match-svy",
-      name: "Match Svy Theme colors",
-      action: {
-        type: "button",
-        onClick: handlers.onMatchSvy,
-      },
-    },
-    {
       id: "cs-copy-code",
       name: "Copy share code",
       action: {
         type: "button",
+        content: "Copy",
         onClick: handlers.onCopyCode,
       },
     },
@@ -229,14 +212,17 @@ export function buildDepotPanel({
       name: "Import share code",
       action: {
         type: "button",
+        content: "Import",
         onClick: handlers.onImport,
       },
     },
     {
       id: "cs-studio",
-      name: "Open Studio (every effect)",
+      name: "Open Studio",
+      description: "Every effect, live preview.",
       action: {
         type: "button",
+        content: "Open",
         onClick: handlers.onStudio,
       },
     },

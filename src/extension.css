@@ -2,6 +2,25 @@
 
 body.cs-active.cs-hide-native .cs-demo { caret-color: transparent !important; }
 
+.cs-demo { caret-color: transparent !important; }
+.cs-demo-wrap { width: 100%; min-width: 160px; }
+.cs-demo {
+  display: block;
+  width: 100%;
+  min-height: 88px;
+  box-sizing: border-box;
+  margin: 0;
+  padding: 8px 10px;
+  border-radius: 6px;
+  border: 1px solid rgba(127,127,127,0.35);
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  line-height: 1.45;
+  resize: vertical;
+}
+.cs-demo::placeholder { color: inherit; opacity: 0.45; }
+
 body.cs-active.cs-hide-native textarea.rm-block__input,
 body.cs-active.cs-hide-native textarea[id^="block-input-"],
 body.cs-active.cs-hide-native .rm-block__input

@@ -4,6 +4,18 @@ All notable changes to this project follow [Keep a Changelog](https://keepachang
 
 ## [Unreleased]
 
+## [0.3.1] - 2026-09-19
+
+### Fixed
+- Depot preview textarea inherits panel colors (no white UA box on dark theme).
+- Native caret hidden in preview; spellcheck disabled.
+- Depot buttons show labels (`action.content`) instead of empty squares.
+
+### Changed
+- Removed Match Svy Theme row and builtin Svy preset from product UI.
+- Example share code in README (name `Example`).
+- LICENSE header simplified (MIT only).
+
 ## [0.3.0] - 2026-09-19
 
 ### Added

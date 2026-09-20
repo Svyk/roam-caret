@@ -9,7 +9,6 @@ import {
   createPreviewComponent,
   mirrorToDepot,
   projectToDepot,
-  readSvyBeamColors,
 } from "../src/settings.js";
 
 const DEPOT_IDS = [
@@ -24,7 +23,6 @@ const DEPOT_IDS = [
   "cs-show-char",
   "cs-hide-native",
   "cs-hide-blur",
-  "cs-match-svy",
   "cs-copy-code",
   "cs-import-code",
   "cs-import",
@@ -50,10 +48,10 @@ test("every MIRROR value is a DEFAULTS key", () => {
 test("buildDepotPanel tab title and row count", () => {
   const withReact = buildDepotPanel({ React: fakeReact });
   assert.equal(withReact.tabTitle, "Roam Caret");
-  assert.equal(withReact.settings.length, 17);
+  assert.equal(withReact.settings.length, 16);
 
   const withoutReact = buildDepotPanel({ React: null });
-  assert.equal(withoutReact.settings.length, 16);
+  assert.equal(withoutReact.settings.length, 15);
 });
 
 test("buildDepotPanel row ids and action types", () => {
@@ -103,22 +101,12 @@ test("loadOptions does not read cs-* depot ids", async () => {
   assert.doesNotMatch(source, /settings\.get\("cs-/);
 });
 
-test("readSvyBeamColors reads Svy theme CSS variables", () => {
-  const root = {};
-  const goodStyle = {
-    getPropertyValue: (prop) => {
-      if (prop === "--svy-beam-caret-light") return "#00695e";
-      if (prop === "--svy-beam-caret-dark") return "#48d0c0";
-      return "";
-    },
-  };
-  const emptyStyle = {
-    getPropertyValue: () => "",
-  };
-
-  assert.deepEqual(
-    readSvyBeamColors(() => goodStyle, root),
-    { colorLight: "#00695e", colorDark: "#48d0c0" },
-  );
-  assert.equal(readSvyBeamColors(() => emptyStyle, root), null);
+test("depot buttons set action.content labels", () => {
+  const panel = buildDepotPanel({ React: fakeReact });
+  const copy = panel.settings.find((row) => row.id === "cs-copy-code");
+  const importBtn = panel.settings.find((row) => row.id === "cs-import");
+  const studio = panel.settings.find((row) => row.id === "cs-studio");
+  assert.equal(copy.action.content, "Copy");
+  assert.equal(importBtn.action.content, "Import");
+  assert.equal(studio.action.content, "Open");
 });

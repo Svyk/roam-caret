@@ -1,4 +1,4 @@
-/* Roam Caret v0.3.0 | MIT | generated; edit src/ */
+/* Roam Caret v0.3.1 | MIT | generated; edit src/ */
 
 // src/lifecycle.js
 function isPromiseLike(value) {
@@ -538,22 +538,6 @@ function codeToPreset(code) {
 }
 __name(codeToPreset, "codeToPreset");
 var BUILTIN_PRESETS = Object.freeze({
-  Svy: normalizePresetSnapshot({
-    cursorStyle: "Beam",
-    colorLight: "#00695e",
-    colorDark: "#48d0c0",
-    caretWidthPx: 3,
-    glow: true,
-    blinkingEnabled: false,
-    showChar: false,
-    cursorOpacity: 1,
-    lineSerifs: false,
-    smoothEnabled: false,
-    smear: false,
-    popLetters: false,
-    flameTrail: false,
-    backspaceDisintegrate: false
-  }),
   Fast: normalizePresetSnapshot(DEFAULTS),
   "Jell-O": {
     cursorStyle: "Box",
@@ -3535,27 +3519,21 @@ async function mirrorToDepot(extensionAPI, settings, keys) {
   }
   return writes;
 }
-function readSvyBeamColors(getComputedStyleFn, root = globalThis.document?.documentElement) {
-  if (typeof getComputedStyleFn !== "function" || !root) return null;
-  const style = getComputedStyleFn(root);
-  const colorLight = normalizeHex(style.getPropertyValue("--svy-beam-caret-light").trim(), null);
-  const colorDark = normalizeHex(style.getPropertyValue("--svy-beam-caret-dark").trim(), null);
-  if (colorLight == null || colorDark == null) return null;
-  return { colorLight, colorDark };
-}
 function createPreviewComponent(React = globalThis.window?.React) {
   if (typeof React?.createElement !== "function") return null;
   const h2 = React.createElement;
   return function RoamCaretPreview() {
     return h2(
       "div",
-      null,
+      { className: "cs-demo-wrap" },
       h2("textarea", {
         className: "cs-demo",
-        rows: 2,
-        placeholder: "Type here to see the caret"
-      }),
-      h2("p", { style: { fontSize: "12px", opacity: 0.8, margin: "6px 0 0" } }, "Live preview of the current caret look")
+        rows: 4,
+        spellCheck: false,
+        autoCorrect: "off",
+        autoCapitalize: "off",
+        placeholder: "Type here"
+      })
     );
   };
 }
@@ -3669,18 +3647,11 @@ function buildDepotPanel({
       }
     },
     {
-      id: "cs-match-svy",
-      name: "Match Svy Theme colors",
-      action: {
-        type: "button",
-        onClick: handlers.onMatchSvy
-      }
-    },
-    {
       id: "cs-copy-code",
       name: "Copy share code",
       action: {
         type: "button",
+        content: "Copy",
         onClick: handlers.onCopyCode
       }
     },
@@ -3697,14 +3668,17 @@ function buildDepotPanel({
       name: "Import share code",
       action: {
         type: "button",
+        content: "Import",
         onClick: handlers.onImport
       }
     },
     {
       id: "cs-studio",
-      name: "Open Studio (every effect)",
+      name: "Open Studio",
+      description: "Every effect, live preview.",
       action: {
         type: "button",
+        content: "Open",
         onClick: handlers.onStudio
       }
     }
@@ -4525,7 +4499,7 @@ function renderStudio(root, ctl) {
 }
 
 // src/extension.js
-var VERSION = "0.3.0";
+var VERSION = "0.3.1";
 var CANVAS_Z_INDEX = 40;
 var VERSION_FLAG = "__ROAM_CURSOR_SMITH_VERSION";
 var activeLifecycle = null;
@@ -4794,7 +4768,6 @@ var CursorSmithRuntime = class {
       React: globalThis.window?.React || globalThis.React,
       handlers: {
         onChange: (id, raw) => this.setFromDepot(id, raw),
-        onMatchSvy: () => this.matchSvy(),
         onCopyCode: () => this.copyShareCode(),
         onImport: () => this.importShareCode(),
         onStudio: () => this.openSettings()
@@ -4828,17 +4801,6 @@ var CursorSmithRuntime = class {
     const patch = id === "cs-width" ? { [blobKey]: Number(raw) } : { [blobKey]: raw };
     this._set(patch);
     await mirrorToDepot(this.extensionAPI, this._settings, [id]);
-  }
-  matchSvy() {
-    const getStyle = typeof document !== "undefined" ? (el) => getComputedStyle(el) : null;
-    const result = readSvyBeamColors(getStyle, document?.documentElement);
-    if (result) {
-      this._set(result);
-      void this.rebuildPanel();
-      this.toast("Matched Svy Theme colors");
-    } else {
-      this.toast("Svy Theme not loaded");
-    }
   }
   copyShareCode() {
     const code = presetToCode(this._settings.activePreset || "Current", pickLook(this._settings));

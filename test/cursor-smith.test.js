@@ -209,9 +209,8 @@ test("needsCanvas is false for Fast defaults and true for each canvas effect", (
   assert.equal(DEFAULTS.schemaVersion, SCHEMA_VERSION);
   assert.equal(needsCanvas(DEFAULTS), false);
   assert.equal(needsCanvas(BUILTIN_PRESETS.Fast), false);
-  assert.equal(Object.keys(BUILTIN_PRESETS)[0], "Svy");
-  assert.equal(Object.keys(BUILTIN_PRESETS)[1], "Fast");
-  assert.equal(needsCanvas({ ...DEFAULTS, ...BUILTIN_PRESETS.Svy }), false);
+  assert.equal(Object.keys(BUILTIN_PRESETS)[0], "Fast");
+  assert.equal(needsCanvas({ ...DEFAULTS, ...BUILTIN_PRESETS.Fast }), false);
   assert.equal(needsCanvas({ ...DEFAULTS, ...BUILTIN_PRESETS["Jell-O"] }), true);
   for (const key of CANVAS_EFFECT_KEYS) {
     assert.equal(needsCanvas({ [key]: true }), true, key);

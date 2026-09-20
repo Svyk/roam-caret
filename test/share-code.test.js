@@ -4,10 +4,10 @@ import test from "node:test";
 
 import { codeToPreset, needsCanvas } from "../src/cursor-smith.js";
 
-function extractSvyShareCode(readme) {
-  const heading = "## Share code (Svy)";
+function extractExampleShareCode(readme) {
+  const heading = "## Example share code";
   const start = readme.indexOf(heading);
-  assert.notEqual(start, -1, "README missing Share code (Svy) section");
+  assert.notEqual(start, -1, "README missing Example share code section");
   const fenceStart = readme.indexOf("```", start + heading.length);
   assert.notEqual(fenceStart, -1, "README missing fenced share code");
   const codeStart = readme.indexOf("\n", fenceStart) + 1;
@@ -16,12 +16,12 @@ function extractSvyShareCode(readme) {
   return readme.slice(codeStart, fenceEnd).trim();
 }
 
-test("README Svy share code decodes to Beam preset with lite path", async () => {
+test("README Example share code decodes to Beam preset with lite path", async () => {
   const readme = await readFile(new URL("../README.md", import.meta.url), "utf8");
-  const code = extractSvyShareCode(readme);
+  const code = extractExampleShareCode(readme);
   const decoded = codeToPreset(code);
   assert.ok(decoded, "share code should decode");
-  assert.equal(decoded.name, "Svy");
+  assert.equal(decoded.name, "Example");
   assert.equal(decoded.snap.cursorStyle, "Beam");
   assert.equal(decoded.snap.colorLight, "#00695e");
   assert.equal(decoded.snap.colorDark, "#48d0c0");

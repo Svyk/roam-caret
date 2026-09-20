@@ -411,22 +411,6 @@ function codeToPreset(code) {
 }
 __name(codeToPreset, "codeToPreset");
 var BUILTIN_PRESETS = Object.freeze({
-  Svy: normalizePresetSnapshot({
-    cursorStyle: "Beam",
-    colorLight: "#00695e",
-    colorDark: "#48d0c0",
-    caretWidthPx: 3,
-    glow: true,
-    blinkingEnabled: false,
-    showChar: false,
-    cursorOpacity: 1,
-    lineSerifs: false,
-    smoothEnabled: false,
-    smear: false,
-    popLetters: false,
-    flameTrail: false,
-    backspaceDisintegrate: false
-  }),
   Fast: normalizePresetSnapshot(DEFAULTS),
   "Jell-O": {
     cursorStyle: "Box",

@@ -6,7 +6,6 @@ import {
   loadOptions,
   mirrorToDepot,
   persistOptions,
-  readSvyBeamColors,
 } from "./settings.js";
 import { createCaretMeasurer } from "./caret-measure.js";
 import { installLiteCaret } from "./caret-lite.js";
@@ -26,7 +25,7 @@ import {
 } from "./cursor-smith.js";
 import { renderStudio, STUDIO_CSS } from "./studio.js";
 
-export const VERSION = "0.3.0";
+export const VERSION = "0.3.1";
 const CANVAS_Z_INDEX = 40; // PROVISIONAL
 const VERSION_FLAG = "__ROAM_CURSOR_SMITH_VERSION";
 
@@ -320,7 +319,6 @@ class CursorSmithRuntime {
       React: globalThis.window?.React || globalThis.React,
       handlers: {
         onChange: (id, raw) => this.setFromDepot(id, raw),
-        onMatchSvy: () => this.matchSvy(),
         onCopyCode: () => this.copyShareCode(),
         onImport: () => this.importShareCode(),
         onStudio: () => this.openSettings(),
@@ -359,20 +357,6 @@ class CursorSmithRuntime {
     const patch = id === "cs-width" ? { [blobKey]: Number(raw) } : { [blobKey]: raw };
     this._set(patch);
     await mirrorToDepot(this.extensionAPI, this._settings, [id]);
-  }
-
-  matchSvy() {
-    const getStyle = typeof document !== "undefined"
-      ? (el) => getComputedStyle(el)
-      : null;
-    const result = readSvyBeamColors(getStyle, document?.documentElement);
-    if (result) {
-      this._set(result);
-      void this.rebuildPanel();
-      this.toast("Matched Svy Theme colors");
-    } else {
-      this.toast("Svy Theme not loaded");
-    }
   }
 
   copyShareCode() {
