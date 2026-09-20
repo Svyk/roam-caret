@@ -1,6 +1,6 @@
 {
   "name": "roam-cursor-smith",
-  "version": "0.3.2",
+  "version": "0.3.3",
   "private": true,
   "description": "Custom text caret for Roam Research: lite CSS overlay by default, canvas effects on demand.",
   "type": "module",

@@ -25,7 +25,7 @@ import {
 } from "./cursor-smith.js";
 import { renderStudio, STUDIO_CSS } from "./studio.js";
 
-export const VERSION = "0.3.2";
+export const VERSION = "0.3.3";
 const CANVAS_Z_INDEX = 40; // PROVISIONAL
 const VERSION_FLAG = "__ROAM_CURSOR_SMITH_VERSION";
 
@@ -143,9 +143,21 @@ class CursorSmithRuntime {
         lifecycle: this.lifecycle,
       });
       const inner = this._measurer.measure.bind(this._measurer);
+      const now = globalThis.performance?.now?.bind(globalThis.performance);
+      const diag = { measureCount: 0, measures: [] };
+      try {
+        (document.defaultView || globalThis).__ROAM_CARET_DIAG = diag;
+      } catch {
+      }
       this._measurer.measure = (el) => {
         this._measureCount += 1;
-        return inner(el);
+        if (!now) return inner(el);
+        const start = now();
+        const out = inner(el);
+        diag.measureCount += 1;
+        diag.measures.push(now() - start);
+        if (diag.measures.length > 20) diag.measures.shift();
+        return out;
       };
     } catch (err) {
       console.error("[roam-caret] measurer failed to start:", err);
@@ -159,6 +171,11 @@ class CursorSmithRuntime {
     } catch {
     }
     this._measurer = null;
+    try {
+      const win = (typeof document !== "undefined" && document.defaultView) || globalThis;
+      delete win.__ROAM_CARET_DIAG;
+    } catch {
+    }
   }
 
   _bindPumpListener(target, type, fn, capture) {

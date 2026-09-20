@@ -66,19 +66,47 @@ export function installLiteCaret({ doc, win, measurer, lifecycle, getSettings } 
     return settings;
   };
 
+  const styleCache = {
+    display: "none",
+    transform: "",
+    width: "",
+    height: "",
+    background: "",
+    border: "",
+    borderRadius: "",
+    boxShadow: "",
+  };
+  const writeStyle = (prop, value) => {
+    if (styleCache[prop] === value) return;
+    styleCache[prop] = value;
+    style[prop] = value;
+  };
+
   const hide = () => {
-    overlay.style.display = "none";
+    writeStyle("display", "none");
   };
 
   const syncBlink = ({ ping } = {}) => {
     const shouldBlink = !!settings.blinkingEnabled && !reducedMotion;
-    if (ping) overlay.classList.remove("cs-lite-blink");
-    if (shouldBlink) {
-      if (ping) void overlay.offsetWidth;
-      overlay.classList.add("cs-lite-blink");
-    } else {
+    if (!shouldBlink) {
       overlay.classList.remove("cs-lite-blink");
+      return;
     }
+    if (ping && overlay.classList.contains("cs-lite-blink")) {
+      // Restart the blink without a forced reflow: reset the running CSS
+      // animation through WAAPI instead of reading overlay.offsetWidth.
+      const animations =
+        typeof overlay.getAnimations === "function" ? overlay.getAnimations() : null;
+      if (animations) {
+        for (const animation of animations) {
+          try {
+            animation.currentTime = 0;
+          } catch {
+          }
+        }
+      }
+    }
+    overlay.classList.add("cs-lite-blink");
   };
 
   const applyTransform = (rect, el) => {
@@ -107,43 +135,46 @@ export function installLiteCaret({ doc, win, measurer, lifecycle, getSettings } 
     if (cursorStyle === "Line") {
       width = settings.caretWidthPx ?? 2;
       height = rect.height;
-      overlay.style.borderRadius = "";
-      overlay.style.border = "";
-      overlay.style.background = color;
+      writeStyle("borderRadius", "");
+      writeStyle("border", "");
+      writeStyle("background", color);
     } else if (cursorStyle === "Underline") {
       const bar = settings.underlineWidthPx || 2;
       width = rect.width;
       height = bar;
       y = rect.y + rect.height - bar;
-      overlay.style.borderRadius = "";
-      overlay.style.border = "";
-      overlay.style.background = color;
+      writeStyle("borderRadius", "");
+      writeStyle("border", "");
+      writeStyle("background", color);
     } else if (cursorStyle === "Beam") {
       width = settings.caretWidthPx ?? 3;
       height = Math.max(2, rect.height * 0.82);
       y = rect.y + (rect.height - height) / 2;
       x = rect.x - width / 2;
-      overlay.style.borderRadius = "3px";
-      overlay.style.border = "";
-      overlay.style.background = color;
+      writeStyle("borderRadius", "3px");
+      writeStyle("border", "");
+      writeStyle("background", color);
     } else {
-      overlay.style.borderRadius = "1px";
+      writeStyle("borderRadius", "1px");
       if (settings.boxHollow) {
-        overlay.style.background = "transparent";
-        overlay.style.border = `${settings.boxHollowWidth || 2}px solid ${color}`;
+        writeStyle("background", "transparent");
+        writeStyle("border", `${settings.boxHollowWidth || 2}px solid ${color}`);
       } else {
-        overlay.style.border = "";
-        overlay.style.background = color;
+        writeStyle("border", "");
+        writeStyle("background", color);
       }
     }
 
-    overlay.style.display = "";
-    overlay.style.transform = `translate(${x}px, ${y}px)`;
-    overlay.style.width = `${width}px`;
-    overlay.style.height = `${height}px`;
-    overlay.style.boxShadow = settings.glow
-      ? `0 0 0 1px ${hexToRgba(color, 0.18)}, 0 0 8px ${hexToRgba(color, 0.3)}`
-      : "";
+    writeStyle("display", "");
+    writeStyle("transform", `translate(${x}px, ${y}px)`);
+    writeStyle("width", `${width}px`);
+    writeStyle("height", `${height}px`);
+    writeStyle(
+      "boxShadow",
+      settings.glow
+        ? `0 0 0 1px ${hexToRgba(color, 0.18)}, 0 0 8px ${hexToRgba(color, 0.3)}`
+        : "",
+    );
 
     if (settings.showChar) {
       glyph.textContent = rect.glyph || "";
@@ -183,13 +214,32 @@ export function installLiteCaret({ doc, win, measurer, lifecycle, getSettings } 
     hide();
   };
 
+  let composing = false;
+
   const onInput = (event) => {
+    if (composing) return; // never measure mid-composition
+    const target = event?.target || documentRef.activeElement;
+    measureAndApply(target, { ping: true });
+    lastSig = computeSig(target);
+  };
+
+  const onCompositionStart = (event) => {
+    const target = event?.target || documentRef.activeElement;
+    if (!target || (!isTextTarget(target) && target !== active)) return;
+    composing = true;
+    hide();
+  };
+
+  const onCompositionEnd = (event) => {
+    if (!composing) return;
+    composing = false;
     const target = event?.target || documentRef.activeElement;
     measureAndApply(target, { ping: true });
     lastSig = computeSig(target);
   };
 
   const onRefreshEvent = () => {
+    if (composing) return;
     const target = documentRef.activeElement;
     const sig = computeSig(target);
     if (sig === lastSig) return;
@@ -203,17 +253,46 @@ export function installLiteCaret({ doc, win, measurer, lifecycle, getSettings } 
     lastSig = computeSig(target);
   };
 
-  const onScrollOrResize = () => {
-    const raf = windowRef.requestAnimationFrame;
-    if (typeof raf !== "function") {
+  const SCROLL_OPTS = { capture: true, passive: true };
+  const PASSIVE_OPTS = { passive: true };
+
+  const onScrollOrResize = (event) => {
+    if (disposed) return;
+    const target = documentRef.activeElement || active;
+    if (!target || isPasswordField(target) || !isTextTarget(target)) return;
+    // Only remeasure when the scrolled surface can move the caret: window,
+    // document, visualViewport, or an ancestor of the active textarea.
+    // Sidebar / autocomplete / unrelated overflow scrolls are ignored.
+    const source = event?.target;
+    if (
+      source &&
+      typeof source === "object" &&
+      typeof source.nodeType === "number" &&
+      source !== documentRef
+    ) {
+      const contains =
+        typeof source.contains === "function" ? source.contains(target) : source === target;
+      if (!contains) return;
+    }
+    if (typeof windowRef.requestAnimationFrame !== "function") {
       remeasureScroll();
       return;
     }
     if (scrollRaf) return;
-    scrollRaf = raf(() => {
+    scrollRaf = windowRef.requestAnimationFrame(() => {
       scrollRaf = 0;
       remeasureScroll();
     });
+  };
+
+  const onWindowBlur = () => {
+    readSettings();
+    if (settings.hideOnWindowBlur === false) return;
+    hide();
+  };
+
+  const onWindowFocus = () => {
+    refresh();
   };
 
   const onMotionChange = () => {
@@ -239,6 +318,8 @@ export function installLiteCaret({ doc, win, measurer, lifecycle, getSettings } 
     ["focusin", onFocusIn, false],
     ["focusout", onFocusOut, false],
     ["input", onInput, true],
+    ["compositionstart", onCompositionStart, true],
+    ["compositionend", onCompositionEnd, true],
     ["selectionchange", onRefreshEvent, false],
     ["keyup", onRefreshEvent, true],
     ["mouseup", onRefreshEvent, true],
@@ -246,16 +327,19 @@ export function installLiteCaret({ doc, win, measurer, lifecycle, getSettings } 
   for (const [type, fn, capture] of docListeners) {
     documentRef.addEventListener(type, fn, capture);
   }
-  windowRef.addEventListener("scroll", onScrollOrResize, true);
-  windowRef.addEventListener("resize", onScrollOrResize);
+  windowRef.addEventListener("scroll", onScrollOrResize, SCROLL_OPTS);
+  windowRef.addEventListener("resize", onScrollOrResize, PASSIVE_OPTS);
+  windowRef.addEventListener("blur", onWindowBlur, PASSIVE_OPTS);
+  windowRef.addEventListener("focus", onWindowFocus, PASSIVE_OPTS);
   const visualViewport = windowRef.visualViewport;
-  visualViewport?.addEventListener?.("scroll", onScrollOrResize);
-  visualViewport?.addEventListener?.("resize", onScrollOrResize);
+  visualViewport?.addEventListener?.("scroll", onScrollOrResize, PASSIVE_OPTS);
+  visualViewport?.addEventListener?.("resize", onScrollOrResize, PASSIVE_OPTS);
   motionQuery?.addEventListener?.("change", onMotionChange);
 
   const dispose = () => {
     if (disposed) return;
     disposed = true;
+    composing = false;
     if (scrollRaf) {
       windowRef.cancelAnimationFrame?.(scrollRaf);
       scrollRaf = 0;
@@ -263,10 +347,12 @@ export function installLiteCaret({ doc, win, measurer, lifecycle, getSettings } 
     for (const [type, fn, capture] of docListeners) {
       documentRef.removeEventListener(type, fn, capture);
     }
-    windowRef.removeEventListener("scroll", onScrollOrResize, true);
-    windowRef.removeEventListener("resize", onScrollOrResize);
-    visualViewport?.removeEventListener?.("scroll", onScrollOrResize);
-    visualViewport?.removeEventListener?.("resize", onScrollOrResize);
+    windowRef.removeEventListener("scroll", onScrollOrResize, SCROLL_OPTS);
+    windowRef.removeEventListener("resize", onScrollOrResize, PASSIVE_OPTS);
+    windowRef.removeEventListener("blur", onWindowBlur, PASSIVE_OPTS);
+    windowRef.removeEventListener("focus", onWindowFocus, PASSIVE_OPTS);
+    visualViewport?.removeEventListener?.("scroll", onScrollOrResize, PASSIVE_OPTS);
+    visualViewport?.removeEventListener?.("resize", onScrollOrResize, PASSIVE_OPTS);
     motionQuery?.removeEventListener?.("change", onMotionChange);
     overlay.remove();
     active = null;

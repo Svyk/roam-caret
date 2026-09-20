@@ -267,27 +267,129 @@ test("onRefreshEvent skips measure when signature is unchanged after input", () 
 });
 
 test("page scroll remasures even when textarea signature is unchanged", () => {
-  const { lite, listeners, textarea, rect } = installHarness();
+  const { lite, win, listeners, textarea, rect } = installHarness();
   listeners.get("focusin")({ target: textarea });
   assert.match(String(lite.overlay.style.transform), /translate\(10px, 20px\)/);
 
   rect.x = 50;
   rect.y = 80;
-  const origRaf = globalThis.requestAnimationFrame;
-  globalThis.requestAnimationFrame = (cb) => {
+  let rafCalls = 0;
+  win.requestAnimationFrame = (cb) => {
+    rafCalls += 1;
     cb();
     return 1;
   };
-  try {
-    listeners.get("scroll")();
-    assert.match(
-      String(lite.overlay.style.transform),
-      /translate\(50px, 80px\)/,
-      "fixed overlay must follow getBoundingClientRect after ancestor/page scroll",
-    );
-  } finally {
-    globalThis.requestAnimationFrame = origRaf;
-  }
+  listeners.get("scroll")();
+  assert.equal(rafCalls, 1, "scroll remeasure must go through rAF on windowRef");
+  assert.match(
+    String(lite.overlay.style.transform),
+    /translate\(50px, 80px\)/,
+    "fixed overlay must follow getBoundingClientRect after ancestor/page scroll",
+  );
+});
+
+test("scroll from an unrelated overflow node does not remeasure", () => {
+  const { lite, win, listeners, textarea, measurer, rect } = installHarness();
+  listeners.get("focusin")({ target: textarea });
+
+  let measureCalls = 0;
+  const baseMeasure = measurer.measure.bind(measurer);
+  measurer.measure = (el) => {
+    measureCalls += 1;
+    return baseMeasure(el);
+  };
+  win.requestAnimationFrame = (cb) => {
+    cb();
+    return 1;
+  };
+
+  const sidebar = { nodeType: 1, contains: () => false };
+  listeners.get("scroll")({ target: sidebar });
+  assert.equal(measureCalls, 0, "unrelated overflow scroll must not remeasure");
+
+  rect.x = 60;
+  const article = { nodeType: 1, contains: (el) => el === textarea };
+  listeners.get("scroll")({ target: article });
+  assert.equal(measureCalls, 1, "ancestor scroll must remeasure");
+  assert.match(String(lite.overlay.style.transform), /translate\(60px, 20px\)/);
+});
+
+test("input ping restarts blink without reading overlay offsetWidth", () => {
+  const { lite, listeners, textarea } = installHarness({}, {}, { blinkingEnabled: true });
+  let offsetReads = 0;
+  Object.defineProperty(lite.overlay, "offsetWidth", {
+    configurable: true,
+    get() {
+      offsetReads += 1;
+      return 0;
+    },
+  });
+
+  listeners.get("focusin")({ target: textarea });
+  listeners.get("input")({ target: textarea });
+  listeners.get("input")({ target: textarea });
+
+  assert.equal(offsetReads, 0, "input path must not force layout via offsetWidth");
+  assert.equal(lite.overlay.classList.contains("cs-lite-blink"), true);
+});
+
+test("unchanged overlay style values are not rewritten", () => {
+  const { lite, listeners, textarea } = installHarness();
+  let transformWrites = 0;
+  let stored = "";
+  Object.defineProperty(lite.overlay.style, "transform", {
+    configurable: true,
+    get() {
+      return stored;
+    },
+    set(value) {
+      transformWrites += 1;
+      stored = value;
+    },
+  });
+
+  listeners.get("focusin")({ target: textarea });
+  assert.equal(transformWrites, 1);
+
+  listeners.get("input")({ target: textarea });
+  listeners.get("input")({ target: textarea });
+  assert.equal(transformWrites, 1, "identical rect must not rewrite transform");
+});
+
+test("IME composition hides the caret and skips measuring until compositionend", () => {
+  const { lite, listeners, textarea, measurer } = installHarness();
+  listeners.get("focusin")({ target: textarea });
+  assert.notEqual(lite.overlay.style.display, "none");
+
+  let measureCalls = 0;
+  const baseMeasure = measurer.measure.bind(measurer);
+  measurer.measure = (el) => {
+    measureCalls += 1;
+    return baseMeasure(el);
+  };
+
+  listeners.get("compositionstart")({ target: textarea });
+  assert.equal(lite.overlay.style.display, "none");
+
+  listeners.get("input")({ target: textarea });
+  listeners.get("selectionchange")({ target: textarea });
+  assert.equal(measureCalls, 0, "no measuring mid-composition");
+
+  listeners.get("compositionend")({ target: textarea });
+  assert.equal(measureCalls, 1);
+  assert.notEqual(lite.overlay.style.display, "none");
+});
+
+test("window blur hides the caret and focus restores it", () => {
+  const { lite, listeners, textarea } = installHarness();
+  listeners.get("focusin")({ target: textarea });
+  assert.notEqual(lite.overlay.style.display, "none");
+
+  listeners.get("blur")();
+  assert.equal(lite.overlay.style.display, "none");
+
+  listeners.get("focus")();
+  assert.notEqual(lite.overlay.style.display, "none");
 });
 
 test("isDark caches prefers-color-scheme matchMedia at install time", () => {

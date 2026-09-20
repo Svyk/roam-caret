@@ -4,6 +4,18 @@ All notable changes to this project follow [Keep a Changelog](https://keepachang
 
 ## [Unreleased]
 
+## [0.3.3] - 2026-09-19
+
+### Fixed
+- Blink restart no longer reads `offsetWidth` on the input path (no forced reflow per keystroke); the CSS animation resets via WAAPI `currentTime`.
+- Scroll/resize remeasure is gated: no-op when disposed or no active text target, and unrelated overflow scrolls (sidebar, autocomplete) are ignored unless the scrolled node is an ancestor of the active textarea. Scroll listeners are `{capture, passive}`.
+- Unchanged overlay style values (transform/width/height/background/border/boxShadow) are no longer rewritten on every measure.
+- Window blur hides the lite caret when `hideOnWindowBlur` is on; focus restores it.
+- IME composition hides the caret and skips measuring until `compositionend`.
+
+### Added
+- `window.__ROAM_CARET_DIAG` exposes a ring of the last 20 measure durations in ms.
+
 ## [0.3.2] - 2026-09-19
 
 ### Fixed
