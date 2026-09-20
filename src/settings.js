@@ -1,4 +1,28 @@
+import {
+  DEFAULTS,
+  BUILTIN_PRESETS,
+  hexToRgba,
+  normalizeHex,
+} from "./cursor-smith.js";
+
+export { hexToRgba };
+
 export const OPTIONS_KEY = "options";
+
+// Blob wins on load; cs-* ids are never read except cs-import-code.
+export const MIRROR = Object.freeze({
+  "cs-enabled": "enabled",
+  "cs-preset": "activePreset",
+  "cs-shape": "cursorStyle",
+  "cs-color-light": "colorLight",
+  "cs-color-dark": "colorDark",
+  "cs-width": "caretWidthPx",
+  "cs-glow": "glow",
+  "cs-blink": "blinkingEnabled",
+  "cs-show-char": "showChar",
+  "cs-hide-native": "hideNativeCaret",
+  "cs-hide-blur": "hideOnWindowBlur",
+});
 
 export function loadOptions(extensionAPI) {
   const raw = extensionAPI.settings.get(OPTIONS_KEY);
@@ -7,4 +31,228 @@ export function loadOptions(extensionAPI) {
 
 export async function persistOptions(extensionAPI, value) {
   await extensionAPI.settings.set(OPTIONS_KEY, value);
+}
+
+export function projectToDepot(settings) {
+  const out = {};
+  for (const [depotId, blobKey] of Object.entries(MIRROR)) {
+    const value = settings[blobKey];
+    if (depotId === "cs-preset") {
+      out[depotId] = settings.activePreset || "Custom";
+    } else if (depotId === "cs-width") {
+      out[depotId] = String(value);
+    } else if (depotId === "cs-color-light" || depotId === "cs-color-dark") {
+      out[depotId] = value;
+    } else {
+      out[depotId] = value;
+    }
+  }
+  return out;
+}
+
+export async function mirrorToDepot(extensionAPI, settings, keys) {
+  const projected = projectToDepot(settings);
+  const ids = keys ?? Object.keys(MIRROR);
+  let writes = 0;
+  for (const id of ids) {
+    if (!(id in MIRROR)) continue;
+    const value = projected[id];
+    if (extensionAPI.settings.get(id) !== value) {
+      await extensionAPI.settings.set(id, value);
+      writes += 1;
+    }
+  }
+  return writes;
+}
+
+export function readSvyBeamColors(getComputedStyleFn, root = globalThis.document?.documentElement) {
+  if (typeof getComputedStyleFn !== "function" || !root) return null;
+  const style = getComputedStyleFn(root);
+  const colorLight = normalizeHex(style.getPropertyValue("--svy-beam-caret-light").trim(), null);
+  const colorDark = normalizeHex(style.getPropertyValue("--svy-beam-caret-dark").trim(), null);
+  if (colorLight == null || colorDark == null) return null;
+  return { colorLight, colorDark };
+}
+
+export function createPreviewComponent(React = globalThis.window?.React) {
+  if (typeof React?.createElement !== "function") return null;
+  const h = React.createElement;
+  return function RoamCaretPreview() {
+    return h(
+      "div",
+      null,
+      h("textarea", {
+        className: "cs-demo",
+        rows: 2,
+        placeholder: "Type here to see the caret",
+      }),
+      h("p", { style: { fontSize: "12px", opacity: 0.8, margin: "6px 0 0" } }, "Live preview of the current caret look"),
+    );
+  };
+}
+
+export function buildDepotPanel({
+  settings: _settings = {},
+  builtinNames,
+  userNames,
+  handlers = {},
+  React = globalThis.window?.React,
+} = {}) {
+  const presetItems = [
+    "Custom",
+    ...(builtinNames || Object.keys(BUILTIN_PRESETS)),
+    ...(userNames || []),
+  ];
+  const onChange = handlers.onChange ?? (() => {});
+
+  const rows = [
+    {
+      id: "cs-enabled",
+      name: "Enabled",
+      action: {
+        type: "switch",
+        onChange: (event) => onChange("cs-enabled", event.target.checked),
+      },
+    },
+    {
+      id: "cs-preset",
+      name: "Look",
+      action: {
+        type: "select",
+        items: presetItems,
+        onChange: (event) => onChange("cs-preset", event.target?.value ?? event),
+      },
+    },
+    {
+      id: "cs-shape",
+      name: "Shape",
+      action: {
+        type: "select",
+        items: ["Beam", "Line", "Box", "Underline"],
+        onChange: (event) => onChange("cs-shape", event.target?.value ?? event),
+      },
+    },
+    {
+      id: "cs-color-light",
+      name: "Color (light)",
+      action: {
+        type: "input",
+        placeholder: "#00695e",
+        onChange: (event) => onChange("cs-color-light", event.target?.value ?? event),
+      },
+    },
+    {
+      id: "cs-color-dark",
+      name: "Color (dark)",
+      action: {
+        type: "input",
+        placeholder: "#48d0c0",
+        onChange: (event) => onChange("cs-color-dark", event.target?.value ?? event),
+      },
+    },
+    {
+      id: "cs-width",
+      name: "Width (px)",
+      action: {
+        type: "input",
+        placeholder: "3",
+        onChange: (event) => onChange("cs-width", event.target?.value ?? event),
+      },
+    },
+    {
+      id: "cs-glow",
+      name: "Glow",
+      description: "Soft halo around the caret.",
+      action: {
+        type: "switch",
+        onChange: (event) => onChange("cs-glow", event.target.checked),
+      },
+    },
+    {
+      id: "cs-blink",
+      name: "Blink",
+      action: {
+        type: "switch",
+        onChange: (event) => onChange("cs-blink", event.target.checked),
+      },
+    },
+    {
+      id: "cs-show-char",
+      name: "Show letter in Box",
+      action: {
+        type: "switch",
+        onChange: (event) => onChange("cs-show-char", event.target.checked),
+      },
+    },
+    {
+      id: "cs-hide-native",
+      name: "Hide Roam's caret",
+      action: {
+        type: "switch",
+        onChange: (event) => onChange("cs-hide-native", event.target.checked),
+      },
+    },
+    {
+      id: "cs-hide-blur",
+      name: "Hide when window unfocused",
+      action: {
+        type: "switch",
+        onChange: (event) => onChange("cs-hide-blur", event.target.checked),
+      },
+    },
+    {
+      id: "cs-match-svy",
+      name: "Match Svy Theme colors",
+      action: {
+        type: "button",
+        onClick: handlers.onMatchSvy,
+      },
+    },
+    {
+      id: "cs-copy-code",
+      name: "Copy share code",
+      action: {
+        type: "button",
+        onClick: handlers.onCopyCode,
+      },
+    },
+    {
+      id: "cs-import-code",
+      name: "Share code to import",
+      action: {
+        type: "input",
+        onChange: (event) => onChange("cs-import-code", event.target?.value ?? event),
+      },
+    },
+    {
+      id: "cs-import",
+      name: "Import share code",
+      action: {
+        type: "button",
+        onClick: handlers.onImport,
+      },
+    },
+    {
+      id: "cs-studio",
+      name: "Open Studio (every effect)",
+      action: {
+        type: "button",
+        onClick: handlers.onStudio,
+      },
+    },
+  ];
+
+  const preview = createPreviewComponent(React);
+  if (preview) {
+    rows.push({
+      id: "cs-preview",
+      name: "Preview",
+      action: {
+        type: "reactComponent",
+        component: preview,
+      },
+    });
+  }
+
+  return { tabTitle: "Roam Caret", settings: rows };
 }

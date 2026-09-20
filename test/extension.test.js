@@ -1,15 +1,26 @@
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 import test from "node:test";
+import { fileURLToPath } from "node:url";
+import { dirname, join } from "node:path";
 
-import extension, { getRuntime } from "../src/extension.js";
-import { BODY_ACTIVE_CLASS, BODY_HIDE_NATIVE_CLASS } from "../src/cursor-smith.js";
+import extension, { getRuntime, VERSION } from "../src/extension.js";
+import {
+  BODY_ACTIVE_CLASS,
+  BODY_HIDE_NATIVE_CLASS,
+  DEFAULTS,
+  pickLook,
+  presetToCode,
+} from "../src/cursor-smith.js";
+import { OPTIONS_KEY } from "../src/settings.js";
 
 const COMMANDS = [
-  "Cursor Smith: Settings",
-  "Cursor Smith: Toggle on/off",
-  "Cursor Smith: Random look",
-  "Cursor Smith: Cycle preset",
-  "Cursor Smith: Diagnose caret (5s)",
+  "Roam Caret: Open settings",
+  "Roam Caret: Studio",
+  "Roam Caret: Toggle on/off",
+  "Roam Caret: Random look",
+  "Roam Caret: Cycle preset",
+  "Roam Caret: Diagnose caret (5s)",
 ];
 
 function installMinimalDom() {
@@ -106,23 +117,27 @@ function installMinimalDom() {
     created.push(record);
     return el;
   }
-  function queryPanelStyles() {
+  function queryStudioStyles() {
     return allElements.filter(
       (el) => el.tagName === "STYLE"
         && el.isConnected
-        && el.getAttribute("data-cursor-smith") === "panel",
+        && el.getAttribute("data-cursor-smith") === "studio",
     );
   }
   const docListeners = [];
   globalThis.document = {
     _created: created,
+    _docListeners: docListeners,
     body,
     documentElement,
     head,
     get defaultView() { return globalThis.window; },
     createElement,
-    querySelector: (sel) => (sel === 'style[data-cursor-smith=panel]' ? queryPanelStyles()[0] : null),
-    querySelectorAll: (sel) => (sel === 'style[data-cursor-smith=panel]' ? queryPanelStyles() : []),
+    createTextNode(text) {
+      return { nodeType: 3, textContent: String(text) };
+    },
+    querySelector: (sel) => (sel === 'style[data-cursor-smith=studio]' ? queryStudioStyles()[0] : null),
+    querySelectorAll: (sel) => (sel === 'style[data-cursor-smith=studio]' ? queryStudioStyles() : []),
     addEventListener(type, fn, capture) { docListeners.push({ type, fn, capture: !!capture }); },
     removeEventListener(type, fn, capture) {
       const idx = docListeners.findIndex(
@@ -177,7 +192,7 @@ function fakeExtensionApi() {
       get: (key) => values.get(key) ?? null,
       set: async (key, value) => { values.set(key, value); calls.push(["setting:set", key, value]); return null; },
       panel: {
-        create: async (config) => { calls.push(["panel:create", config.tabTitle]); return null; },
+        create: async (config) => { calls.push(["panel:create", config]); return null; },
       },
     },
     ui: {
@@ -193,8 +208,26 @@ function fakeExtensionApi() {
   };
 }
 
-function panelStyleCount() {
-  return document.querySelectorAll('style[data-cursor-smith=panel]').length;
+function studioStyleCount() {
+  return document.querySelectorAll('style[data-cursor-smith=studio]').length;
+}
+
+function panelCreates(api) {
+  return api.calls.filter(([name]) => name === "panel:create");
+}
+
+function docInputListenerCount() {
+  return document._docListeners.filter((l) => l.type === "input").length;
+}
+
+const EXTENSION_SRC = readFileSync(
+  join(dirname(fileURLToPath(import.meta.url)), "../src/extension.js"),
+  "utf8",
+);
+
+function lastPanelConfig(api) {
+  const creates = panelCreates(api);
+  return creates.at(-1)?.[1] ?? null;
 }
 
 test("extension exports the Roam lifecycle contract and survives repeated unload", async () => {
@@ -203,10 +236,18 @@ test("extension exports the Roam lifecycle contract and survives repeated unload
   assert.equal(typeof extension.onunload, "function");
 
   const api = fakeExtensionApi();
-  const cleanup = await extension.onload({ extensionAPI: api, extension: { version: "0.2.0" } });
+  const cleanup = await extension.onload({ extensionAPI: api, extension: { version: VERSION } });
   assert.equal(typeof cleanup, "function");
-  assert.equal(globalThis.__ROAM_CURSOR_SMITH_VERSION, "0.2.0");
-  assert.equal(api.calls.filter(([name]) => name === "setting:set").length, 0);
+  assert.equal(globalThis.__ROAM_CURSOR_SMITH_VERSION, VERSION);
+  assert.equal(
+    api.calls.filter(([name, key]) => name === "setting:set" && key === OPTIONS_KEY).length,
+    0,
+  );
+  assert.ok(
+    api.calls.some(([name, key, value]) => name === "setting:set" && key === "cs-enabled" && value === true),
+  );
+  assert.equal(panelCreates(api).length, 1);
+  assert.equal(panelCreates(api)[0][1].tabTitle, "Roam Caret");
   assert.deepEqual(
     api.calls.filter(([name]) => name === "command:add").map(([, label]) => label),
     COMMANDS,
@@ -235,28 +276,28 @@ test("a second load disposes the previous runtime before registering again", asy
   await cleanup();
 });
 
-test("panel CSS injects only while the settings overlay is open", async () => {
+test("studio CSS injects only while the settings overlay is open", async () => {
   installMinimalDom();
   const api = fakeExtensionApi();
 
   const cleanup = await extension.onload({ extensionAPI: api, extension: { version: "0.1.1" } });
-  const openSettings = api.commands.get("Cursor Smith: Settings");
-  assert.equal(panelStyleCount(), 0);
+  const openStudio = api.commands.get("Roam Caret: Studio");
+  assert.equal(studioStyleCount(), 0);
 
-  await openSettings();
-  assert.equal(panelStyleCount(), 1);
+  await openStudio();
+  assert.equal(studioStyleCount(), 1);
   assert.equal(
-    document._created.filter((el) => el.dataCursorSmith === "panel").length,
+    document._created.filter((el) => el.dataCursorSmith === "studio").length,
     1,
   );
 
   document.dispatchKeydown({ key: "Escape", stopPropagation() {} });
-  assert.equal(panelStyleCount(), 0);
+  assert.equal(studioStyleCount(), 0);
 
-  await openSettings();
-  assert.equal(panelStyleCount(), 1);
+  await openStudio();
+  assert.equal(studioStyleCount(), 1);
   await extension.onunload();
-  assert.equal(panelStyleCount(), 0);
+  assert.equal(studioStyleCount(), 0);
 
   await cleanup();
 });
@@ -264,7 +305,7 @@ test("panel CSS injects only while the settings overlay is open", async () => {
 test("default settings start lite and smear switches to canvas", async () => {
   installMinimalDom();
   const api = fakeExtensionApi();
-  const cleanup = await extension.onload({ extensionAPI: api, extension: { version: "0.2.0" } });
+  const cleanup = await extension.onload({ extensionAPI: api, extension: { version: VERSION } });
   const runtime = getRuntime();
   assert.equal(runtime._mode, "lite");
   assert.ok(runtime._lite);
@@ -281,6 +322,137 @@ test("default settings start lite and smear switches to canvas", async () => {
   assert.equal(runtime._mode, "lite");
   assert.equal(runtime._engine, null);
   assert.ok(runtime._lite);
+
+  await cleanup();
+});
+
+test("pump installs only on canvas and document input listeners stay singular", async () => {
+  installMinimalDom();
+  const api = fakeExtensionApi();
+  const cleanup = await extension.onload({ extensionAPI: api, extension: { version: VERSION } });
+  const runtime = getRuntime();
+
+  assert.equal(runtime._mode, "lite");
+  assert.equal(docInputListenerCount(), 1);
+  assert.equal(runtime._pumpInstalled, false);
+
+  runtime._set({ smear: true });
+  assert.equal(runtime._mode, "canvas");
+  assert.equal(docInputListenerCount(), 1);
+  assert.equal(runtime._pumpInstalled, true);
+
+  runtime._set({ smear: false });
+  assert.equal(runtime._mode, "lite");
+  assert.equal(docInputListenerCount(), 1);
+  assert.equal(runtime._pumpInstalled, false);
+
+  await cleanup();
+  assert.equal(docInputListenerCount(), 0);
+});
+
+test("diagnoseCaret exists and diagnostic samples omit listviewCarets", async () => {
+  installMinimalDom();
+  const api = fakeExtensionApi();
+  const cleanup = await extension.onload({ extensionAPI: api, extension: { version: VERSION } });
+  const runtime = getRuntime();
+
+  assert.doesNotMatch(EXTENSION_SRC, /listviewCarets/);
+  assert.equal(typeof runtime.diagnoseCaret, "function");
+
+  await cleanup();
+});
+
+test("depot panel is created on load and again after cyclePreset", async () => {
+  installMinimalDom();
+  const api = fakeExtensionApi();
+  const cleanup = await extension.onload({ extensionAPI: api, extension: { version: VERSION } });
+  const runtime = getRuntime();
+
+  assert.equal(panelCreates(api).length, 1);
+
+  runtime._set({
+    presets: {
+      Alpha: pickLook({ ...DEFAULTS, colorLight: "#111111" }),
+      Beta: pickLook({ ...DEFAULTS, colorLight: "#222222" }),
+    },
+    activePreset: "Alpha",
+  });
+  await new Promise((resolve) => setImmediate(resolve));
+  const beforeCycle = panelCreates(api).length;
+  runtime.cyclePreset();
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(panelCreates(api).length, beforeCycle + 1);
+
+  await cleanup();
+});
+
+test("depot glow switch updates runtime settings and cs-glow mirror", async () => {
+  installMinimalDom();
+  const api = fakeExtensionApi();
+  const cleanup = await extension.onload({ extensionAPI: api, extension: { version: VERSION } });
+
+  const config = lastPanelConfig(api);
+  const glowRow = config.settings.find((row) => row.id === "cs-glow");
+  assert.ok(glowRow);
+  glowRow.action.onChange({ target: { checked: false } });
+  await new Promise((resolve) => setImmediate(resolve));
+
+  assert.equal(getRuntime()._settings.glow, false);
+  assert.equal(api.settings.get("cs-glow"), false);
+
+  await cleanup();
+});
+
+test("depot import merges preset and clears cs-import-code", async () => {
+  installMinimalDom();
+  const api = fakeExtensionApi();
+  const cleanup = await extension.onload({ extensionAPI: api, extension: { version: VERSION } });
+
+  const code = presetToCode("X", pickLook({ ...DEFAULTS, colorDark: "#112233" }));
+  await api.settings.set("cs-import-code", code);
+
+  const config = lastPanelConfig(api);
+  const importRow = config.settings.find((row) => row.id === "cs-import");
+  await getRuntime().importShareCode();
+
+  assert.ok(getRuntime()._settings.presets.X);
+  assert.equal(getRuntime()._settings.activePreset, "X");
+  assert.equal(api.settings.get("cs-import-code"), "");
+
+  await cleanup();
+});
+
+test("depot match-svy reads theme variables and leaves colors when vars are empty", async () => {
+  installMinimalDom();
+  const api = fakeExtensionApi();
+  const cleanup = await extension.onload({ extensionAPI: api, extension: { version: VERSION } });
+  const runtime = getRuntime();
+
+  const orig = globalThis.getComputedStyle;
+  globalThis.getComputedStyle = () => ({
+    getPropertyValue: (name) => {
+      if (name.includes("light")) return "#00695e";
+      if (name.includes("dark")) return "#48d0c0";
+      return "";
+    },
+  });
+  globalThis.window.getComputedStyle = globalThis.getComputedStyle;
+
+  const config = lastPanelConfig(api);
+  const matchRow = config.settings.find((row) => row.id === "cs-match-svy");
+  matchRow.action.onClick();
+
+  assert.equal(runtime._settings.colorLight, "#00695e");
+  assert.equal(runtime._settings.colorDark, "#48d0c0");
+
+  globalThis.getComputedStyle = () => ({ getPropertyValue: () => "" });
+  globalThis.window.getComputedStyle = globalThis.getComputedStyle;
+  matchRow.action.onClick();
+  assert.equal(runtime._settings.colorLight, "#00695e");
+  assert.equal(runtime._settings.colorDark, "#48d0c0");
+
+  globalThis.getComputedStyle = orig;
+  globalThis.window.getComputedStyle = orig;
 
   await cleanup();
 });

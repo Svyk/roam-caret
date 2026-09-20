@@ -6,10 +6,14 @@ import {
   BUILTIN_PRESETS,
   CANVAS_EFFECT_KEYS,
   DEFAULTS,
+  ENUMS,
   LOOK_KEYS,
   SCHEMA_VERSION,
   STRUCTURAL,
+  caretCoords,
   codeToPreset,
+  draw,
+  drawBeamCaret,
   needsCanvas,
   nextSchedule,
   normalizePresetSnapshot,
@@ -18,8 +22,184 @@ import {
   presetToCode,
 } from "../src/cursor-smith.js";
 
+function makeRecordingCtx() {
+  const ops = [];
+  const ctx = {
+    roundRect(...a) {
+      ops.push(["roundRect", a]);
+    },
+    fill() {
+      ops.push(["fill"]);
+    },
+    save() {
+      ops.push(["save"]);
+    },
+    restore() {
+      ops.push(["restore"]);
+    },
+    beginPath() {
+      ops.push(["beginPath"]);
+    },
+    moveTo(...a) {
+      ops.push(["moveTo", a]);
+    },
+    lineTo(...a) {
+      ops.push(["lineTo", a]);
+    },
+    closePath() {
+      ops.push(["closePath"]);
+    },
+    fillRect(...a) {
+      ops.push(["fillRect", a]);
+    },
+    strokeRect(...a) {
+      ops.push(["strokeRect", a]);
+    },
+    stroke() {
+      ops.push(["stroke"]);
+    },
+    clearRect() {},
+    translate() {},
+    scale() {},
+    set fillStyle(v) {
+      ops.push(["fillStyle", v]);
+    },
+    set strokeStyle(v) {
+      ops.push(["strokeStyle", v]);
+    },
+    set shadowColor(v) {
+      ops.push(["shadowColor", v]);
+    },
+    set shadowBlur(v) {
+      ops.push(["shadowBlur", v]);
+    },
+    set lineWidth(v) {
+      ops.push(["lineWidth", v]);
+    },
+    set lineJoin(v) {
+      ops.push(["lineJoin", v]);
+    },
+    set globalAlpha(v) {
+      ops.push(["globalAlpha", v]);
+    },
+    measureText() {
+      return {
+        fontBoundingBoxAscent: 10,
+        actualBoundingBoxAscent: 10,
+        fontBoundingBoxDescent: 2,
+        actualBoundingBoxDescent: 2,
+      };
+    },
+    fillText() {
+      ops.push(["fillText"]);
+    },
+  };
+  return { ctx, ops };
+}
+
+function makeBeamEngineStub(overrides = {}) {
+  const settings = {
+    ...DEFAULTS,
+    cursorStyle: "Beam",
+    caretWidthPx: 3,
+    glow: false,
+    smear: true,
+    crtEffect: false,
+    energyEffect: false,
+    blinkBreathing: true,
+    blinkingEnabled: false,
+    showChar: false,
+    ...overrides.settings,
+  };
+  const { ctx, ops } = makeRecordingCtx();
+  const engine = {
+    ctx,
+    settings,
+    animActive: {
+      x: 100,
+      top: 50,
+      w: 8,
+      h: 20,
+      actualCharWidth: 8,
+      textColor: "#ffffff",
+      ...overrides.animActive,
+    },
+    trail: overrides.trail || [],
+    pending: null,
+    comboLevel: 0,
+    lastMoveTime: 0,
+    styleFor(key) {
+      return settings[key];
+    },
+    getActiveColor: () => "#39ff14",
+    idleAlpha: () => 1,
+    markDirty: () => {},
+    smearCorners: () => null,
+    ...overrides.engine,
+  };
+  return { engine, ops };
+}
+
+function makeDrawEngine(cursorStyle) {
+  const settings = {
+    ...DEFAULTS,
+    cursorStyle,
+    caretWidthPx: 3,
+    glow: false,
+    smear: false,
+    crtEffect: false,
+    energyEffect: false,
+    blinkBreathing: true,
+    blinkingEnabled: false,
+    showChar: false,
+    boxHollow: false,
+    lineSerifs: false,
+    ghostEnabled: false,
+  };
+  const { ctx, ops } = makeRecordingCtx();
+  return {
+    ctx,
+    canvas: { ownerDocument: { defaultView: { innerWidth: 800, innerHeight: 600 } } },
+    settings,
+    animActive: { x: 100, top: 50, w: 3, h: 20, actualCharWidth: 8, char: "a", textColor: "#fff", fontSize: 14, fontFamily: "mono" },
+    trail: [],
+    particles: [],
+    flamePixels: [],
+    thunderbolts: [],
+    stardust: [],
+    pending: null,
+    smearQuad: null,
+    comboLevel: 0,
+    lastMoveTime: 0,
+    _dirtyFull: false,
+    _dirtyPrev: null,
+    _dirty: { x0: 0, y0: 0, x1: 200, y1: 100 },
+    _ghost: null,
+    styleFor(key) {
+      return settings[key];
+    },
+    getActiveColor: () => "#39ff14",
+    idleAlpha: () => 1,
+    markDirty() {},
+    smearCorners: () => null,
+    shakeOffset: () => null,
+    ops,
+  };
+}
+
 test("hideNativeCaret defaults to true", () => {
   assert.equal(DEFAULTS.hideNativeCaret, true);
+});
+
+test("ENUMS.cursorStyle includes Beam and normalizeSettings keeps it", () => {
+  assert.ok(ENUMS.cursorStyle.includes("Beam"));
+  const normalized = normalizeSettings({ cursorStyle: "Beam" });
+  assert.equal(normalized.cursorStyle, "Beam");
+});
+
+test("src omits Needs the CRT glow copy", async () => {
+  const src = await readFile(new URL("../src/cursor-smith.js", import.meta.url), "utf8");
+  assert.doesNotMatch(src, /Needs the CRT/);
 });
 
 test("needsCanvas is false for Fast defaults and true for each canvas effect", () => {
@@ -29,7 +209,9 @@ test("needsCanvas is false for Fast defaults and true for each canvas effect", (
   assert.equal(DEFAULTS.schemaVersion, SCHEMA_VERSION);
   assert.equal(needsCanvas(DEFAULTS), false);
   assert.equal(needsCanvas(BUILTIN_PRESETS.Fast), false);
-  assert.equal(Object.keys(BUILTIN_PRESETS)[0], "Fast");
+  assert.equal(Object.keys(BUILTIN_PRESETS)[0], "Svy");
+  assert.equal(Object.keys(BUILTIN_PRESETS)[1], "Fast");
+  assert.equal(needsCanvas({ ...DEFAULTS, ...BUILTIN_PRESETS.Svy }), false);
   assert.equal(needsCanvas({ ...DEFAULTS, ...BUILTIN_PRESETS["Jell-O"] }), true);
   for (const key of CANVAS_EFFECT_KEYS) {
     assert.equal(needsCanvas({ [key]: true }), true, key);
@@ -94,23 +276,14 @@ test("built extension.css hides Roam block carets and not Thymer listview", asyn
   assert.doesNotMatch(css, /textarea\s*\{[^}]*caret-color/s);
 });
 
-test("extension.css uses opaque panel chrome and hides Svy caret overlay", async () => {
+test("extension.css hides Svy caret overlay", async () => {
   const css = await readFile(new URL("../src/extension.css", import.meta.url), "utf8");
-  assert.match(css, /\.cs-panel\.cs-panel[\s\S]*background:\s*Canvas/);
   assert.match(css, /svy-caret-overlay-ui/);
-  assert.match(css, /\.cs-panel-overlay[\s\S]*z-index:\s*10000/);
 });
 
 test("renderPanel omits akaready and buymeacoffee chrome", async () => {
   const src = await readFile(new URL("../src/cursor-smith.js", import.meta.url), "utf8");
-  const start = src.indexOf("function renderPanel");
-  const end = src.indexOf("__name(renderPanel", start);
-  const block = src.slice(start, end);
-  assert.doesNotMatch(block, /feedback:/);
-  assert.doesNotMatch(block, /akaready/);
-  assert.doesNotMatch(block, /buymeacoffee/);
-  assert.doesNotMatch(block, /scope:\s*ctl\.scopeArgs/);
-  assert.match(block, /Hide Roam's native caret/);
+  assert.doesNotMatch(src, /function renderPanel/);
 });
 
 test("cursor-smith.js omits Thymer host machinery", async () => {
@@ -136,6 +309,65 @@ test("nextSchedule parks idle and keeps hot on rAF", () => {
   assert.equal(nextSchedule("warm").ms, 33);
   assert.equal(nextSchedule("energy").type, "timeout");
   assert.equal(nextSchedule().type, "raf");
+});
+
+test("caretCoords uses caretWidthPx for Beam", () => {
+  const e = {
+    measurer: {
+      latest: () => ({
+        x: 100,
+        y: 50,
+        width: 8,
+        height: 20,
+        glyph: "",
+        color: "#fff",
+        fontSize: "14",
+        fontFamily: "mono",
+      }),
+    },
+    styleFor(key) {
+      const values = { cursorStyle: "Beam", caretWidthPx: 3 };
+      return values[key];
+    },
+  };
+  const coords = caretCoords(e);
+  assert.equal(coords.w, 3);
+});
+
+test("drawBeamCaret paints a centered rounded beam", () => {
+  const { engine, ops } = makeBeamEngineStub();
+  drawBeamCaret(engine);
+  const round = ops.find((op) => op[0] === "roundRect");
+  assert.ok(round);
+  const [rx, ry, rw, rh, radius] = round[1];
+  assert.equal(rw, 3);
+  assert.equal(rh, 16.4);
+  assert.equal(radius, 3);
+  assert.equal(rx, 98.5);
+  assert.equal(ry, 51.8);
+  assert.ok(ops.some((op) => op[0] === "fill"));
+});
+
+test("draw routes Line, Underline, and Box without changing their canvas ops", () => {
+  const snapshots = {};
+  for (const style of ["Line", "Underline", "Box"]) {
+    const e = makeDrawEngine(style);
+    draw(e);
+    snapshots[style] = e.ops.map((op) => op[0]);
+  }
+  const caretPath = ["save", "fillStyle", "beginPath", "moveTo", "lineTo", "lineTo", "lineTo", "closePath", "fill", "restore"];
+  assert.deepEqual(snapshots.Line, caretPath);
+  assert.deepEqual(snapshots.Underline, caretPath);
+  assert.deepEqual(snapshots.Box, caretPath);
+});
+
+test("draw routes Beam to roundRect and not Box fillRect path", () => {
+  const e = makeDrawEngine("Beam");
+  draw(e);
+  const names = e.ops.map((op) => op[0]);
+  assert.ok(names.includes("roundRect"));
+  assert.ok(names.includes("fill"));
+  assert.equal(names.filter((name) => name === "fillRect").length, 0);
 });
 
 test("cursor-smith.js reads the measurer and parks idle (no 100ms heartbeat)", async () => {

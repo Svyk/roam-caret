@@ -118,7 +118,7 @@ function makeTextarea(extras = {}) {
   };
 }
 
-function installHarness(rectOverrides = {}, textareaExtras = {}) {
+function installHarness(rectOverrides = {}, textareaExtras = {}, settingsOverrides = {}) {
   const { doc, win, body, listeners } = createFakeDoc();
   const rect = {
     x: 10,
@@ -148,6 +148,7 @@ function installHarness(rectOverrides = {}, textareaExtras = {}) {
     underlineWidthPx: 0,
     boxHollow: false,
     boxHollowWidth: 2,
+    ...settingsOverrides,
   });
   const lifecycle = {
     node(node, parent = body) {
@@ -227,4 +228,81 @@ test("dispose removes overlay from parent", () => {
   lite.dispose();
   assert.equal(body.children.includes(lite.overlay), false);
   assert.equal(lite.overlay.parentNode, null);
+});
+
+test("Beam geometry centers a pill on the caret x", () => {
+  const { lite, listeners, textarea } = installHarness(
+    { x: 100, y: 50, width: 8, height: 20 },
+    {},
+    { cursorStyle: "Beam", caretWidthPx: 3 }
+  );
+  listeners.get("focusin")({ target: textarea });
+  assert.match(String(lite.overlay.style.transform), /translate\(98\.5px, 51\.8px\)/);
+  assert.equal(lite.overlay.style.width, "3px");
+  assert.equal(lite.overlay.style.height, "16.4px");
+  assert.equal(lite.overlay.style.borderRadius, "3px");
+});
+
+test("onRefreshEvent skips measure when signature is unchanged after input", () => {
+  const { listeners, textarea, measurer } = installHarness();
+  let measureCalls = 0;
+  const baseMeasure = measurer.measure.bind(measurer);
+  measurer.measure = (el) => {
+    measureCalls += 1;
+    return baseMeasure(el);
+  };
+
+  listeners.get("input")({ target: textarea });
+  assert.equal(measureCalls, 1);
+
+  listeners.get("keyup")({ target: textarea });
+  assert.equal(measureCalls, 1);
+
+  listeners.get("selectionchange")({ target: textarea });
+  assert.equal(measureCalls, 1);
+
+  textarea.selectionStart = 3;
+  listeners.get("selectionchange")({ target: textarea });
+  assert.equal(measureCalls, 2);
+});
+
+test("isDark caches prefers-color-scheme matchMedia at install time", () => {
+  const { doc, win, body, listeners } = createFakeDoc();
+  let darkMqCalls = 0;
+  const baseMatchMedia = win.matchMedia.bind(win);
+  win.matchMedia = (query) => {
+    if (query === "(prefers-color-scheme: dark)") darkMqCalls += 1;
+    return baseMatchMedia(query);
+  };
+
+  const textarea = makeTextarea();
+  doc.activeElement = textarea;
+  const measurer = { measure: () => ({ x: 0, y: 0, width: 2, height: 19, visible: true, glyph: "" }) };
+  const lifecycle = { node(node, parent = body) { parent.append(node); } };
+  installLiteCaret({
+    doc,
+    win,
+    measurer,
+    lifecycle,
+    getSettings: () => ({ cursorStyle: "Box", colorLight: "#333", colorDark: "#fff", glow: false, showChar: false, blinkingEnabled: false }),
+  });
+
+  assert.equal(darkMqCalls, 1);
+
+  listeners.get("input")({ target: textarea });
+  listeners.get("input")({ target: textarea });
+  listeners.get("keyup")({ target: textarea });
+  assert.equal(darkMqCalls, 1);
+});
+
+test("glow uses two rgba layers from hexToRgba", () => {
+  const { lite, listeners, textarea } = installHarness(
+    {},
+    {},
+    { glow: true, colorLight: "#00695e", colorDark: "#48d0c0" }
+  );
+  listeners.get("focusin")({ target: textarea });
+  const shadow = String(lite.overlay.style.boxShadow);
+  assert.match(shadow, /rgba\(0, 105, 94/);
+  assert.equal(shadow.split(",").length >= 2, true);
 });

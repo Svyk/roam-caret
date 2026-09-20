@@ -189,3 +189,36 @@ test("createCaretMeasurer caches computed style per element and dispose removes 
   assert.equal(body.children.length, 0);
   assert.equal(measurer.measure(el), null);
 });
+
+test("createCaretMeasurer reuses marker and glyph nodes after the first measure", () => {
+  const { doc, body } = createFakeDoc();
+  const win = {
+    getComputedStyle() {
+      return fakeComputed();
+    },
+    addEventListener() {},
+    removeEventListener() {},
+  };
+  let createCalls = 0;
+  const origCreate = doc.createElement.bind(doc);
+  doc.createElement = (tag) => {
+    createCalls += 1;
+    return origCreate(tag);
+  };
+
+  const measurer = createCaretMeasurer({ doc, win });
+  const el = fakeTextEl(doc);
+  measurer.measure(el);
+  const afterFirst = createCalls;
+
+  for (let i = 0; i < 50; i += 1) {
+    el.selectionStart = (i % 5) + 1;
+    measurer.measure(el);
+  }
+  assert.equal(createCalls, afterFirst);
+
+  const mirror = body.children[0];
+  assert.equal(mirror.children.length, 3);
+
+  measurer.dispose();
+});

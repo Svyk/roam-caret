@@ -135,6 +135,17 @@ export function createCaretMeasurer({ doc, win, lifecycle } = {}) {
   style.overflowWrap = "break-word";
   mirror.setAttribute("aria-hidden", "true");
 
+  const prefixNode = documentRef.createElement("span");
+  const marker = documentRef.createElement("span");
+  marker.style.display = "inline-block";
+  marker.style.width = "0";
+  marker.style.verticalAlign = "top";
+  marker.textContent = MARKER_CHAR;
+  const glyphEl = documentRef.createElement("span");
+  mirror.appendChild(prefixNode);
+  mirror.appendChild(marker);
+  mirror.appendChild(glyphEl);
+
   const parent = documentRef.body || documentRef.documentElement || globalThis.document?.body;
   if (lifecycle) lifecycle.node(mirror, parent);
   else parent.append(mirror);
@@ -167,19 +178,9 @@ export function createCaretMeasurer({ doc, win, lifecycle } = {}) {
     const start = Math.min(el.selectionStart ?? value.length, value.length);
     const { underCaret, hasGlyph } = glyphAt(value, start);
 
-    mirror.textContent = value.slice(0, start);
-
-    const marker = documentRef.createElement("span");
-    marker.style.display = "inline-block";
-    marker.style.width = "0";
+    prefixNode.textContent = value.slice(0, start);
     marker.style.height = `${metrics.lineHeightPx}px`;
-    marker.style.verticalAlign = "top";
-    marker.textContent = MARKER_CHAR;
-    mirror.appendChild(marker);
-
-    const glyphEl = documentRef.createElement("span");
     glyphEl.textContent = underCaret;
-    mirror.appendChild(glyphEl);
 
     const box = el.getBoundingClientRect();
     const glyphWidth = glyphEl.offsetWidth || metrics.fontSizePx * 0.6 || 8;

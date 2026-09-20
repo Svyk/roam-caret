@@ -1,4 +1,4 @@
-/* Cursor Smith v0.2.0 | MIT | generated; edit src/ */
+/* Roam Caret v0.3.0 | MIT | generated; edit src/ */
 
 // src/lifecycle.js
 function isPromiseLike(value) {
@@ -14,7 +14,7 @@ function createLifecycle() {
   const add = (disposer) => {
     if (typeof disposer !== "function") throw new TypeError("A disposer must be a function");
     if (disposed) {
-      void callSafely(disposer).catch((error) => console.error("[cursor-smith] Late cleanup failed", error));
+      void callSafely(disposer).catch((error) => console.error("[roam-caret] Late cleanup failed", error));
       return disposer;
     }
     disposers.push(disposer);
@@ -85,3942 +85,57 @@ function createLifecycle() {
   };
 }
 
-// src/settings.js
-var OPTIONS_KEY = "options";
-function loadOptions(extensionAPI) {
-  const raw = extensionAPI.settings.get(OPTIONS_KEY);
-  return raw == null ? null : raw;
+// src/open-settings.js
+var SETTINGS_TAB_SELECTOR = '[role="tab"]';
+var DEPOT_BUTTON_SELECTOR = ".rm-left-sidebar__roam-depot";
+function normalizedText(node) {
+  return String(node?.textContent || node?.innerText || "").replace(/\s+/g, " ").trim();
 }
-async function persistOptions(extensionAPI, value) {
-  await extensionAPI.settings.set(OPTIONS_KEY, value);
+function findRoamCaretSettingsTab(documentLike) {
+  const tabs = Array.from(documentLike?.querySelectorAll?.(SETTINGS_TAB_SELECTOR) || []);
+  const exactDev = tabs.find((tab) => normalizedText(tab) === "Roam Caret (dev)");
+  if (exactDev) return exactDev;
+  const exactRelease = tabs.find((tab) => normalizedText(tab) === "Roam Caret");
+  if (exactRelease) return exactRelease;
+  return tabs.find((tab) => /^Roam Caret(?:\s|\(|$)/i.test(normalizedText(tab))) || null;
 }
-
-// src/caret-measure.js
-var MARKER_CHAR = "​";
-var SKIP_HOST_SELECTOR = ".rg-root, .pxd-root";
-var MIRROR_PROPERTIES = Object.freeze([
-  "boxSizing",
-  "width",
-  "paddingTop",
-  "paddingRight",
-  "paddingBottom",
-  "paddingLeft",
-  "borderTopWidth",
-  "borderRightWidth",
-  "borderBottomWidth",
-  "borderLeftWidth",
-  "fontFamily",
-  "fontSize",
-  "fontWeight",
-  "fontStyle",
-  "fontVariant",
-  "letterSpacing",
-  "textTransform",
-  "textIndent",
-  "lineHeight",
-  "tabSize",
-  "direction"
-]);
-function isTextTarget(element) {
-  if (!element || !element.tagName) return false;
-  if (element.tagName === "TEXTAREA") return true;
-  if (element.tagName !== "INPUT") return false;
-  const type = (element.getAttribute?.("type") || "text").toLowerCase();
-  return ["text", "search", "url", "tel", "email", "number"].includes(type);
+function selectRoamCaretSettingsTab(documentLike) {
+  const tab = findRoamCaretSettingsTab(documentLike);
+  if (!tab || typeof tab.click !== "function") return false;
+  tab.click();
+  return true;
 }
-function isSkippedHost(el2) {
-  return !!el2?.closest?.(SKIP_HOST_SELECTOR);
-}
-function px(value, fallback = 0) {
-  const parsed = Number.parseFloat(value);
-  return Number.isFinite(parsed) ? parsed : fallback;
-}
-function projectCaretRect({
-  box,
-  offsetW,
-  offsetH,
-  markerLeft,
-  markerTop,
-  scrollLeft,
-  scrollTop,
-  borderLeft,
-  borderTop,
-  padLeft,
-  padTop,
-  padRight,
-  padBottom,
-  glyphWidth,
-  lineHeightPx,
-  hasGlyph,
-  glyph
-}) {
-  const scaleX = offsetW ? box.width / offsetW : 1;
-  const scaleY = offsetH ? box.height / offsetH : 1;
-  const x = box.left + (borderLeft + markerLeft - scrollLeft) * scaleX;
-  const y = box.top + (borderTop + markerTop - scrollTop) * scaleY;
-  const width = glyphWidth * scaleX;
-  const height = lineHeightPx * scaleY;
-  const boxRight = box.right ?? box.left + box.width;
-  const boxBottom = box.bottom ?? box.top + box.height;
-  const content = {
-    left: box.left + (borderLeft + padLeft) * scaleX,
-    top: box.top + (borderTop + padTop) * scaleY,
-    right: boxRight - (borderLeft + padRight) * scaleX,
-    bottom: boxBottom - (borderTop + padBottom) * scaleY
-  };
-  const visible = x + width > content.left && x < content.right && y + height > content.top && y < content.bottom;
-  return {
-    x,
-    y,
-    width,
-    height,
-    glyph: hasGlyph ? glyph : "",
-    visible
-  };
-}
-function readMetrics(computed) {
-  const fontSizePx = px(computed.fontSize, 16);
-  return {
-    borderLeft: px(computed.borderLeftWidth),
-    borderTop: px(computed.borderTopWidth),
-    padLeft: px(computed.paddingLeft),
-    padTop: px(computed.paddingTop),
-    padRight: px(computed.paddingRight),
-    padBottom: px(computed.paddingBottom),
-    lineHeightPx: px(computed.lineHeight) || fontSizePx * 1.2 || 19,
-    fontFamily: computed.fontFamily || "",
-    fontSize: computed.fontSize || "",
-    fontWeight: computed.fontWeight || "",
-    fontStyle: computed.fontStyle || "",
-    color: computed.color || "",
-    fontSizePx
-  };
-}
-function glyphAt(value, start) {
-  const underCaret = value[start] && value[start] !== "\n" ? value[start] : "0";
-  const hasGlyph = underCaret !== "0" || value[start] === "0";
-  return { underCaret, hasGlyph };
-}
-function createCaretMeasurer({ doc, win, lifecycle } = {}) {
-  const documentRef = doc || globalThis.document;
-  const windowRef = win || documentRef?.defaultView || globalThis;
-  const subscribers = /* @__PURE__ */ new Set();
-  let cachedEl = null;
-  let metrics = null;
-  let latestRect = null;
-  let disposed = false;
-  const mirror = documentRef.createElement("div");
-  const style = mirror.style;
-  style.position = "absolute";
-  style.top = "0";
-  style.left = "-99999px";
-  style.visibility = "hidden";
-  style.height = "auto";
-  style.whiteSpace = "pre-wrap";
-  style.overflowWrap = "break-word";
-  mirror.setAttribute("aria-hidden", "true");
-  const parent = documentRef.body || documentRef.documentElement || globalThis.document?.body;
-  if (lifecycle) lifecycle.node(mirror, parent);
-  else parent.append(mirror);
-  const invalidate = () => {
-    cachedEl = null;
-    metrics = null;
-  };
-  if (windowRef?.addEventListener) {
-    windowRef.addEventListener("resize", invalidate);
+var defaultWait = (delay) => new Promise((resolve) => setTimeout(resolve, delay));
+async function openRoamCaretSettings({
+  documentLike = typeof document !== "undefined" ? document : null,
+  roamAlphaAPI = typeof window !== "undefined" ? window.roamAlphaAPI : null,
+  wait = defaultWait,
+  attempts = 24,
+  intervalMs = 50
+} = {}) {
+  if (!documentLike) return false;
+  if (selectRoamCaretSettingsTab(documentLike)) return true;
+  let depotButton = documentLike.querySelector?.(DEPOT_BUTTON_SELECTOR) || null;
+  if (!depotButton) {
+    try {
+      await roamAlphaAPI?.ui?.leftSidebar?.open?.();
+    } catch {
+    }
+    depotButton = documentLike.querySelector?.(DEPOT_BUTTON_SELECTOR) || null;
   }
-  const notify = (rect) => {
-    for (const fn of subscribers) fn(rect);
-  };
-  const measure = (el2) => {
-    if (disposed) return null;
-    if (!isTextTarget(el2) || isSkippedHost(el2)) return null;
-    if (el2 !== cachedEl) {
-      const computedStyle = windowRef.getComputedStyle(el2);
-      for (const name of MIRROR_PROPERTIES) style[name] = computedStyle[name];
-      metrics = readMetrics(computedStyle);
-      cachedEl = el2;
-    }
-    const value = el2.value ?? "";
-    const start = Math.min(el2.selectionStart ?? value.length, value.length);
-    const { underCaret, hasGlyph } = glyphAt(value, start);
-    mirror.textContent = value.slice(0, start);
-    const marker = documentRef.createElement("span");
-    marker.style.display = "inline-block";
-    marker.style.width = "0";
-    marker.style.height = `${metrics.lineHeightPx}px`;
-    marker.style.verticalAlign = "top";
-    marker.textContent = MARKER_CHAR;
-    mirror.appendChild(marker);
-    const glyphEl = documentRef.createElement("span");
-    glyphEl.textContent = underCaret;
-    mirror.appendChild(glyphEl);
-    const box = el2.getBoundingClientRect();
-    const glyphWidth = glyphEl.offsetWidth || metrics.fontSizePx * 0.6 || 8;
-    const rect = {
-      ...projectCaretRect({
-        box,
-        offsetW: el2.offsetWidth || 0,
-        offsetH: el2.offsetHeight || 0,
-        markerLeft: marker.offsetLeft || 0,
-        markerTop: marker.offsetTop || 0,
-        scrollLeft: el2.scrollLeft || 0,
-        scrollTop: el2.scrollTop || 0,
-        borderLeft: metrics.borderLeft,
-        borderTop: metrics.borderTop,
-        padLeft: metrics.padLeft,
-        padTop: metrics.padTop,
-        padRight: metrics.padRight,
-        padBottom: metrics.padBottom,
-        glyphWidth,
-        lineHeightPx: metrics.lineHeightPx,
-        hasGlyph,
-        glyph: underCaret
-      }),
-      fontFamily: metrics.fontFamily,
-      fontSize: metrics.fontSize,
-      fontWeight: metrics.fontWeight,
-      fontStyle: metrics.fontStyle,
-      color: metrics.color,
-      el: el2
-    };
-    latestRect = rect;
-    notify(rect);
-    return rect;
-  };
-  return {
-    measure,
-    latest() {
-      return latestRect;
-    },
-    subscribe(fn) {
-      subscribers.add(fn);
-      return () => subscribers.delete(fn);
-    },
-    isSkippedHost,
-    dispose() {
-      if (disposed) return;
-      disposed = true;
-      subscribers.clear();
-      cachedEl = null;
-      metrics = null;
-      latestRect = null;
-      if (windowRef?.removeEventListener) {
-        windowRef.removeEventListener("resize", invalidate);
-      }
-      mirror.remove();
-    }
-  };
-}
-
-// src/caret-lite.js
-function isPasswordField(el2) {
-  if (!el2) return false;
-  const type = String(el2.type || el2.getAttribute?.("type") || "").toLowerCase();
-  return type === "password";
-}
-function isDark(doc, win) {
-  const root = doc?.documentElement;
-  const body = doc?.body;
-  if (root?.classList?.contains("bp3-dark")) return true;
-  if (body?.classList?.contains("bt-theme-dark")) return true;
-  if (body?.classList?.contains("rm-dark-theme")) return true;
-  if (body?.classList?.contains("roam-body") && body?.classList?.contains("dark")) return true;
-  const prefersDark = !!win?.matchMedia?.("(prefers-color-scheme: dark)")?.matches;
-  return prefersDark && !root?.classList?.contains("bp3-light");
-}
-function hasRangeSelection(el2) {
-  if (el2?.selectionStart == null || el2?.selectionEnd == null) return false;
-  return el2.selectionStart !== el2.selectionEnd;
-}
-function installLiteCaret({ doc, win, measurer, lifecycle, getSettings } = {}) {
-  const documentRef = doc || globalThis.document;
-  const windowRef = win || documentRef?.defaultView || globalThis;
-  let settings = typeof getSettings === "function" ? getSettings() || {} : {};
-  let active = null;
-  let disposed = false;
-  const overlay = documentRef.createElement("div");
-  overlay.className = "cs-lite-caret";
-  const style = overlay.style;
-  style.pointerEvents = "none";
-  style.position = "fixed";
-  style.top = "0";
-  style.left = "0";
-  style.zIndex = "40";
-  style.willChange = "transform";
-  style.transformOrigin = "0 0";
-  style.display = "none";
-  const glyph = documentRef.createElement("span");
-  glyph.className = "cs-lite-glyph";
-  overlay.appendChild(glyph);
-  const parent = documentRef.body || documentRef.documentElement;
-  if (lifecycle?.node) lifecycle.node(overlay, parent);
-  else parent.append(overlay);
-  const motionQuery = windowRef?.matchMedia?.("(prefers-reduced-motion: reduce)");
-  let reducedMotion = !!motionQuery?.matches;
-  const readSettings = () => {
-    if (typeof getSettings === "function") settings = getSettings() || {};
-    return settings;
-  };
-  const hide = () => {
-    overlay.style.display = "none";
-  };
-  const syncBlink = ({ ping } = {}) => {
-    const shouldBlink = !!settings.blinkingEnabled && !reducedMotion;
-    if (ping) overlay.classList.remove("cs-lite-blink");
-    if (shouldBlink) {
-      if (ping) void overlay.offsetWidth;
-      overlay.classList.add("cs-lite-blink");
-    } else {
-      overlay.classList.remove("cs-lite-blink");
-    }
-  };
-  const applyTransform = (rect, el2) => {
-    if (!el2 || isPasswordField(el2) || !isTextTarget(el2) || isSkippedHost(el2) || hasRangeSelection(el2) || !rect || !rect.visible) {
-      hide();
-      return;
-    }
-    const color = isDark(documentRef, windowRef) ? settings.colorDark || "" : settings.colorLight || "";
-    const cursorStyle = settings.cursorStyle || "Box";
-    let x = rect.x;
-    let y = rect.y;
-    let width = rect.width;
-    let height = rect.height;
-    if (cursorStyle === "Line") {
-      width = settings.caretWidthPx ?? 2;
-      height = rect.height;
-      overlay.style.borderRadius = "";
-      overlay.style.border = "";
-      overlay.style.background = color;
-    } else if (cursorStyle === "Underline") {
-      const bar = settings.underlineWidthPx || 2;
-      width = rect.width;
-      height = bar;
-      y = rect.y + rect.height - bar;
-      overlay.style.borderRadius = "";
-      overlay.style.border = "";
-      overlay.style.background = color;
-    } else {
-      overlay.style.borderRadius = "1px";
-      if (settings.boxHollow) {
-        overlay.style.background = "transparent";
-        overlay.style.border = `${settings.boxHollowWidth || 2}px solid ${color}`;
-      } else {
-        overlay.style.border = "";
-        overlay.style.background = color;
-      }
-    }
-    overlay.style.display = "";
-    overlay.style.transform = `translate(${x}px, ${y}px)`;
-    overlay.style.width = `${width}px`;
-    overlay.style.height = `${height}px`;
-    overlay.style.boxShadow = settings.glow ? `0 0 6px ${color}` : "";
-    if (settings.showChar) {
-      glyph.textContent = rect.glyph || "";
-      glyph.style.display = "block";
-    } else {
-      glyph.textContent = "";
-      glyph.style.display = "none";
-    }
-  };
-  const measureAndApply = (el2, { ping } = {}) => {
-    if (disposed) return;
-    readSettings();
-    const target = el2 || documentRef.activeElement;
-    if (!target || isPasswordField(target) || !isTextTarget(target)) {
-      hide();
-      return;
-    }
-    active = target;
-    const rect = measurer.measure(target);
-    applyTransform(rect, target);
-    syncBlink({ ping });
-  };
-  const onFocusIn = (event) => {
-    const target = event?.target;
-    if (!target || isPasswordField(target) || !isTextTarget(target)) return;
-    active = target;
-    measureAndApply(target, { ping: true });
-  };
-  const onFocusOut = (event) => {
-    const next = event?.relatedTarget || documentRef.activeElement;
-    if (next && isTextTarget(next) && !isPasswordField(next)) return;
-    active = null;
-    hide();
-  };
-  const onInput = (event) => {
-    const target = event?.target || documentRef.activeElement;
-    measureAndApply(target, { ping: true });
-  };
-  const onRefreshEvent = () => {
-    measureAndApply(documentRef.activeElement);
-  };
-  const onMotionChange = () => {
-    reducedMotion = !!motionQuery?.matches;
-    syncBlink();
-  };
-  const refresh = () => {
-    if (disposed) return;
-    readSettings();
-    const target = documentRef.activeElement;
-    if (target && isTextTarget(target) && !isPasswordField(target)) {
-      active = target;
-      const rect = measurer.measure(target);
-      applyTransform(rect, target);
-      syncBlink({ ping: true });
-      return;
-    }
-    hide();
-  };
-  const docListeners = [
-    ["focusin", onFocusIn, false],
-    ["focusout", onFocusOut, false],
-    ["input", onInput, true],
-    ["selectionchange", onRefreshEvent, false],
-    ["keyup", onRefreshEvent, true],
-    ["mouseup", onRefreshEvent, true]
-  ];
-  for (const [type, fn, capture] of docListeners) {
-    documentRef.addEventListener(type, fn, capture);
+  if (!depotButton || typeof depotButton.click !== "function") return false;
+  depotButton.click();
+  for (let attempt = 0; attempt < attempts; attempt += 1) {
+    if (selectRoamCaretSettingsTab(documentLike)) return true;
+    await wait(intervalMs);
   }
-  windowRef.addEventListener("scroll", onRefreshEvent, true);
-  windowRef.addEventListener("resize", onRefreshEvent);
-  motionQuery?.addEventListener?.("change", onMotionChange);
-  const dispose = () => {
-    if (disposed) return;
-    disposed = true;
-    for (const [type, fn, capture] of docListeners) {
-      documentRef.removeEventListener(type, fn, capture);
-    }
-    windowRef.removeEventListener("scroll", onRefreshEvent, true);
-    windowRef.removeEventListener("resize", onRefreshEvent);
-    motionQuery?.removeEventListener?.("change", onMotionChange);
-    overlay.remove();
-    active = null;
-  };
-  return {
-    refresh,
-    dispose,
-    get overlay() {
-      return overlay;
-    },
-    get active() {
-      return active;
-    }
-  };
+  return false;
 }
 
 // src/cursor-smith.js
 var __defProp = Object.defineProperty;
 var __name = (target, value) => __defProp(target, "name", { value, configurable: true });
-var tokens_default = `/*
- * Thymer Plugin Settings UI — Design Tokens
- *
- * Canonical CSS custom properties for the plugin settings panel system.
- * Plugins consume this verbatim; component CSS reads from these vars.
- *
- * See shared/settings-ui/DESIGN.md for rationale.
- *
- * Thymer var names verified against library/css-tokens/ (ripped from shipped CSS).
- * Fallbacks use color-mix(currentColor) so panels work when a token is absent.
- *
- * SCOPE IS DOUBLED ON PURPOSE (.tps-panel.tps-panel, specificity 0,2,0).
- * Every plugin bundles its own copy of this file and injects it into the same
- * document, all declaring the same global .tps-panel class. At equal specificity
- * the last stylesheet injected wins for EVERY panel in the app, so one plugin
- * running an outdated bundle silently redefines these tokens for all the others.
- * That shipped: pre-1f753f6 builds set --tps-accent from --accent-color, a var
- * Thymer never defines, which collapsed the accent to currentColor (white text)
- * across every installed plugin's panel. Doubling the class lets a current copy
- * outrank any stale plain-.tps-panel copy regardless of injection order.
- * Do not "simplify" this back to a single class.
- */
-
-.tps-panel.tps-panel {
-/* ── Color: text ──────────────────────────────────────────────────── */
---tps-text:           var(--text-default,   currentColor);
---tps-text-muted:     var(--text-muted,     color-mix(in srgb, currentColor 62%, transparent));
---tps-text-faint:     var(--text-subtle,    color-mix(in srgb, currentColor 48%, transparent));
---tps-text-whisper:   var(--text-disabled,  color-mix(in srgb, currentColor 34%, transparent));
-
-/* ── Color: surfaces ─────────────────────────────────────────────── */
---tps-bg-input:       var(--input-bg-color,
-                      color-mix(in srgb, currentColor 6%, transparent));
---tps-bg-hover:       var(--hover-subtle,
-                      var(--sidebar-bg-hover,
-                      color-mix(in srgb, currentColor 8%, transparent)));
---tps-bg-active:      var(--active-bg-color,
-                      color-mix(in srgb, currentColor 12%, transparent));
-
-/* ── Color: borders / dividers ───────────────────────────────────── */
---tps-divider:        var(--divider-color,
-                      var(--thin-divider-color,
-                      color-mix(in srgb, currentColor 14%, transparent)));
---tps-border:         var(--input-border-color,
-                      var(--divider-color,
-                      color-mix(in srgb, currentColor 22%, transparent)));
---tps-border-strong:  var(--titlebar-border-color,
-                      var(--selection-border,
-                      color-mix(in srgb, currentColor 32%, transparent)));
-
-/* ── Color: accent (Thymer uses --logo-color) ─────────────────────── */
-/* Fallback is a real color, never currentColor: an accent that degrades into
-   the text color fails invisibly. Deliberately the brand mark, not the theme's
-   --color-primary-500 — that one is a muted slate on themes like
-   basalt-bedrock, which would make checked rows harder to read, not easier. */
---tps-accent:         var(--logo-color, #04d1ab);
---tps-accent-soft:    color-mix(in srgb, var(--tps-accent) 15%, transparent);
---tps-accent-strong:  color-mix(in srgb, var(--tps-accent) 80%, var(--tps-text));
-
-/* ── Color: semantic ──────────────────────────────────────────────── */
---tps-danger:         var(--enum-red-fg, #ef4444);
---tps-danger-soft:    color-mix(in srgb, var(--tps-danger) 15%, transparent);
---tps-warning:        var(--text-warning,
-                      var(--enum-yellow-fg, #f59e0b));
---tps-success:        var(--enum-green-fg, #10b981);
---tps-success-soft:   color-mix(in srgb, var(--tps-success) 12%, transparent);
-
---tps-on-accent:      var(--text-on-accent, light-dark(#111111, #fafafa));
-
-/* Panel chrome */
---tps-panel-bg:       var(--panel-bg-color, transparent);
---tps-swatch-inset:   color-mix(in srgb, var(--tps-text) 8%, transparent);
-
-/* ── Typography ───────────────────────────────────────────────────── */
-/* Font is INHERITED from Thymer's panel chrome (see components.css). */
-
---tps-fs-title:       18px;
---tps-fs-lede:        13px;
---tps-fs-section:     11px;
---tps-fs-hint:        12px;
---tps-fs-label:       13px;
---tps-fs-desc:        12px;
---tps-fs-body:        13px;
---tps-fs-value:       12px;
---tps-fs-button:      12px;
---tps-fs-list-header: 10px;
-
---tps-lh-tight:       1;
---tps-lh-snug:        1.2;
---tps-lh-base:        1.4;
---tps-lh-loose:       1.5;
-
---tps-fw-regular:     400;
---tps-fw-medium:      500;
---tps-fw-semibold:    600;
---tps-fw-bold:        700;
-
---tps-ls-section:     0.06em;
---tps-ls-list:        0.08em;
---tps-ls-title:       0;
-
-/* ── Spacing (8px scale) ──────────────────────────────────────────── */
---tps-space-1:        4px;
---tps-space-2:        8px;
---tps-space-3:        12px;
---tps-space-4:        16px;
---tps-space-5:        24px;
---tps-space-6:        32px;
---tps-space-7:        48px;
-
-/* ── Radii ────────────────────────────────────────────────────────── */
---tps-radius-sm:      4px;
---tps-radius-md:      6px;
---tps-radius-lg:      8px;
---tps-radius-pill:    999px;
---tps-radius-circle:  50%;
-
-/* ── Motion ───────────────────────────────────────────────────────── */
---tps-ease-out:       cubic-bezier(0.2, 0.6, 0.2, 1);
---tps-ease-in-out:    cubic-bezier(0.4, 0, 0.2, 1);
---tps-dur-fast:       80ms;
---tps-dur-base:       160ms;
-
---tps-shadow-thumb:   0 1px 3px color-mix(in srgb, var(--tps-text) 28%, transparent);
-
-/* ── Component dimensions ─────────────────────────────────────────── */
---tps-control-h-sm:   28px;
---tps-control-h-md:   32px;
---tps-input-w:        64px;
---tps-num-step-w:     28px;
---tps-swatch-size:    22px;
---tps-thumb-size:     16px;
---tps-track-h:        6px;
-
---tps-slider-track:   color-mix(in srgb, var(--tps-text) 22%, transparent);
---tps-slider-thumb-border: color-mix(in srgb, var(--tps-text) 28%, transparent);
-}
-
-@media (prefers-reduced-motion: reduce) {
-.tps-panel.tps-panel {
-  --tps-dur-fast:     1ms;
-  --tps-dur-base:     1ms;
-}
-}
-`;
-var components_default = `/*
- * Thymer Plugin Panel — Component Primitives
- *
- * All primitives scope under .tps-panel. Plugin-specific styles live elsewhere.
- * Reads tokens from tokens.css.
- */
-
-/* ── Panel root ─────────────────────────────────────────────────────── */
-
-/* Inherit Thymer's font + sizing — DO NOT override. plugin-collection-icons
- demonstrates the right approach: simply \`font-family: inherit\`. Forcing a
- custom var fights both Thymer's body font AND the .ti icon font. */
-.tps-panel {
-font-family: inherit;
-font-size: var(--tps-fs-body);
-line-height: var(--tps-lh-base);
-color: var(--tps-text);
-padding: 0 var(--tps-space-5) var(--tps-space-7);
-width: 100%;
-height: 100%;
-box-sizing: border-box;
-overflow: auto;
-}
-
-.tps-panel *,
-.tps-panel *::before,
-.tps-panel *::after {
-box-sizing: border-box;
-}
-
-/* Mono opt-ins are explicit per-element, never via a panel-wide override. */
-.tps-panel .tps-num-input,
-.tps-panel .tps-slider-value,
-.tps-panel .tps-mono,
-.tps-panel .tps-mono * {
-font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, "Courier New", monospace;
-}
-
-/* ── Title block ────────────────────────────────────────────────────── */
-
-.tps-title {
-font-size: var(--tps-fs-title);
-line-height: var(--tps-lh-snug);
-font-weight: var(--tps-fw-semibold);
-letter-spacing: var(--tps-ls-title);
-color: var(--tps-text);
-margin: 0 0 var(--tps-space-1);
-}
-
-.tps-lede {
-font-size: var(--tps-fs-lede);
-line-height: var(--tps-lh-loose);
-color: var(--tps-text-muted);
-margin: 0 0 var(--tps-space-3);
-}
-
-/* ── Canonical plugin header ───────────────────────────────────────── */
-
-.tps-plugin-header {
-position: relative;
-margin: var(--tps-space-5) 0 var(--tps-space-5);
-padding: 18px var(--tps-space-4);
-overflow: hidden;
-background:
-  linear-gradient(to right,
-    #f26548  8%, #f26548 28%,
-    #fbac56 28%, #fbac56 48%,
-    #fff460 48%, #fff460 68%,
-    #f067a6 68%, #f067a6 88%,
-    #03bdf2 88%
-  ) top left / 100% 1px no-repeat,
-  linear-gradient(to right,
-    #f26548  0%, #f26548 12%,
-    #fbac56 12%, #fbac56 32%,
-    #fff460 32%, #fff460 52%,
-    #f067a6 52%, #f067a6 72%,
-    #03bdf2 72%, #03bdf2 92%
-  ) bottom left / 100% 1px no-repeat,
-  var(--tps-panel-bg, var(--panel-bg-color, var(--plg-ci-theme-bg, transparent)));
-border-left: 1px solid #f26548;
-border-right: 1px solid #03bdf2;
-}
-
-.tps-plugin-header-logo {
-display: inline-flex;
-align-items: center;
-justify-content: center;
-padding: var(--tps-space-2, 8px);
-margin: 0 0 var(--tps-space-3, 12px);
-background: var(--tps-bg-hover);
-border-radius: var(--tps-radius-md, 6px);
-}
-
-.tps-plugin-header-logo-icon {
-flex: 0 0 auto;
-font-size: 34px;
-line-height: 1;
-color: var(--tps-text, currentColor);
-}
-
-.tps-plugin-header-title {
-font-size: 22px;
-line-height: var(--tps-lh-snug, 1.2);
-font-weight: var(--tps-fw-semibold, 600);
-letter-spacing: 0;
-color: var(--tps-text, var(--text-default, currentColor));
-margin: 0 0 var(--tps-space-3, 12px);
-}
-
-.tps-panel .tps-plugin-header-version {
-display: inline-flex;
-flex: 0 0 auto;
-align-items: center;
-font-size: 11px;
-line-height: inherit;
-font-weight: var(--tps-fw-medium, 500);
-letter-spacing: 0;
-color: var(--tps-text-faint) !important;
-white-space: nowrap;
-}
-
-.tps-plugin-header-lede {
-font-size: 14px;
-line-height: var(--tps-lh-base, 1.4);
-color: var(--tps-text-muted);
-margin: 0 0 var(--tps-space-3, 12px);
-}
-
-.tps-plugin-header-helper-wrap {
-margin: 0 0 var(--tps-space-3, 12px);
-}
-
-.tps-plugin-header-helper-toggle {
-display: inline-flex;
-align-items: center;
-gap: 6px;
-padding: 0;
-margin: 0;
-border: 0;
-background: transparent;
-color: inherit;
-opacity: 0.28;
-font: inherit;
-font-size: var(--tps-fs-section, 11px);
-font-weight: var(--tps-fw-semibold, 600);
-line-height: var(--tps-lh-tight, 1);
-letter-spacing: var(--tps-ls-section, 0.06em);
-text-transform: uppercase;
-cursor: pointer;
-transition: opacity var(--tps-dur-fast, 80ms) var(--tps-ease-out, ease-out);
-}
-
-.tps-plugin-header-helper-toggle:hover {
-opacity: 0.72;
-}
-
-.tps-plugin-header-helper-toggle:focus-visible {
-outline: 1px solid color-mix(in srgb, var(--tps-accent, currentColor) 45%, transparent);
-outline-offset: 2px;
-}
-
-.tps-plugin-header-helper-icon {
-display: inline-flex;
-align-items: center;
-justify-content: center;
-flex: 0 0 auto;
-width: 13px;
-height: 13px;
-font-size: 13px;
-line-height: 1;
-color: inherit;
-}
-
-.tps-plugin-header-helper-wrap[data-open="true"] .tps-plugin-header-helper-toggle {
-opacity: 0.72;
-}
-
-.tps-plugin-header-helper-wrap[data-open="true"] .tps-plugin-header-helper-toggle:hover {
-opacity: 1;
-}
-
-.tps-plugin-header-helper-body {
-display: none;
-margin: 8px 0 0;
-padding-left: 18px;
-}
-
-.tps-plugin-header-helper-wrap[data-open="true"] .tps-plugin-header-helper-body {
-display: block;
-cursor: pointer;
-}
-
-.tps-plugin-header-helper-line {
-margin: 0;
-font-size: var(--tps-fs-hint, 12px);
-line-height: var(--tps-lh-base, 1.4);
-color: inherit;
-opacity: 0.72;
-transition: opacity var(--tps-dur-fast, 80ms) var(--tps-ease-out, ease-out);
-}
-
-.tps-plugin-header-helper-wrap[data-open="true"] .tps-plugin-header-helper-body:hover .tps-plugin-header-helper-line {
-opacity: 1;
-}
-
-/* Scoped .tps-panel on purpose: every plugin injects its own copy of this
- file, and older copies baseline-align this row (plus translateY icon
- shims). Higher specificity here makes the newest layout win the cascade
- war regardless of plugin load order. */
-.tps-panel .tps-plugin-header-attr {
-position: relative;
-display: flex;
-align-items: center;
-flex-wrap: wrap;
-gap: 0;
-width: 100%;
-font-size: 11.5px;
-line-height: var(--tps-lh-base, 1.4);
-color: var(--tps-text-muted);
-margin: var(--tps-space-3, 12px) 0 0;
-padding-top: var(--tps-space-3, 12px);
-border-top: 0;
-}
-
-.tps-plugin-header-attr::before {
-content: '';
-position: absolute;
-top: 0;
-left: 0;
-width: clamp(40%, 50%, 55%);
-height: 1px;
-background: var(--tps-bg-hover);
-}
-
-.tps-plugin-header-link-group + .tps-plugin-header-link-group {
-margin-left: var(--tps-space-3, 12px);
-padding-left: var(--tps-space-3, 12px);
-border-left: 1px solid var(--tps-bg-hover);
-}
-
-.tps-panel .tps-plugin-header-icon,
-.tps-panel .tps-plugin-header-attr .ti {
-display: inline-flex;
-flex: 0 0 auto;
-align-items: center;
-justify-content: center;
-width: 12px;
-height: 12px;
-font-size: 12px;
-line-height: 1;
-color: var(--tps-text-muted);
-margin-right: var(--tps-space-1, 4px);
-}
-
-.tps-plugin-header-iconify {
-background-color: currentColor;
--webkit-mask-repeat: no-repeat;
-mask-repeat: no-repeat;
--webkit-mask-size: 100% 100%;
-mask-size: 100% 100%;
-}
-
-.tps-plugin-header-iconify-github {
---tps-iconify-github: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'%3E%3Cpath fill='black' d='M12 .297c-6.63 0-12 5.373-12 12 0 5.303 3.438 9.8 8.205 11.385.6.113.82-.258.82-.577 0-.285-.01-1.04-.015-2.04-3.338.724-4.042-1.61-4.042-1.61-.546-1.385-1.335-1.755-1.335-1.755-1.087-.744.084-.729.084-.729 1.205.084 1.838 1.236 1.838 1.236 1.07 1.835 2.809 1.305 3.495.998.108-.776.418-1.305.762-1.605-2.665-.3-5.466-1.332-5.466-5.93 0-1.31.465-2.38 1.235-3.22-.135-.303-.54-1.523.105-3.176 0 0 1.005-.322 3.3 1.23.96-.267 1.98-.399 3-.405 1.02.006 2.04.138 3 .405 2.28-1.552 3.285-1.23 3.285-1.23.645 1.653.24 2.873.12 3.176.765.84 1.23 1.91 1.23 3.22 0 4.61-2.805 5.625-5.475 5.92.42.36.81 1.096.81 2.22 0 1.606-.015 2.896-.015 3.286 0 .315.21.69.825.57C20.565 22.092 24 17.592 24 12.297c0-6.627-5.373-12-12-12'/%3E%3C/svg%3E");
--webkit-mask-image: var(--tps-iconify-github);
-mask-image: var(--tps-iconify-github);
-}
-
-.tps-plugin-header-link {
-color: inherit;
-text-decoration: underline;
-text-decoration-color: color-mix(in srgb, currentColor 42%, transparent);
-transition: color var(--tps-dur-fast, 80ms) var(--tps-ease-out, ease-out),
-            text-decoration-color var(--tps-dur-fast, 80ms) var(--tps-ease-out, ease-out),
-            filter var(--tps-dur-fast, 80ms) var(--tps-ease-out, ease-out);
-}
-
-.tps-plugin-header-link--blue,
-.tps-plugin-header-link--blue:hover {
-color: #03bdf2;
-text-decoration-color: #03bdf2;
-}
-
-.tps-plugin-header-link--pink,
-.tps-plugin-header-link--pink:hover {
-color: #f067a6;
-text-decoration-color: #f067a6;
-}
-
-.tps-plugin-header-link--muted,
-.tps-plugin-header-link--muted:hover {
-color: var(--tps-text-faint) !important;
-text-decoration-color: color-mix(in srgb, currentColor 42%, transparent);
-}
-
-.tps-plugin-header-link:hover {
-text-decoration: none;
-text-decoration-color: transparent;
-filter: brightness(1.2);
-}
-
-/* ── Header controls: scope pill + bug report + kill switch ────────── */
-
-/* Settings-scope cluster. Resting: one dim "All devices" pill. Diverged:
- pill lights amber (full-perimeter border + tint — never a single-edge
- accent) and the ↑ push / ↺ discard icon buttons appear beside it. Amber
- rides Thymer's orange enum tokens so it tracks the theme. */
-.tps-scope {
-display: inline-flex;
-align-items: center;
-gap: 4px;
-}
-
-.tps-scope-pill {
-display: inline-flex;
-align-items: center;
-gap: 5px;
-height: 22px;
-padding: 0 8px;
-border: 1px solid var(--tps-border, rgba(127, 127, 127, 0.16));
-border-radius: 999px;
-font-size: 10.5px;
-line-height: 1;
-white-space: nowrap;
-color: var(--tps-text-muted);
-background: transparent;
-user-select: none;
-}
-
-.tps-scope-dot {
-width: 6px;
-height: 6px;
-border-radius: 50%;
-background: var(--tps-text-muted);
-opacity: 0.55;
-}
-
-/* "This device" is a normal, saved state (per-device settings), NOT a warning —
- so it wears the calm brand accent, not an alarming amber. Full-perimeter
- border, never a single-edge accent. */
-.tps-scope-pill[data-diverged="true"] {
-color: var(--tps-accent);
-border-color: color-mix(in srgb, var(--tps-accent) 45%, transparent);
-background: var(--tps-accent-soft);
-}
-
-.tps-scope-pill[data-diverged="true"] .tps-scope-dot {
-background: var(--tps-accent);
-opacity: 1;
-}
-
-.tps-scope-btn {
-display: inline-flex;
-align-items: center;
-justify-content: center;
-width: 22px;
-height: 22px;
-padding: 0;
-border: 1px solid var(--tps-border, rgba(127, 127, 127, 0.16));
-border-radius: var(--tps-radius-sm, 4px);
-background: transparent;
-color: var(--tps-text-muted);
-cursor: pointer;
-transition: color var(--tps-dur-fast, 80ms) var(--tps-ease-out, ease-out),
-            background-color var(--tps-dur-fast, 80ms) var(--tps-ease-out, ease-out),
-            border-color var(--tps-dur-fast, 80ms) var(--tps-ease-out, ease-out);
-}
-
-/* Inline-SVG icons: a viewBox-centered vector in a block box has no font
- metrics — no baseline, no ascent/descent ink drift. The 14px vector in the
- 22px button gives an exact 4px inset on every side. */
-.tps-panel .tps-scope-svg {
-display: flex;
-width: 14px;
-height: 14px;
-flex: 0 0 auto;
-}
-
-.tps-panel .tps-scope-svg svg {
-width: 100%;
-height: 100%;
-display: block;
-}
-
-/* Optical correction for the (still webfont) bug glyph: near-zero descent
- rides the ink ~1px high of any line-box centering. */
-.tps-panel .tps-plugin-header-bug .ti::before {
-display: inline-block;
-transform: translateY(1px);
-}
-
-.tps-scope-btn:hover {
-color: var(--tps-text);
-background: var(--tps-bg-hover);
-border-color: var(--tps-border);
-}
-
-.tps-scope-btn:focus-visible {
-outline: 2px solid var(--tps-accent);
-outline-offset: 2px;
-}
-
-.tps-scope-btn--push:hover {
-color: var(--enum-green-fg, #3fa653);
-border-color: var(--enum-green-border, rgba(63, 166, 83, 0.45));
-background: var(--enum-green-bg, rgba(63, 166, 83, 0.12));
-}
-
-/* Armed state must beat the generic :hover recolor (same specificity, order-
- dependent) — scope it up so the icon reddens with the box, hovered or not. */
-.tps-panel .tps-scope-btn--discard[data-armed="true"],
-.tps-panel .tps-scope-btn--discard[data-armed="true"]:hover {
-color: var(--enum-red-fg, #d64545);
-border-color: var(--enum-red-border, rgba(214, 69, 69, 0.5));
-background: var(--enum-red-bg, rgba(214, 69, 69, 0.12));
-}
-
-.tps-scope-btn[disabled] {
-opacity: 0.5;
-cursor: default;
-}
-
-/* ── Header controls: bug report + kill switch ─────────────────────── */
-
-/* Last flex item of the attr row; margin-left:auto pins the group to the
- right edge, align-self:center opts out of the row's baseline alignment. */
-.tps-plugin-header-controls {
-display: inline-flex;
-align-items: center;
-gap: var(--tps-space-2, 8px);
-margin-left: auto;
-padding-left: var(--tps-space-3, 12px);
-}
-
-/* In-row placement (right of the version link). */
-.tps-panel .tps-plugin-header-attr > .tps-plugin-header-bug {
-margin-left: var(--tps-space-2, 8px);
-}
-
-.tps-plugin-header-bug {
-display: inline-flex;
-align-items: center;
-justify-content: center;
-width: 22px;
-height: 22px;
-padding: 0;
-border: 1px solid transparent;
-border-radius: var(--tps-radius-sm, 4px);
-background: transparent;
-color: var(--tps-text-muted);
-cursor: pointer;
-transition: color var(--tps-dur-fast, 80ms) var(--tps-ease-out, ease-out),
-            background-color var(--tps-dur-fast, 80ms) var(--tps-ease-out, ease-out),
-            border-color var(--tps-dur-fast, 80ms) var(--tps-ease-out, ease-out);
-}
-
-/* Undo the attr row's generic .ti treatment (translateY + margin) inside the button. */
-.tps-panel .tps-plugin-header-bug .ti {
-width: 14px;
-height: 14px;
-font-size: 14px;
-transform: none;
-margin: 0;
-}
-
-.tps-plugin-header-bug:hover {
-color: var(--tps-text);
-background: var(--tps-bg-hover);
-border-color: var(--tps-border);
-}
-
-.tps-plugin-header-bug:focus-visible {
-outline: 2px solid var(--tps-accent);
-outline-offset: 2px;
-}
-
-.tps-switch {
-position: relative;
-display: inline-flex;
-flex: 0 0 auto;
-width: 30px;
-height: 16px;
-padding: 0;
-border: 1px solid var(--tps-border);
-border-radius: var(--tps-radius-pill, 999px);
-background: var(--tps-bg-input);
-cursor: pointer;
-transition: background-color var(--tps-dur-base, 160ms) var(--tps-ease-out, ease-out),
-            border-color var(--tps-dur-base, 160ms) var(--tps-ease-out, ease-out);
-}
-
-.tps-switch-knob {
-position: absolute;
-top: 1px;
-left: 1px;
-width: 12px;
-height: 12px;
-border-radius: var(--tps-radius-circle, 50%);
-background: var(--tps-text-muted);
-transition: transform var(--tps-dur-base, 160ms) var(--tps-ease-out, ease-out),
-            background-color var(--tps-dur-base, 160ms) var(--tps-ease-out, ease-out);
-}
-
-.tps-switch[aria-checked="true"] {
-background: var(--tps-accent);
-border-color: var(--tps-accent);
-}
-
-.tps-switch[aria-checked="true"] .tps-switch-knob {
-transform: translateX(14px);
-background: var(--tps-on-accent, #fff);
-}
-
-.tps-switch:focus-visible {
-outline: 2px solid var(--tps-accent);
-outline-offset: 2px;
-}
-
-.tps-switch[data-busy],
-.tps-switch:disabled {
-opacity: 0.55;
-pointer-events: none;
-}
-
-/* Off-state "safe mode": dim the body, keep it interactive — edits stage in the
- plugin's local drafts and apply on re-enable. Keyed off the pill's aria state
- so the optimistic flip dims instantly and heal re-renders stay correct with
- no JS. The header (pill, bug button, off-note) stays full opacity — exclude
- any direct child containing it (collection-icons wraps the header in a row
- element, so exclude by content, not class). */
-.tps-panel:has(.tps-plugin-header .tps-switch[aria-checked="false"]) > :not(:has(.tps-plugin-header)) {
-opacity: 0.65;
-transition: opacity var(--tps-dur-base, 160ms) var(--tps-ease-out, ease-out);
-}
-
-/* Rendered whenever the header has a kill switch; shown only while it's off. */
-.tps-plugin-header-off-note {
-display: none;
-margin: var(--tps-space-2, 8px) 0 0;
-font-size: var(--tps-fs-hint, 12px);
-line-height: var(--tps-lh-base, 1.4);
-color: var(--tps-text-muted);
-}
-
-.tps-plugin-header:has(.tps-switch[aria-checked="false"]) .tps-plugin-header-off-note {
-display: block;
-}
-
-/* ── Feedback dialog (panel-scoped modal) ──────────────────────────── */
-
-/* The overlay positions against the .tps-panel root (the scroll container). */
-.tps-panel {
-position: relative;
-}
-
-.tps-feedback-overlay {
-position: absolute;
-left: 0;
-right: 0;
-z-index: 50;
-display: flex;
-align-items: center;
-justify-content: center;
-padding: var(--tps-space-4);
-background: color-mix(in srgb, var(--panel-bg-color, light-dark(#ffffff, #131316)) 55%, transparent);
--webkit-backdrop-filter: blur(6px);
-backdrop-filter: blur(6px);
-}
-
-@supports not ((backdrop-filter: blur(6px)) or (-webkit-backdrop-filter: blur(6px))) {
-.tps-feedback-overlay {
-  background: color-mix(in srgb, var(--panel-bg-color, light-dark(#ffffff, #131316)) 90%, transparent);
-}
-}
-
-/* Flex column with a growing description field: the card stretches to the
- available panel height (capped) and the textarea absorbs the difference,
- so the card itself never needs a scrollbar. */
-.tps-feedback-card {
-display: flex;
-flex-direction: column;
-width: min(440px, 100%);
-height: min(760px, 100%);
-overflow: auto;
-background: var(--panel-bg-color, light-dark(#ffffff, #17171b));
-border: 1px solid var(--tps-border);
-border-radius: var(--tps-radius-lg);
-padding: var(--tps-space-4);
-box-shadow: 0 12px 32px rgba(0, 0, 0, 0.35);
-}
-
-/* Rows keep their natural height — when content doesn't fit (e.g. the system
- report drawer opens in a short panel) the CARD scrolls; rows must never be
- squeezed into overlapping each other. Only the description field flexes. */
-.tps-feedback-card > * {
-flex: 0 0 auto;
-}
-
-.tps-feedback-card > .tps-feedback-field--grow {
-flex: 1 1 auto;
-}
-
-.tps-feedback-field--grow {
-display: flex;
-flex-direction: column;
-}
-
-.tps-feedback-field--grow .tps-feedback-textarea {
-flex: 1 1 auto;
-min-height: 72px;
-}
-
-.tps-feedback-head {
-display: flex;
-align-items: center;
-justify-content: space-between;
-margin: 0 0 var(--tps-space-2);
-}
-
-.tps-feedback-title {
-margin: 0;
-font-size: var(--tps-fs-label, 12.5px);
-font-weight: var(--tps-fw-semibold, 600);
-letter-spacing: var(--tps-ls-section, 0.06em);
-text-transform: uppercase;
-color: var(--tps-text);
-}
-
-.tps-feedback-close {
-display: inline-flex;
-align-items: center;
-justify-content: center;
-width: 22px;
-height: 22px;
-padding: 0;
-border: 1px solid transparent;
-border-radius: var(--tps-radius-sm, 4px);
-background: transparent;
-color: var(--tps-text-muted);
-cursor: pointer;
-font-size: 14px;
-}
-
-.tps-feedback-close:hover {
-color: var(--tps-text);
-background: var(--tps-bg-hover);
-border-color: var(--tps-border);
-}
-
-.tps-feedback-close:focus-visible {
-outline: 2px solid var(--tps-accent);
-outline-offset: 2px;
-}
-
-.tps-feedback-hint {
-margin: 0 0 var(--tps-space-3);
-font-size: var(--tps-fs-hint, 12px);
-line-height: var(--tps-lh-base, 1.4);
-color: var(--tps-text-muted);
-}
-
-.tps-feedback-field {
-display: block;
-margin: 0 0 var(--tps-space-3);
-}
-
-.tps-feedback-label {
-display: block;
-margin: 0 0 var(--tps-space-1);
-font-size: var(--tps-fs-label, 12.5px);
-font-weight: var(--tps-fw-medium, 500);
-color: var(--tps-text);
-}
-
-.tps-feedback-input,
-.tps-feedback-textarea {
-width: 100%;
-padding: var(--tps-space-1, 4px) var(--tps-space-2, 8px);
-font-family: inherit;
-font-size: var(--tps-fs-body, 13px);
-line-height: var(--tps-lh-base, 1.4);
-color: var(--tps-text);
-background: var(--tps-bg-input);
-border: 1px solid var(--tps-border);
-border-radius: var(--tps-radius-sm, 4px);
-}
-
-.tps-feedback-textarea {
-resize: vertical;
-min-height: 72px;
-}
-
-.tps-feedback-input:focus,
-.tps-feedback-textarea:focus {
-outline: none;
-border-color: color-mix(in srgb, var(--tps-accent) 60%, transparent);
-}
-
-.tps-feedback-input[aria-invalid="true"],
-.tps-feedback-textarea[aria-invalid="true"] {
-border-color: var(--tps-danger);
-}
-
-.tps-feedback-details {
-margin: 0 0 var(--tps-space-3);
-}
-
-.tps-feedback-summary {
-font-size: var(--tps-fs-hint, 12px);
-color: var(--tps-text-muted);
-cursor: pointer;
-}
-
-.tps-feedback-summary:hover {
-color: var(--tps-text);
-}
-
-.tps-feedback-report {
-margin: var(--tps-space-2) 0 0;
-padding: var(--tps-space-2);
-max-height: 140px;
-overflow: auto;
-font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, "Courier New", monospace;
-font-size: 11px;
-line-height: 1.5;
-white-space: pre-wrap;
-word-break: break-word;
-color: var(--tps-text-muted);
-background: var(--tps-bg-input);
-border: 1px solid var(--tps-divider);
-border-radius: var(--tps-radius-sm, 4px);
-}
-
-/* Themed thin scrollbars — the card (short panels) and the report pre both scroll. */
-.tps-feedback-card,
-.tps-feedback-report {
-scrollbar-width: thin;
-scrollbar-color: var(--tps-border, rgba(127, 127, 127, 0.25)) transparent;
-}
-
-.tps-feedback-card::-webkit-scrollbar,
-.tps-feedback-report::-webkit-scrollbar {
-width: 8px;
-height: 8px;
-}
-
-.tps-feedback-card::-webkit-scrollbar-track,
-.tps-feedback-report::-webkit-scrollbar-track {
-background: transparent;
-}
-
-.tps-feedback-card::-webkit-scrollbar-thumb,
-.tps-feedback-report::-webkit-scrollbar-thumb {
-background: var(--tps-border, rgba(127, 127, 127, 0.25));
-border-radius: 999px;
-border: 2px solid transparent;
-background-clip: padding-box;
-}
-
-.tps-feedback-actions {
-display: flex;
-justify-content: flex-end;
-gap: var(--tps-space-2);
-}
-
-/* ── Section ────────────────────────────────────────────────────────── */
-
-.tps-section {
-padding: 0;
-}
-
-.tps-section + .tps-section {
-border-top: 1px solid var(--tps-divider);
-margin-top: var(--tps-space-4);
-padding-top: var(--tps-space-4);
-}
-
-.tps-section-label {
-display: block;
-font-size: var(--tps-fs-section);
-line-height: var(--tps-lh-tight);
-font-weight: var(--tps-fw-semibold);
-letter-spacing: var(--tps-ls-section);
-text-transform: uppercase;
-color: var(--tps-text-muted);
-margin: 0 0 var(--tps-space-2);
-}
-
-.tps-section-hint {
-font-size: var(--tps-fs-hint);
-line-height: var(--tps-lh-base);
-color: var(--tps-text-muted);
-margin: 0 0 var(--tps-space-3);
-}
-
-.tps-section-body {
-display: flex;
-flex-direction: column;
-gap: var(--tps-space-3);
-margin-top: var(--tps-space-2);
-}
-
-.tps-section-body:first-child {
-margin-top: 0;
-}
-
-/* When the body is full of list rows (mode rows), drop the gap and the top
- margin entirely so the first row's hover background sits flush under the
- section label and adjacent rows tile with no dead space between them. */
-.tps-section-body:has(> .tps-list-row),
-.tps-section-body:has(> .tps-opt) {
-margin-top: 0;
-gap: 0;
-}
-
-/* Collapsible variant: header is a button, body is hidden when closed */
-
-.tps-section--collapsible > .tps-section-header {
-display: flex;
-align-items: center;
-gap: var(--tps-space-2);
-width: 100%;
-min-height: 34px;
-padding: 0;
-margin: 0 0 var(--tps-space-2);
-background: transparent;
-border: 0;
-color: inherit;
-font: inherit;
-text-align: left;
-cursor: pointer;
-}
-
-.tps-section--collapsible > .tps-section-header:hover .tps-section-label {
-color: var(--tps-text);
-}
-
-.tps-section--collapsible > .tps-section-header .tps-section-label {
-margin: 0;
-}
-
-.tps-section-chev {
-display: inline-block;
-width: 10px;
-font-size: 10px;
-line-height: 1;
-color: var(--tps-text-faint);
-transition: transform var(--tps-dur-base) var(--tps-ease-out);
-}
-
-.tps-section--collapsible[data-open="true"] .tps-section-chev {
-transform: rotate(90deg);
-}
-
-.tps-section-summary {
-margin-left: auto;
-min-width: 0;
-min-height: 18px;
-display: flex;
-align-items: center;
-justify-content: flex-end;
-font-size: var(--tps-fs-hint);
-color: var(--tps-text-muted);
-font-weight: var(--tps-fw-regular);
-letter-spacing: 0;
-text-transform: none;
-}
-
-/* Reserve header height when expanded; summary text only shows collapsed */
-.tps-section--collapsible[data-open="true"] .tps-section-summary {
-visibility: hidden;
-}
-
-.tps-section--collapsible[data-open="false"] > .tps-section-body {
-display: none;
-}
-
-/* ── Option row (checkbox / radio + label + desc) ───────────────────── */
-
-.tps-opt {
-display: grid;
-grid-template-columns: 18px 1fr;
-column-gap: var(--tps-space-3);
-row-gap: 0;
-align-items: start;
-padding: 6px 10px;
-margin: 0 -10px;
-border-radius: var(--tps-radius-md);
-cursor: pointer;
-transition: background-color var(--tps-dur-fast) var(--tps-ease-out);
-}
-
-/* Stack option rows tight so the hover background of one meets the next
- without a visible gap above. Outer section gap is handled by the section
- itself, not by spacing between opts. */
-.tps-section-body > .tps-opt + .tps-opt {
-margin-top: 0;
-}
-.tps-section-body:has(> .tps-opt) {
-gap: 0;
-}
-
-.tps-opt:hover {
-background: var(--tps-bg-hover);
-}
-
-.tps-opt > input[type="checkbox"],
-.tps-opt > input[type="radio"] {
-grid-column: 1;
-grid-row: 1;
-align-self: center;
-width: 16px;
-height: 16px;
-margin: 0;
-accent-color: var(--tps-accent);
-cursor: pointer;
-}
-
-.tps-opt > .tps-opt-label {
-grid-column: 2;
-grid-row: 1;
-font-size: var(--tps-fs-label);
-line-height: var(--tps-lh-base);
-font-weight: var(--tps-fw-medium);
-color: var(--tps-text);
-cursor: pointer;
-transition: color var(--tps-dur-fast) var(--tps-ease-out);
-}
-
-.tps-opt > .tps-opt-desc {
-grid-column: 2;
-grid-row: 2;
-margin-top: 1px;
-font-size: var(--tps-fs-desc);
-line-height: var(--tps-lh-base);
-color: var(--tps-text-muted);
-cursor: pointer;
-}
-
-.tps-section-body > .tps-opt-note {
-margin: var(--tps-space-2) -10px 0;
-padding: 0 10px 0 calc(10px + 18px + var(--tps-space-3));
-font-size: var(--tps-fs-desc);
-line-height: var(--tps-lh-base);
-color: var(--tps-text-muted);
-}
-
-.tps-opt > input:checked ~ .tps-opt-label {
-color: var(--tps-accent);
-}
-
-/* Checkbox option + nested number row (e.g. tuned value under a toggle) */
-.tps-section-body:has(> .tps-opt-group) {
-margin-top: 0;
-gap: 0;
-}
-
-.tps-opt-group {
-display: flex;
-flex-direction: column;
-}
-
-.tps-opt-group + .tps-opt-group {
-margin-top: 0;
-}
-
-.tps-opt-group .tps-opt-group__value,
-.tps-opt-group > .tps-num {
-margin-left: calc(18px + var(--tps-space-3));
-margin-top: var(--tps-space-1);
-margin-bottom: var(--tps-space-3);
-padding-right: 10px;
-max-width: 100%;
-box-sizing: border-box;
-}
-
-.tps-opt-group .tps-num-grid {
-margin-left: calc(18px + var(--tps-space-3));
-margin-top: var(--tps-space-1);
-margin-bottom: var(--tps-space-3);
-grid-template-columns: minmax(0, 1fr);
-}
-
-/* ── Numeric stepper ────────────────────────────────────────────────── */
-
-.tps-num {
-display: flex;
-align-items: center;
-gap: var(--tps-space-1);
-}
-
-.tps-num-label {
-flex: 0 0 auto;
-min-width: 0;
-font-size: var(--tps-fs-label);
-color: var(--tps-text);
-margin-right: var(--tps-space-2);
-}
-
-.tps-num-step,
-.tps-num-input,
-.tps-num-reset {
-font-family: inherit;
-font-size: var(--tps-fs-button);
-height: var(--tps-control-h-sm);
-border: 1px solid var(--tps-divider);
-border-radius: var(--tps-radius-sm);
-background: transparent;
-color: var(--tps-text);
-transition: border-color var(--tps-dur-fast) var(--tps-ease-out),
-            background-color var(--tps-dur-fast) var(--tps-ease-out),
-            color var(--tps-dur-fast) var(--tps-ease-out);
-}
-
-.tps-num-step {
-width: var(--tps-num-step-w);
-font-size: 14px;
-line-height: 1;
-cursor: pointer;
-display: inline-flex;
-align-items: center;
-justify-content: center;
-}
-
-.tps-num-step:hover {
-border-color: var(--tps-border);
-background: var(--tps-bg-hover);
-}
-
-.tps-num-step:active {
-background: var(--tps-bg-active);
-}
-
-.tps-num-input {
-width: var(--tps-input-w);
-padding: 0 var(--tps-space-2);
-background: var(--tps-bg-input);
-text-align: center;
-font-variant-numeric: tabular-nums;
--moz-appearance: textfield;
-}
-
-.tps-num-input::-webkit-outer-spin-button,
-.tps-num-input::-webkit-inner-spin-button {
--webkit-appearance: none;
-margin: 0;
-}
-
-.tps-num-input:focus {
-outline: none;
-border-color: var(--tps-accent);
-}
-
-.tps-num-unit {
-font-size: var(--tps-fs-hint);
-color: var(--tps-text-muted);
-margin: 0 var(--tps-space-2);
-}
-
-.tps-num-reset {
-font-size: 11px;
-color: var(--tps-text-muted);
-padding: 0 var(--tps-space-2);
-cursor: pointer;
-}
-
-.tps-num-reset:hover {
-color: var(--tps-text);
-border-color: var(--tps-border);
-}
-
-.tps-num-reset[hidden] {
-display: none !important;
-}
-
-/* Stacked layout: label / control row in a 200px / 1fr grid */
-
-.tps-num-grid {
-display: grid;
-grid-template-columns: 200px 1fr;
-align-items: center;
-column-gap: var(--tps-space-3);
-row-gap: var(--tps-space-2);
-}
-
-.tps-num-grid > .tps-num-label {
-margin: 0;
-text-align: left;
-}
-
-.tps-num-grid > .tps-num {
-justify-self: start;
-}
-
-/* ── Slider row ─────────────────────────────────────────────────────── */
-
-/* Shared range styling for sliderRow and any other range input in a panel.
- Exclude hue pickers that paint their own gradient track. */
-.tps-panel input[type="range"]:not(.plg-collection-colors__hue) {
-width: 100%;
-height: 22px;
-appearance: none;
--webkit-appearance: none;
-background: transparent;
-outline: none;
-cursor: pointer;
-touch-action: pan-y;
-}
-
-.tps-panel input[type="range"]:not(.plg-collection-colors__hue)::-webkit-slider-runnable-track {
-height: var(--tps-track-h);
-border-radius: 3px;
-background: var(--tps-slider-track);
-}
-
-.tps-panel input[type="range"]:not(.plg-collection-colors__hue)::-moz-range-track {
-height: var(--tps-track-h);
-border-radius: 3px;
-background: var(--tps-slider-track);
-}
-
-.tps-panel input[type="range"]:not(.plg-collection-colors__hue)::-webkit-slider-thumb {
--webkit-appearance: none;
-width: var(--tps-thumb-size);
-height: var(--tps-thumb-size);
-border-radius: var(--tps-radius-circle);
-background: var(--tps-accent);
-border: 2px solid var(--tps-slider-thumb-border);
-box-shadow: var(--tps-shadow-thumb);
-cursor: grab;
-margin-top: -5px;
-}
-
-.tps-panel input[type="range"]:not(.plg-collection-colors__hue)::-moz-range-thumb {
-width: var(--tps-thumb-size);
-height: var(--tps-thumb-size);
-border-radius: var(--tps-radius-circle);
-background: var(--tps-accent);
-border: 2px solid var(--tps-slider-thumb-border);
-box-shadow: var(--tps-shadow-thumb);
-cursor: grab;
-}
-
-.tps-panel input[type="range"]:not(.plg-collection-colors__hue):active::-webkit-slider-thumb {
-cursor: grabbing;
-}
-
-.tps-slider {
-display: grid;
-grid-template-columns: 90px 1fr 56px auto;
-align-items: center;
-gap: var(--tps-space-3);
-}
-
-.tps-slider-label {
-font-size: var(--tps-fs-section);
-font-weight: var(--tps-fw-semibold);
-letter-spacing: var(--tps-ls-section);
-text-transform: uppercase;
-color: var(--tps-text-muted);
-white-space: nowrap;
-overflow: hidden;
-text-overflow: ellipsis;
-}
-
-.tps-slider-input {
-width: 100%;
-height: 22px;
-appearance: none;
--webkit-appearance: none;
-background: transparent;
-outline: none;
-cursor: pointer;
-touch-action: pan-y;
-}
-
-.tps-slider-input::-webkit-slider-runnable-track {
-height: var(--tps-track-h);
-border-radius: 3px;
-background: var(--tps-slider-track);
-}
-
-.tps-slider-input::-moz-range-track {
-height: var(--tps-track-h);
-border-radius: 3px;
-background: var(--tps-slider-track);
-}
-
-.tps-slider-input::-webkit-slider-thumb {
--webkit-appearance: none;
-width: var(--tps-thumb-size);
-height: var(--tps-thumb-size);
-border-radius: var(--tps-radius-circle);
-background: var(--tps-accent);
-border: 2px solid var(--tps-slider-thumb-border);
-box-shadow: var(--tps-shadow-thumb);
-cursor: grab;
-margin-top: -5px;
-}
-
-.tps-slider-input::-moz-range-thumb {
-width: var(--tps-thumb-size);
-height: var(--tps-thumb-size);
-border-radius: var(--tps-radius-circle);
-background: var(--tps-accent);
-border: 2px solid var(--tps-slider-thumb-border);
-box-shadow: var(--tps-shadow-thumb);
-cursor: grab;
-}
-
-.tps-slider-input:active::-webkit-slider-thumb {
-cursor: grabbing;
-}
-
-/* Hue picker keeps its gradient track; only style the thumb. */
-.tps-panel input[type="range"].plg-collection-colors__hue {
-width: 100%;
-height: 10px;
-appearance: none;
--webkit-appearance: none;
-outline: none;
-cursor: pointer;
-}
-
-.tps-panel input[type="range"].plg-collection-colors__hue::-webkit-slider-thumb {
--webkit-appearance: none;
-width: 14px;
-height: 14px;
-border-radius: var(--tps-radius-circle);
-background: var(--panel-bg-color, var(--tps-panel-bg, currentColor));
-border: 2px solid var(--tps-slider-thumb-border);
-box-shadow: var(--tps-shadow-thumb);
-cursor: grab;
-}
-
-.tps-panel input[type="range"].plg-collection-colors__hue::-moz-range-thumb {
-width: 14px;
-height: 14px;
-border-radius: var(--tps-radius-circle);
-background: var(--panel-bg-color, var(--tps-panel-bg, currentColor));
-border: 2px solid var(--tps-slider-thumb-border);
-box-shadow: var(--tps-shadow-thumb);
-cursor: grab;
-}
-
-.tps-slider-value {
-font-family: var(--tps-font-mono);
-font-size: var(--tps-fs-value);
-color: var(--tps-text);
-text-align: right;
-font-variant-numeric: tabular-nums;
-}
-
-/* ── Swatch + grid ──────────────────────────────────────────────────── */
-
-.tps-swatch-grid {
-display: grid;
-grid-template-columns: repeat(auto-fill, var(--tps-swatch-size));
-gap: var(--tps-space-2) 6px;
-}
-
-.tps-swatch {
-width: var(--tps-swatch-size);
-height: var(--tps-swatch-size);
-border-radius: var(--tps-radius-circle);
-border: 0;
-padding: 0;
-cursor: pointer;
-outline: none;
-box-shadow: inset 0 0 0 1px var(--tps-swatch-inset);
-transition: transform var(--tps-dur-fast) var(--tps-ease-out),
-            box-shadow var(--tps-dur-fast) var(--tps-ease-out);
-}
-
-.tps-swatch:hover {
-transform: scale(1.1);
-}
-
-.tps-swatch[aria-pressed="true"] {
-box-shadow: 0 0 0 2px var(--tps-accent);
-}
-
-/* ── List rows ──────────────────────────────────────────────────────── */
-
-.tps-list {
-display: flex;
-flex-direction: column;
-}
-
-.tps-list-header {
-display: grid;
-grid-template-columns: 18px 1fr auto;
-align-items: center;
-gap: var(--tps-space-3);
-padding: var(--tps-space-2) var(--tps-space-3);
-border-bottom: 1px solid var(--tps-divider);
-font-size: var(--tps-fs-list-header);
-font-weight: var(--tps-fw-bold);
-letter-spacing: var(--tps-ls-list);
-text-transform: uppercase;
-color: var(--tps-text-faint);
-}
-
-.tps-list-row {
-display: grid;
-grid-template-columns: 18px 1fr auto;
-align-items: center;
-gap: var(--tps-space-3);
-padding: var(--tps-space-2) var(--tps-space-3);
-border-bottom: 1px solid var(--tps-divider);
-transition: background-color var(--tps-dur-fast) var(--tps-ease-out);
-}
-
-.tps-list-row:last-child {
-border-bottom: 0;
-}
-
-.tps-list-row:hover {
-background: var(--tps-bg-hover);
-}
-
-.tps-list-name {
-font-size: var(--tps-fs-label);
-color: var(--tps-text);
-overflow: hidden;
-text-overflow: ellipsis;
-white-space: nowrap;
-}
-
-/* ── Tabs / segmented control ───────────────────────────────────────── */
-
-.tps-tabs {
-display: inline-flex;
-align-items: center;
-gap: var(--tps-space-1);
-padding: 0;
-}
-
-.tps-tab {
-height: var(--tps-control-h-sm);
-padding: 0 var(--tps-space-2);
-font-family: inherit;
-font-size: var(--tps-fs-button);
-font-weight: var(--tps-fw-medium);
-color: var(--tps-text-muted);
-background: transparent;
-border: 1px solid transparent;
-border-radius: var(--tps-radius-sm);
-cursor: pointer;
-transition: background-color var(--tps-dur-fast) var(--tps-ease-out),
-            border-color var(--tps-dur-fast) var(--tps-ease-out),
-            color var(--tps-dur-fast) var(--tps-ease-out);
-}
-
-.tps-tab:hover {
-background: var(--tps-bg-hover);
-color: var(--tps-text);
-}
-
-.tps-tab[aria-pressed="true"],
-.tps-tab[aria-selected="true"] {
-background: var(--tps-accent-soft);
-color: var(--tps-accent);
-border-color: color-mix(in srgb, var(--tps-accent) 50%, transparent);
-}
-
-/* ── Buttons ────────────────────────────────────────────────────────── */
-
-.tps-button {
-display: inline-flex;
-align-items: center;
-justify-content: center;
-gap: var(--tps-space-1);
-height: var(--tps-control-h-sm);
-padding: 0 var(--tps-space-3);
-font-family: inherit;
-font-size: var(--tps-fs-button);
-font-weight: var(--tps-fw-medium);
-border-radius: var(--tps-radius-sm);
-border: 1px solid transparent;
-cursor: pointer;
-transition: background-color var(--tps-dur-fast) var(--tps-ease-out),
-            border-color var(--tps-dur-fast) var(--tps-ease-out),
-            color var(--tps-dur-fast) var(--tps-ease-out);
-}
-
-.tps-button--md { height: var(--tps-control-h-md); padding: 0 var(--tps-space-4); }
-
-.tps-button--primary {
-background: var(--tps-accent);
-color: var(--tps-on-accent);
-}
-
-.tps-button--primary:hover {
-filter: brightness(1.08);
-}
-
-.tps-button--ghost {
-background: transparent;
-border-color: var(--tps-divider);
-color: var(--tps-text);
-}
-
-.tps-button--ghost:hover {
-background: var(--tps-bg-hover);
-border-color: var(--tps-border);
-}
-
-.tps-button--danger {
-background: transparent;
-border-color: var(--tps-divider);
-color: var(--tps-text-muted);
-}
-
-.tps-button--danger:hover {
-background: var(--tps-danger-soft);
-border-color: color-mix(in srgb, var(--tps-danger) 40%, transparent);
-color: var(--tps-danger);
-}
-
-/* ── Focus rings (custom controls only — native inputs use accent-color) ─ */
-
-.tps-tab:focus-visible,
-.tps-button:focus-visible,
-.tps-num-step:focus-visible,
-.tps-num-reset:focus-visible,
-.tps-swatch:focus-visible {
-outline: 2px solid var(--tps-accent);
-outline-offset: 2px;
-}
-
-/* ── Inset card variant (rare — for palette-picker body, etc.) ─────── */
-
-.tps-card {
-padding: var(--tps-space-3);
-border-radius: var(--tps-radius-lg);
-background: var(--tps-bg-input);
-border: 1px solid var(--tps-divider);
-}
-`;
-var color_field_default = `/*
- * colorField — shared color picker (Theme | Tailwind | Custom).
- * Scoped under .tps-panel .tps-color-field; styled through --tps-* tokens.
- * Every selectable swatch is the same .tps-cf-dot across all three tabs.
- */
-
-.tps-panel .tps-color-field { display: block; }
-
-/* ── Tabs ────────────────────────────────────────────────────────────── */
-.tps-panel .tps-cf-tabs {
-display: grid; grid-auto-flow: column; grid-auto-columns: 1fr; gap: 4px;
-background: var(--tps-bg-input, rgba(127,127,127,0.06));
-border: 1px solid var(--tps-border, rgba(127,127,127,0.14));
-border-radius: var(--tps-radius-md, 8px);
-padding: 4px; margin-bottom: var(--tps-space-3, 12px);
-}
-.tps-panel .tps-cf-tab {
-cursor: pointer; border: 0; background: transparent;
-border-radius: var(--tps-radius-sm, 6px); padding: 8px 10px; font: inherit;
-font-size: var(--tps-fs-body, 13px); font-weight: var(--tps-fw-semibold, 600);
-color: var(--tps-text-muted, rgba(127,127,127,0.75));
-transition: background var(--tps-dur-fast, 80ms) var(--tps-ease-out, ease),
-            color var(--tps-dur-fast, 80ms) var(--tps-ease-out, ease);
-}
-.tps-panel .tps-cf-tab:hover { color: var(--tps-text, inherit); }
-.tps-panel .tps-cf-tab.is-active {
-background: var(--tps-panel-bg, var(--bg-default, #fff));
-color: var(--tps-text, inherit); box-shadow: 0 1px 2px rgba(0,0,0,0.12);
-}
-
-/* ── Panes ───────────────────────────────────────────────────────────── */
-.tps-panel .tps-cf-pane { display: none; }
-.tps-panel .tps-cf-pane.is-active { display: block; }
-
-/* ── Featured theme picks ────────────────────────────────────────────── */
-.tps-panel .tps-cf-featured {
-display: grid; grid-template-columns: 1fr 1fr; gap: 8px;
-margin-bottom: var(--tps-space-3, 12px);
-}
-.tps-panel .tps-cf-tile {
-display: flex; align-items: center; gap: 10px; width: 100%; text-align: left; cursor: pointer;
-background: var(--tps-bg-hover, rgba(127,127,127,0.04));
-border: 1px solid var(--tps-border, rgba(127,127,127,0.14));
-border-radius: var(--tps-radius-md, 8px); padding: 10px 12px; color: var(--tps-text, inherit);
-transition: border-color var(--tps-dur-fast, 80ms) var(--tps-ease-out, ease),
-            background var(--tps-dur-fast, 80ms) var(--tps-ease-out, ease);
-}
-.tps-panel .tps-cf-tile:hover { border-color: var(--tps-border-strong, rgba(127,127,127,0.28)); }
-.tps-panel .tps-cf-tile.is-sel {
-border-color: var(--tps-accent, currentColor);
-background: var(--tps-accent-soft, rgba(127,127,127,0.08));
-}
-.tps-panel .tps-cf-tile-dot {
-width: 22px; height: 22px; flex: 0 0 auto; border-radius: var(--tps-radius-sm, 6px);
-box-shadow: inset 0 0 0 1px var(--tps-swatch-inset, rgba(127,127,127,0.18));
-}
-.tps-panel .tps-cf-tile-label {
-font-size: var(--tps-fs-body, 13px); font-weight: var(--tps-fw-semibold, 600);
-white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
-}
-
-/* ── Groups + the universal swatch dot ───────────────────────────────── */
-.tps-panel .tps-cf-group { margin-bottom: var(--tps-space-3, 12px); }
-.tps-panel .tps-cf-group-head { display: flex; align-items: baseline; gap: 8px; margin-bottom: var(--tps-space-2, 8px); }
-.tps-panel .tps-cf-group-label {
-font-size: var(--tps-fs-section, 11px); letter-spacing: 0.06em; text-transform: uppercase;
-color: var(--tps-text-faint, var(--tps-text-muted, rgba(127,127,127,0.6))); font-weight: var(--tps-fw-semibold, 600);
-}
-.tps-panel .tps-cf-group-hint { font-size: var(--tps-fs-section, 11px); color: var(--tps-text-faint, rgba(127,127,127,0.5)); }
-
-/* ── Swatches: square dots that fill the row width (22 across in the Tailwind
- *    hue row); every swatch elsewhere matches that width. ────────────────── */
-.tps-panel .tps-cf-dots {
-display: grid; grid-template-columns: repeat(22, minmax(0, 1fr)); gap: 5px;
-/* explicit resets so a stale accumulated .tps-cf-dots rule (old edge-to-edge
- * build injected an inset-ring outline) can't linger after a plugin reload. */
-border: 0; border-radius: 0; overflow: visible; box-shadow: none; background: none; padding: 0;
-}
-.tps-panel .tps-cf-dot {
-aspect-ratio: 1 / 1; min-width: 0; width: 100%; height: auto; border: 0; padding: 0; margin: 0;
-cursor: pointer; position: relative;
-border-radius: var(--tps-radius-sm, 6px);
-box-shadow: inset 0 0 0 1px var(--tps-swatch-inset, rgba(127,127,127,0.18));
-transition: transform var(--tps-dur-fast, 80ms) var(--tps-ease-out, ease),
-            box-shadow var(--tps-dur-fast, 80ms) var(--tps-ease-out, ease);
-}
-.tps-panel .tps-cf-dot:hover { transform: scale(1.12); z-index: 3; }
-.tps-panel .tps-cf-dot:focus-visible,
-.tps-panel .tps-cf-dot.is-sel,
-.tps-panel .tps-cf-dot.is-active {
-outline: none; z-index: 4;
-box-shadow: inset 0 0 0 1px var(--tps-swatch-inset, rgba(127,127,127,0.18)),
-            0 0 0 2px var(--tps-panel-bg, #fff), 0 0 0 4px var(--tps-accent, currentColor);
-}
-
-/* ── Lightness "tints": full-width ramp, shade number inside (do not touch) ─ */
-.tps-panel .tps-cf-ramp {
-display: grid; grid-template-columns: repeat(11, minmax(0, 1fr));
-border-radius: var(--tps-radius-md, 8px); overflow: hidden;
-box-shadow: inset 0 0 0 1px var(--tps-border, rgba(127,127,127,0.14));
-}
-.tps-panel .tps-cf-ramp-cell {
-border: 0; padding: 0; cursor: pointer; height: 30px; position: relative;
-display: flex; align-items: center; justify-content: center;
-font-size: 9px; font-weight: var(--tps-fw-semibold, 600); font-variant-numeric: tabular-nums; letter-spacing: -0.02em;
-transition: box-shadow var(--tps-dur-fast, 80ms) var(--tps-ease-out, ease);
-}
-.tps-panel .tps-cf-ramp-cell:hover { z-index: 3; box-shadow: inset 0 0 0 2px color-mix(in srgb, var(--tps-panel-bg, #fff) 60%, transparent); }
-.tps-panel .tps-cf-ramp-cell:focus-visible,
-.tps-panel .tps-cf-ramp-cell.is-sel {
-outline: none; z-index: 4;
-box-shadow: inset 0 0 0 2px var(--tps-panel-bg, #fff), inset 0 0 0 4px var(--tps-accent, currentColor);
-}
-/* Faint secondary ring on the inverted ("invert lightness") mirror shade —
- present alongside the prominent ring on the actually-selected shade. */
-.tps-panel .tps-cf-ramp-cell.is-sel-mirror {
-z-index: 3;
-box-shadow: inset 0 0 0 2px var(--tps-panel-bg, #fff),
-            inset 0 0 0 3px color-mix(in srgb, var(--tps-accent, currentColor) 42%, transparent);
-}
-
-/* ── Invert-lightness toggle ─────────────────────────────────────────── */
-.tps-panel .tps-cf-invert {
-display: flex; align-items: center; gap: 8px; margin-top: var(--tps-space-3, 12px);
-cursor: pointer; font-size: var(--tps-fs-hint, 12px); color: var(--tps-text, inherit); font-weight: var(--tps-fw-medium, 500);
-}
-.tps-panel .tps-cf-invert-cb { margin: 0; cursor: pointer; accent-color: var(--tps-accent, currentColor); }
-.tps-panel .tps-cf-invert-hint { color: var(--tps-text-faint, rgba(127,127,127,0.5)); font-weight: var(--tps-fw-regular, 400); }
-/* Dimmed + non-interactive until a real, non-500 shade is picked (500 mirrors
- to itself, so inverting it is a no-op). */
-.tps-panel .tps-cf-invert.is-disabled { opacity: 0.42; cursor: default; }
-.tps-panel .tps-cf-invert.is-disabled .tps-cf-invert-cb { cursor: default; }
-
-/* ── Custom palette ──────────────────────────────────────────────────── */
-.tps-panel .tps-cf-custom-row { min-height: 30px; margin-bottom: var(--tps-space-3, 12px); }
-.tps-panel .tps-cf-custom-empty {
-grid-column: 1 / -1; display: flex; align-items: center; padding: 0 10px; min-height: 30px;
-font-size: var(--tps-fs-hint, 12px); font-weight: var(--tps-fw-regular, 400); letter-spacing: 0;
-color: var(--tps-text-faint, rgba(127,127,127,0.55));
-}
-.tps-panel .tps-cf-custom-dot { cursor: grab; }
-.tps-panel .tps-cf-custom-dot.is-dragging { opacity: 0.4; cursor: grabbing; }
-
-.tps-panel .tps-cf-addrow { display: flex; align-items: center; gap: 8px; }
-.tps-panel .tps-cf-remove {
-cursor: pointer; border: 1px solid var(--tps-border, rgba(127,127,127,0.14));
-background: var(--tps-bg-input, rgba(127,127,127,0.06)); color: var(--tps-text-muted, rgba(127,127,127,0.75));
-border-radius: var(--tps-radius-md, 8px); height: 32px; padding: 0 14px; font: inherit;
-font-size: var(--tps-fs-hint, 12px); font-weight: var(--tps-fw-medium, 500);
-}
-.tps-panel .tps-cf-remove[hidden] { display: none; }
-.tps-panel .tps-cf-remove:hover { border-color: var(--tps-border-strong, rgba(127,127,127,0.28)); color: var(--tps-text, inherit); }
-.tps-panel .tps-cf-add {
-cursor: pointer; border: 1px solid var(--tps-border, rgba(127,127,127,0.14));
-background: var(--tps-bg-input, rgba(127,127,127,0.06)); color: var(--tps-text, inherit);
-border-radius: var(--tps-radius-md, 8px); height: 32px; padding: 0 14px; font: inherit;
-font-size: var(--tps-fs-hint, 12px); font-weight: var(--tps-fw-semibold, 600);
-}
-.tps-panel .tps-cf-add:hover { border-color: var(--tps-border-strong, rgba(127,127,127,0.28)); }
-.tps-panel .tps-cf-custom-count {
-margin-left: auto; font-size: var(--tps-fs-section, 11px);
-color: var(--tps-text-faint, rgba(127,127,127,0.5)); font-variant-numeric: tabular-nums;
-}
-
-/* ── Hex input ───────────────────────────────────────────────────────── */
-.tps-panel .tps-cf-hexbox {
-display: inline-flex; align-items: center; gap: 8px; box-sizing: border-box; height: 32px;
-background: var(--tps-bg-input, rgba(127,127,127,0.06));
-border: 1px solid var(--tps-border, rgba(127,127,127,0.14));
-border-radius: var(--tps-radius-md, 8px); padding: 0 8px 0 10px;
-}
-.tps-panel .tps-cf-hex-dot {
-width: 15px; height: 15px; border-radius: var(--tps-radius-sm, 5px);
-box-shadow: inset 0 0 0 1px var(--tps-swatch-inset, rgba(127,127,127,0.22));
-}
-.tps-panel .tps-cf-hex-input {
-border: 0; background: transparent; outline: none;
-font-family: var(--tps-font-mono, ui-monospace, monospace);
-font-size: var(--tps-fs-hint, 12px); color: var(--tps-text, inherit); width: 84px;
-font-variant-numeric: tabular-nums;
-}
-.tps-panel .tps-cf-hex-input::placeholder { color: var(--tps-text-faint, rgba(127,127,127,0.5)); }
-
-/* ── Universal: No color ─────────────────────────────────────────────── */
-.tps-panel .tps-cf-divider {
-height: 1px; margin: var(--tps-space-3, 12px) 0; background: var(--tps-divider, rgba(127,127,127,0.12));
-}
-.tps-panel .tps-cf-universal { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
-.tps-panel .tps-cf-none {
-display: inline-flex; align-items: center; gap: 7px; cursor: pointer; box-sizing: border-box; height: 32px;
-background: var(--tps-bg-input, rgba(127,127,127,0.06));
-border: 1px solid var(--tps-border, rgba(127,127,127,0.14));
-border-radius: var(--tps-radius-md, 8px); padding: 0 12px; font: inherit;
-font-size: var(--tps-fs-hint, 12px); font-weight: var(--tps-fw-medium, 500);
-color: var(--tps-text-muted, rgba(127,127,127,0.7));
-}
-.tps-panel .tps-cf-none:hover { border-color: var(--tps-border-strong, rgba(127,127,127,0.28)); color: var(--tps-text, inherit); }
-.tps-panel .tps-cf-none.is-sel { border-color: var(--tps-accent, currentColor); color: var(--tps-text, inherit); }
-.tps-panel .tps-cf-none-sw {
-width: 15px; height: 15px; border-radius: 50%; position: relative; overflow: hidden;
-box-shadow: inset 0 0 0 1px var(--tps-border-strong, rgba(127,127,127,0.3));
-}
-.tps-panel .tps-cf-none-sw::after {
-content: ""; position: absolute; left: 50%; top: -3px; width: 1.5px; height: 21px;
-background: var(--tps-danger, #e2555f); transform: rotate(45deg);
-}
-
-/* ── Instant tooltip (drawn by the component, not native title delay) ─── */
-.tps-panel .tps-cf-tip {
-position: fixed; z-index: 2147483000; transform: translate(-50%, calc(-100% - 8px));
-padding: 3px 8px; border-radius: var(--tps-radius-sm, 5px);
-background: var(--tps-text, #1a1a1a); color: var(--tps-panel-bg, #fff);
-font-size: var(--tps-fs-section, 11px); font-weight: var(--tps-fw-medium, 500);
-line-height: 1.3; white-space: nowrap; pointer-events: none; opacity: 0;
-box-shadow: 0 2px 8px rgba(0,0,0,0.35);
-}
-.tps-panel .tps-cf-tip.is-visible { opacity: 1; }
-
-@media (prefers-reduced-motion: reduce) {
-.tps-panel .tps-cf-dot,
-.tps-panel .tps-cf-tab,
-.tps-panel .tps-cf-tile,
-.tps-panel .tps-cf-remove { transition: none; }
-}
-`;
-var MAX_URL_LENGTH = 7600;
-function el(tag, props, ...children) {
-  const node = document.createElement(tag);
-  const dom = (
-    /** @type {any} */
-    node
-  );
-  if (props) {
-    for (const k in props) {
-      const v = props[k];
-      if (v == null || v === false) continue;
-      if (k === "class") node.className = v;
-      else if (k.startsWith("on") && typeof v === "function") node.addEventListener(k.slice(2).toLowerCase(), v);
-      else if (k in dom && typeof dom[k] !== "function") {
-        try {
-          dom[k] = v;
-        } catch {
-          node.setAttribute(k, v);
-        }
-      } else node.setAttribute(k, v === true ? "" : String(v));
-    }
-  }
-  for (const c of children.flat(Infinity)) {
-    if (c == null || c === false) continue;
-    node.appendChild(c instanceof Node ? c : document.createTextNode(String(c)));
-  }
-  return node;
-}
-__name(el, "el");
-function versionFromConf(conf) {
-  if (!conf || typeof conf !== "object") return "";
-  if (typeof conf.version === "string" && conf.version) return conf.version;
-  const custom = conf.custom;
-  if (custom && typeof custom === "object") {
-    const v = (
-      /** @type {Record<string, unknown>} */
-      custom.pluginVersion
-    );
-    if (typeof v === "string") return v;
-  }
-  return "";
-}
-__name(versionFromConf, "versionFromConf");
-async function collectSystemReport({ pluginName = "", pluginVersion = "", disabled = false, data } = {}) {
-  const ua = navigator.userAgent || "";
-  const lines = [];
-  lines.push(`Plugin: ${pluginName} v${pluginVersion}${disabled ? " (kill switch: OFF)" : ""}`);
-  lines.push(`App: ${/electron/i.test(ua) ? "Thymer desktop app (Electron)" : "Thymer web"}${location && location.host ? ` · ${location.host}` : ""}`);
-  lines.push(`UA: ${ua}`);
-  lines.push(`Platform: ${navigator.platform || "?"} · lang ${navigator.language || "?"} · tz ${Intl.DateTimeFormat().resolvedOptions().timeZone || "?"}`);
-  const dpr = Math.round((window.devicePixelRatio || 1) * 100) / 100;
-  lines.push(`Screen (css px): ${screen.width}x${screen.height} @${dpr}x (≈${Math.round(screen.width * dpr)}x${Math.round(screen.height * dpr)} device px) · viewport ${window.innerWidth}x${window.innerHeight}`);
-  try {
-    const dark = window.matchMedia && window.matchMedia("(prefers-color-scheme: dark)").matches;
-    const reducedMotion = window.matchMedia && window.matchMedia("(prefers-reduced-motion: reduce)").matches;
-    const themeClasses = Array.from(document.body.classList).filter((c) => /theme/i.test(c)).join(" ");
-    lines.push(`Appearance: ${dark ? "dark" : "light"}${reducedMotion ? " · reduced-motion" : ""}${themeClasses ? ` · body: ${themeClasses}` : ""}`);
-  } catch {
-  }
-  try {
-    const bits = [];
-    if (navigator.hardwareConcurrency) bits.push(`${navigator.hardwareConcurrency} cores`);
-    const devMem = (
-      /** @type {any} */
-      navigator.deviceMemory
-    );
-    if (devMem) bits.push(devMem >= 8 ? `RAM ≥8GB (API cap)` : `~${devMem}GB RAM`);
-    const heap = (
-      /** @type {any} */
-      performance.memory
-    );
-    if (heap && heap.usedJSHeapSize) bits.push(`JS heap ${Math.round(heap.usedJSHeapSize / 1048576)}MB of ${Math.round(heap.jsHeapSizeLimit / 1048576)}MB limit`);
-    bits.push(navigator.onLine === false ? "OFFLINE" : "online");
-    if (typeof performance.now === "function") bits.push(`session up ${Math.round(performance.now() / 6e4)}m`);
-    lines.push(`System: ${bits.join(" · ")}`);
-  } catch {
-  }
-  try {
-    if (navigator.storage && typeof navigator.storage.estimate === "function") {
-      const est = await navigator.storage.estimate();
-      if (est && est.usage != null) {
-        lines.push(`Storage: ${Math.round((est.usage || 0) / 1048576)}MB used${est.quota ? ` of ${Math.round(est.quota / 1048576)}MB quota` : ""}`);
-      }
-    }
-  } catch {
-  }
-  try {
-    if (data && typeof data.getAllGlobalPlugins === "function") {
-      const plugins = await data.getAllGlobalPlugins();
-      const listed = plugins.slice(0, 25).map((p) => {
-        let name = "";
-        let ver = "";
-        try {
-          name = p.getName?.() || "";
-        } catch {
-        }
-        try {
-          ver = versionFromConf(p.getConfiguration?.());
-        } catch {
-        }
-        return ver ? `${name} v${ver}` : name;
-      }).filter(Boolean);
-      if (listed.length) {
-        lines.push(`Global plugins, all installed (${plugins.length}): ${listed.join(", ")}${plugins.length > 25 ? ", …" : ""}`);
-      }
-    }
-    if (data && typeof /** @type {any} */
-    data.getAllCollections === "function") {
-      const collections = await /** @type {any} */
-      data.getAllCollections();
-      if (Array.isArray(collections)) lines.push(`Collection-level plugins: ${collections.length} (names withheld)`);
-    }
-  } catch {
-  }
-  return lines.join("\n");
-}
-__name(collectSystemReport, "collectSystemReport");
-function buildIssueUrl({ repository, description, discord, email, report }) {
-  const repo = repository.replace(/\/+$/, "");
-  const firstLine = description.split("\n")[0].trim();
-  const title = `[bug] ${firstLine.length > 60 ? `${firstLine.slice(0, 57)}...` : firstLine}`;
-  const bodyFor = /* @__PURE__ */ __name((desc2) => {
-    const parts = [`**Describe the bug**
-
-${desc2}`];
-    if (discord || email) {
-      const contact = [];
-      if (discord) contact.push(`- Discord: ${discord}`);
-      if (email) contact.push(`- Email: ${email}`);
-      parts.push(`**Contact**
-
-${contact.join("\n")}`);
-    }
-    parts.push(`**System report**
-
-\`\`\`
-${report}
-\`\`\``);
-    parts.push("_Screenshots: paste or drag images directly into this text box._");
-    return parts.join("\n\n");
-  }, "bodyFor");
-  const urlFor = /* @__PURE__ */ __name((desc2) => `${repo}/issues/new?${new URLSearchParams({ title, body: bodyFor(desc2) })}`, "urlFor");
-  let desc = description;
-  let url = urlFor(desc);
-  while (url.length > MAX_URL_LENGTH && desc.length > 200) {
-    desc = `${desc.slice(0, Math.max(200, desc.length - 500)).trimEnd()}
-
-[description truncated — URL length limit]`;
-    url = urlFor(desc);
-  }
-  return url;
-}
-__name(buildIssueUrl, "buildIssueUrl");
-function openFeedbackDialog({ host, opener, pluginName = "", pluginVersion = "", repository = "", disabled = false, data } = {}) {
-  const panelHost = host || /** @type {HTMLElement | null} */
-  (opener ? opener.closest(".tps-panel") : null);
-  if (!panelHost || !repository) return;
-  if (panelHost.querySelector(".tps-feedback-overlay")) return;
-  const reportPromise = collectSystemReport({ pluginName, pluginVersion, disabled, data });
-  const discordInput = el("input", { class: "tps-feedback-input", type: "text", placeholder: "e.g. akaready", autocomplete: "off", spellcheck: "false" });
-  const emailInput = el("input", { class: "tps-feedback-input", type: "email", placeholder: "e.g. you@example.com", autocomplete: "off", spellcheck: "false" });
-  const descInput = el("textarea", { class: "tps-feedback-textarea", rows: "5", placeholder: "What happened? What did you expect instead?" });
-  const reportPre = el("pre", { class: "tps-feedback-report" }, "Collecting…");
-  reportPromise.then((text) => {
-    reportPre.textContent = text;
-  }).catch(() => {
-    reportPre.textContent = "Report unavailable.";
-  });
-  const fieldRow = /* @__PURE__ */ __name((label, field, extraClass) => el(
-    "label",
-    { class: `tps-feedback-field${extraClass ? ` ${extraClass}` : ""}` },
-    el("span", { class: "tps-feedback-label" }, label),
-    field
-  ), "fieldRow");
-  const prevOverflow = panelHost.style.overflow;
-  const close = /* @__PURE__ */ __name(() => {
-    overlay.remove();
-    panelHost.style.overflow = prevOverflow;
-    try {
-      opener?.focus();
-    } catch {
-    }
-  }, "close");
-  const submit = /* @__PURE__ */ __name(async () => {
-    const description = descInput.value.trim();
-    if (!description) {
-      descInput.setAttribute("aria-invalid", "true");
-      descInput.focus();
-      return;
-    }
-    let report = "";
-    try {
-      report = await reportPromise;
-    } catch {
-    }
-    const url = buildIssueUrl({
-      repository,
-      description,
-      discord: discordInput.value.trim(),
-      email: emailInput.value.trim(),
-      report
-    });
-    window.open(url, "_blank", "noopener");
-    close();
-  }, "submit");
-  const card = el(
-    "div",
-    { class: "tps-feedback-card", role: "dialog", "aria-modal": "true", "aria-label": `Report a bug in ${pluginName}` },
-    el(
-      "div",
-      { class: "tps-feedback-head" },
-      el("h2", { class: "tps-feedback-title" }, "Report a bug"),
-      el(
-        "button",
-        { type: "button", class: "tps-feedback-close", "aria-label": "Close", onClick: close },
-        el("i", { class: "ti ti-x", "aria-hidden": "true" })
-      )
-    ),
-    // Fixed short copy — no variable repo name, so each line stays on one line.
-    el(
-      "p",
-      { class: "tps-feedback-hint" },
-      "Opens a prefilled GitHub issue on the repo.",
-      el("br"),
-      "Please add relevant screenshots to the GitHub issue."
-    ),
-    fieldRow("Discord username (optional)", discordInput),
-    fieldRow("Email (optional)", emailInput),
-    fieldRow("What happened?", descInput, "tps-feedback-field--grow"),
-    el(
-      "details",
-      { class: "tps-feedback-details" },
-      el("summary", { class: "tps-feedback-summary" }, "System report (included with the issue)"),
-      reportPre
-    ),
-    el(
-      "div",
-      { class: "tps-feedback-actions" },
-      el("button", { type: "button", class: "tps-button tps-button--ghost", onClick: close }, "Cancel"),
-      el("button", { type: "button", class: "tps-button tps-button--primary", onClick: submit }, "Open GitHub issue")
-    )
-  );
-  const overlay = el("div", { class: "tps-feedback-overlay" }, card);
-  overlay.addEventListener("mousedown", (e) => {
-    if (e.target === overlay) close();
-  });
-  overlay.addEventListener("keydown", (e) => {
-    if (e.key === "Escape") {
-      e.stopPropagation();
-      close();
-    }
-  });
-  descInput.addEventListener("input", () => descInput.removeAttribute("aria-invalid"));
-  panelHost.style.overflow = "hidden";
-  overlay.style.top = `${panelHost.scrollTop}px`;
-  overlay.style.height = `${panelHost.clientHeight}px`;
-  panelHost.appendChild(overlay);
-  descInput.focus();
-}
-__name(openFeedbackDialog, "openFeedbackDialog");
-var PANEL_CSS = tokens_default + "\n" + components_default + "\n" + color_field_default;
-function h(tag, props, ...children) {
-  const el2 = document.createElement(tag);
-  const dom = (
-    /** @type {any} */
-    el2
-  );
-  if (props) {
-    for (const k in props) {
-      const v = props[k];
-      if (v == null || v === false) continue;
-      if (k === "class" || k === "className") {
-        el2.className = v;
-      } else if (k === "style" && typeof v === "object") {
-        Object.assign(el2.style, v);
-      } else if (k === "dataset" && typeof v === "object") {
-        for (const dk in v) el2.dataset[dk] = v[dk];
-      } else if (k.startsWith("on") && typeof v === "function") {
-        el2.addEventListener(k.slice(2).toLowerCase(), v);
-      } else if (k in dom && typeof dom[k] !== "function") {
-        try {
-          dom[k] = v;
-        } catch {
-          el2.setAttribute(k, v);
-        }
-      } else {
-        el2.setAttribute(k, v === true ? "" : String(v));
-      }
-    }
-  }
-  appendChildren(el2, children);
-  return el2;
-}
-__name(h, "h");
-function appendChildren(parent, children) {
-  for (const c of children) {
-    if (c == null || c === false) continue;
-    if (Array.isArray(c)) {
-      appendChildren(parent, c);
-      continue;
-    }
-    parent.appendChild(c instanceof Node ? c : document.createTextNode(String(c)));
-  }
-}
-__name(appendChildren, "appendChildren");
-function panel({ pluginClass } = {}, children = []) {
-  const cls = ["tps-panel", pluginClass].filter(Boolean).join(" ");
-  const root = h("div", { class: cls }, ...children);
-  restoreSectionState(root, pluginClass || "");
-  return root;
-}
-__name(panel, "panel");
-function pluginHeader({
-  title: heading,
-  lede: ledeText,
-  helper,
-  helperOpen,
-  helperDefaultOpen = false,
-  onHelperToggle,
-  icon = "",
-  version = "1.0",
-  author = "",
-  homepage = "",
-  repository = "",
-  coffee = "",
-  killSwitch = null,
-  feedback = null,
-  scope = null
-}) {
-  const iconClass = icon ? icon.startsWith("ti-") ? icon : `ti-${icon}` : "";
-  const helperLines = normalizeHelperLines(helper);
-  const fb = feedback ? {
-    pluginName: (feedback === true ? "" : feedback.pluginName) || heading,
-    pluginVersion: (feedback === true ? "" : feedback.pluginVersion) || version,
-    repository: (feedback === true ? "" : feedback.repository) || repository,
-    disabled: (feedback === true ? void 0 : feedback.disabled) ?? (killSwitch ? !killSwitch.on : false),
-    data: feedback === true ? void 0 : feedback.data
-  } : null;
-  const children = [
-    iconClass ? h(
-      "div",
-      { class: "tps-plugin-header-logo", "aria-hidden": "true" },
-      h("i", { class: `ti ${iconClass} tps-plugin-header-logo-icon`, "aria-hidden": "true" })
-    ) : null,
-    h("h1", { class: "tps-plugin-header-title" }, heading),
-    ledeText ? h("p", { class: "tps-plugin-header-lede" }, ledeText) : null,
-    helperLines.length ? renderPluginHeaderHelper({
-      lines: helperLines,
-      defaultOpen: helperDefaultOpen,
-      open: helperOpen,
-      onToggle: onHelperToggle
-    }) : null,
-    h(
-      "p",
-      { class: "tps-plugin-header-attr" },
-      author && homepage ? h(
-        "span",
-        { class: "tps-plugin-header-link-group" },
-        h("i", { class: "ti ti-link tps-plugin-header-icon", "aria-hidden": "true" }),
-        h("a", {
-          class: "tps-plugin-header-link tps-plugin-header-link--blue",
-          href: homepage,
-          target: "_blank",
-          rel: "noopener noreferrer"
-        }, author)
-      ) : null,
-      coffee ? h(
-        "span",
-        { class: "tps-plugin-header-link-group" },
-        h("i", { class: "ti ti-coffee tps-plugin-header-icon", "aria-hidden": "true" }),
-        h("a", {
-          class: "tps-plugin-header-link tps-plugin-header-link--pink",
-          href: coffee,
-          target: "_blank",
-          rel: "noopener noreferrer"
-        }, "buy me a coffee")
-      ) : null,
-      version ? h(
-        "span",
-        { class: "tps-plugin-header-link-group" },
-        h("span", { class: "tps-plugin-header-icon tps-plugin-header-iconify tps-plugin-header-iconify-github", "aria-hidden": "true" }),
-        repository ? h("a", { class: "tps-plugin-header-link tps-plugin-header-link--muted tps-plugin-header-version", href: repository, target: "_blank", rel: "noopener noreferrer" }, `v${version}`) : h("span", { class: "tps-plugin-header-link tps-plugin-header-version" }, `v${version}`)
-      ) : null,
-      // Bug report sits with the attribution links (right of the version);
-      // the far-right corner is reserved for state toggles (scope pill,
-      // kill switch).
-      fb ? renderFeedbackButton(fb) : null,
-      killSwitch || scope ? h(
-        "span",
-        { class: "tps-plugin-header-controls" },
-        scope ? scopeCluster(scope) : null,
-        killSwitch ? renderKillSwitch(killSwitch) : null
-      ) : null
-    ),
-    // Always rendered with a kill switch; CSS shows it only while the pill is
-    // off, so it appears instantly on the optimistic flip with no re-render.
-    killSwitch ? h(
-      "p",
-      { class: "tps-plugin-header-off-note" },
-      "Plugin is off — settings stay editable and your changes apply when you switch it back on."
-    ) : null
-  ];
-  return h("div", { class: "tps-plugin-header" }, ...children);
-}
-__name(pluginHeader, "pluginHeader");
-var SCOPE_SVG_NS = '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">';
-function scopeSvgIcon(paths) {
-  const wrap = h("span", { class: "tps-scope-svg", "aria-hidden": "true" });
-  wrap.innerHTML = `${SCOPE_SVG_NS}${paths}</svg>`;
-  return wrap;
-}
-__name(scopeSvgIcon, "scopeSvgIcon");
-function scopeCluster(scope) {
-  const pill = h(
-    "span",
-    {
-      class: "tps-scope-pill tooltip",
-      "data-diverged": String(!!scope.diverged),
-      "data-tooltip": scope.diverged ? "Custom settings for this device, saved automatically. Your other devices are unaffected." : "Using your shared defaults — the same on all your devices. Edits here apply to this device only.",
-      "data-tooltip-dir": "top"
-    },
-    h("span", { class: "tps-scope-dot", "aria-hidden": "true" }),
-    scope.diverged ? "This device" : "All devices"
-  );
-  if (!scope.diverged) {
-    return h("span", { class: "tps-scope" }, pill);
-  }
-  const push = h("button", {
-    type: "button",
-    class: "tps-scope-btn tps-scope-btn--push tooltip",
-    "data-tooltip": "Copy these settings to all my devices",
-    "data-tooltip-dir": "top",
-    "aria-label": "Copy these settings to all my devices",
-    onClick: /* @__PURE__ */ __name((e) => {
-      const btn = (
-        /** @type {HTMLButtonElement} */
-        e.currentTarget
-      );
-      if (btn.disabled) return;
-      btn.disabled = true;
-      try {
-        scope.onPush();
-      } catch {
-        btn.disabled = false;
-      }
-    }, "onClick")
-  }, scopeSvgIcon('<path d="M12 5v14"/><path d="M18 11l-6-6"/><path d="M6 11l6-6"/>'));
-  let disarmTimer = 0;
-  const discard = h("button", {
-    type: "button",
-    class: "tps-scope-btn tps-scope-btn--discard tooltip",
-    "data-tooltip": "Reset this device to your shared defaults",
-    "data-tooltip-dir": "top",
-    "aria-label": "Reset this device to your shared defaults",
-    onClick: /* @__PURE__ */ __name((e) => {
-      const btn = (
-        /** @type {HTMLButtonElement} */
-        e.currentTarget
-      );
-      if (btn.getAttribute("data-armed") !== "true") {
-        btn.setAttribute("data-armed", "true");
-        btn.setAttribute("data-tooltip", "Tap again to reset this device");
-        clearTimeout(disarmTimer);
-        disarmTimer = window.setTimeout(() => {
-          btn.removeAttribute("data-armed");
-          btn.setAttribute("data-tooltip", "Reset this device to your shared defaults");
-        }, 3e3);
-        return;
-      }
-      clearTimeout(disarmTimer);
-      try {
-        scope.onDiscard();
-      } catch {
-      }
-    }, "onClick")
-  }, scopeSvgIcon('<path d="M9 14L5 10l4-4"/><path d="M5 10h11a4 4 0 1 1 0 8h-1"/>'));
-  return h("span", { class: "tps-scope" }, pill, push, discard);
-}
-__name(scopeCluster, "scopeCluster");
-function renderFeedbackButton(fb) {
-  return h("button", {
-    type: "button",
-    class: "tps-plugin-header-bug",
-    title: "Report a bug",
-    "aria-label": "Report a bug",
-    onClick: /* @__PURE__ */ __name((e) => {
-      const btn = (
-        /** @type {HTMLElement} */
-        e.currentTarget
-      );
-      openFeedbackDialog({
-        host: (
-          /** @type {HTMLElement | null} */
-          btn.closest(".tps-panel")
-        ),
-        opener: btn,
-        ...fb
-      });
-    }, "onClick")
-  }, h("i", { class: "ti ti-bug", "aria-hidden": "true" }));
-}
-__name(renderFeedbackButton, "renderFeedbackButton");
-function renderKillSwitch(killSwitch) {
-  const sw = h("button", {
-    type: "button",
-    class: "tps-switch",
-    role: "switch",
-    "aria-checked": String(!!killSwitch.on),
-    "aria-label": killSwitch.label || "Plugin enabled",
-    title: killSwitch.on ? "Plugin enabled — click to disable all of its effects" : "Plugin disabled — click to re-enable"
-  }, h("span", { class: "tps-switch-knob" }));
-  const unlock = /* @__PURE__ */ __name(() => {
-    sw.removeAttribute("data-busy");
-    sw.disabled = false;
-  }, "unlock");
-  sw.addEventListener("click", () => {
-    if (sw.disabled) return;
-    const nextOn = sw.getAttribute("aria-checked") !== "true";
-    sw.setAttribute("aria-checked", String(nextOn));
-    sw.setAttribute("data-busy", "");
-    sw.disabled = true;
-    setTimeout(unlock, 700);
-    try {
-      killSwitch.onToggle(nextOn);
-    } catch {
-      unlock();
-      sw.setAttribute("aria-checked", String(!nextOn));
-    }
-  });
-  return sw;
-}
-__name(renderKillSwitch, "renderKillSwitch");
-function normalizeHelperLines(helper) {
-  if (!helper) return [];
-  if (typeof helper === "string") {
-    const text = helper.trim();
-    return text ? [text] : [];
-  }
-  if (Array.isArray(helper)) {
-    return helper.map((line) => String(line).trim()).filter(Boolean);
-  }
-  return [];
-}
-__name(normalizeHelperLines, "normalizeHelperLines");
-function renderPluginHeaderHelper({ lines, defaultOpen = false, open, onToggle }) {
-  const initialOpen = open == null ? !!defaultOpen : !!open;
-  const wrap = h("div", {
-    class: "tps-plugin-header-helper-wrap",
-    dataset: { open: String(initialOpen) }
-  });
-  const icon = h("i", { class: "ti ti-info-circle tps-plugin-header-helper-icon", "aria-hidden": "true" });
-  const toggle = h("button", {
-    type: "button",
-    class: "tps-plugin-header-helper-toggle",
-    "aria-expanded": String(initialOpen)
-  }, icon, h("span", { class: "tps-plugin-header-helper-toggle-label" }, "Instructions"));
-  const body = h(
-    "div",
-    { class: "tps-plugin-header-helper-body" },
-    h("p", { class: "tps-plugin-header-helper-line" }, lines.join(" "))
-  );
-  const setOpen = /* @__PURE__ */ __name((nextOpen) => {
-    wrap.dataset.open = String(nextOpen);
-    toggle.setAttribute("aria-expanded", String(nextOpen));
-    if (onToggle) onToggle(nextOpen);
-  }, "setOpen");
-  toggle.addEventListener("click", () => {
-    setOpen(wrap.dataset.open !== "true");
-  });
-  body.addEventListener("click", () => {
-    if (wrap.dataset.open === "true") setOpen(false);
-  });
-  wrap.appendChild(toggle);
-  wrap.appendChild(body);
-  return wrap;
-}
-__name(renderPluginHeaderHelper, "renderPluginHeaderHelper");
-var SECTION_STATE = (() => {
-  const g = (
-    /** @type {Record<string, any>} */
-    /** @type {unknown} */
-    globalThis
-  );
-  if (!g.__tpsSectionState) g.__tpsSectionState = /* @__PURE__ */ new Map();
-  return (
-    /** @type {Map<string, boolean>} */
-    g.__tpsSectionState
-  );
-})();
-function sectionStateKey(el2, key) {
-  const scope = (
-    /** @type {HTMLElement} */
-    el2.dataset.sectionScope || ""
-  );
-  return scope + "::" + key;
-}
-__name(sectionStateKey, "sectionStateKey");
-function restoreSectionState(root, scope) {
-  const nodes = root.querySelectorAll(".tps-section--collapsible[data-section-key]");
-  for (const node of nodes) {
-    const el2 = (
-      /** @type {HTMLElement} */
-      node
-    );
-    el2.dataset.sectionScope = scope;
-    const key = el2.dataset.sectionKey || "";
-    const remembered = SECTION_STATE.get(sectionStateKey(el2, key));
-    if (remembered === void 0) continue;
-    const apply = (
-      /** @type {any} */
-      el2._tpsSetOpen
-    );
-    if (typeof apply === "function") apply(remembered, true);
-  }
-}
-__name(restoreSectionState, "restoreSectionState");
-function section({ label, hint, collapsible, defaultOpen = true, open, onToggle, persistKey, summary, body = [] }) {
-  const bodyChildren = Array.isArray(body) ? body : [body];
-  const bodyEl = h("div", { class: "tps-section-body" }, ...bodyChildren);
-  if (!collapsible) {
-    return h(
-      "section",
-      { class: "tps-section" },
-      h("div", { class: "tps-section-label" }, label),
-      hint ? h("p", { class: "tps-section-hint" }, hint) : null,
-      bodyEl
-    );
-  }
-  const initialOpen = open == null ? !!defaultOpen : !!open;
-  const sectionEl = h("section", {
-    class: "tps-section tps-section--collapsible",
-    // `open` is the controlled form — a caller driving it owns the state, so
-    // that case opts out of the remembered-state machinery entirely.
-    dataset: open == null ? { open: String(initialOpen), sectionKey: persistKey || label } : { open: String(initialOpen) }
-  });
-  const chev = h("span", { class: "tps-section-chev", "aria-hidden": "true" }, "▸");
-  const labelEl = h("span", { class: "tps-section-label" }, label);
-  const summaryEl = h("span", { class: "tps-section-summary" });
-  const paintSummary = /* @__PURE__ */ __name((isOpen) => {
-    summaryEl.replaceChildren();
-    if (isOpen || summary == null) return;
-    const content = typeof summary === "function" ? summary() : summary;
-    if (content == null || content === "") return;
-    if (typeof content === "string") summaryEl.textContent = content;
-    else summaryEl.appendChild(content);
-  }, "paintSummary");
-  const setOpen = /* @__PURE__ */ __name((nextOpen, restoring) => {
-    sectionEl.dataset.open = String(nextOpen);
-    header.setAttribute("aria-expanded", String(nextOpen));
-    paintSummary(nextOpen);
-    if (!restoring && sectionEl.dataset.sectionKey != null) {
-      SECTION_STATE.set(sectionStateKey(sectionEl, sectionEl.dataset.sectionKey), nextOpen);
-    }
-    if (onToggle) onToggle(nextOpen);
-  }, "setOpen");
-  sectionEl._tpsSetOpen = setOpen;
-  const header = h("button", {
-    type: "button",
-    class: "tps-section-header",
-    "aria-expanded": String(initialOpen),
-    onClick: /* @__PURE__ */ __name(() => setOpen(sectionEl.dataset.open !== "true"), "onClick")
-  }, chev, labelEl, summaryEl);
-  paintSummary(initialOpen);
-  sectionEl.appendChild(header);
-  if (hint) sectionEl.appendChild(h("p", { class: "tps-section-hint" }, hint));
-  sectionEl.appendChild(bodyEl);
-  return sectionEl;
-}
-__name(section, "section");
-function optionRow({ type = "checkbox", name, value, label, desc, checked, onChange }) {
-  const input = h("input", {
-    type,
-    name,
-    value,
-    checked: !!checked,
-    onChange: onChange ? (e) => onChange(e) : null
-  });
-  const labelEl = h("span", { class: "tps-opt-label" }, label);
-  const descEl = desc ? h("span", { class: "tps-opt-desc" }, desc) : null;
-  return h("label", { class: "tps-opt" }, input, labelEl, descEl);
-}
-__name(optionRow, "optionRow");
-function optionNote(text) {
-  return h("p", { class: "tps-opt-note" }, text);
-}
-__name(optionNote, "optionNote");
-function numberRow({ label, value, min, max, step = 1, unit, defaultValue, onChange, onReset }) {
-  const clamp = /* @__PURE__ */ __name((next) => {
-    let v = Number.isFinite(next) ? next : Number(value) || 0;
-    if (min != null) v = Math.max(min, v);
-    if (max != null) v = Math.min(max, v);
-    return v;
-  }, "clamp");
-  const input = h("input", {
-    type: "number",
-    class: "tps-num-input",
-    value,
-    min,
-    max,
-    step,
-    onInput: /* @__PURE__ */ __name((e) => {
-      const target = (
-        /** @type {HTMLInputElement} */
-        e.target
-      );
-      onChange && onChange(Number(target.value), e);
-    }, "onInput"),
-    onKeyDown: /* @__PURE__ */ __name((e) => {
-      if (e.key !== "ArrowUp" && e.key !== "ArrowDown") return;
-      e.preventDefault();
-      const base = Number.isFinite(Number(input.value)) ? Number(input.value) : Number(value) || 0;
-      const direction = e.key === "ArrowUp" ? 1 : -1;
-      input.value = String(clamp(base + direction * step * (e.shiftKey ? 10 : 1)));
-      onChange && onChange(Number(input.value), e);
-    }, "onKeyDown")
-  });
-  const minus = h("button", {
-    type: "button",
-    class: "tps-num-step",
-    "aria-label": "Decrease",
-    onClick: /* @__PURE__ */ __name(() => {
-      const v = Number(input.value) - step;
-      input.value = String(clamp(v));
-      onChange && onChange(Number(input.value));
-    }, "onClick")
-  }, "−");
-  const plus = h("button", {
-    type: "button",
-    class: "tps-num-step",
-    "aria-label": "Increase",
-    onClick: /* @__PURE__ */ __name(() => {
-      const v = Number(input.value) + step;
-      input.value = String(clamp(v));
-      onChange && onChange(Number(input.value));
-    }, "onClick")
-  }, "+");
-  const unitEl = unit ? h("span", { class: "tps-num-unit" }, unit) : null;
-  const reset = defaultValue != null ? h("button", {
-    type: "button",
-    class: "tps-num-reset",
-    hidden: value === defaultValue,
-    onClick: /* @__PURE__ */ __name(() => {
-      input.value = String(defaultValue);
-      onChange && onChange(defaultValue);
-      onReset && onReset();
-    }, "onClick")
-  }, "Reset") : null;
-  const numEl = h("div", { class: "tps-num" }, minus, input, plus, unitEl, reset);
-  if (label) {
-    return h(
-      "div",
-      { class: "tps-num-grid" },
-      h("div", { class: "tps-num-label" }, label),
-      numEl
-    );
-  }
-  return numEl;
-}
-__name(numberRow, "numberRow");
-function sliderRow({ label, value, min = 0, max = 100, step = 1, format, defaultValue, onChange, onReset }) {
-  const fmt = format || ((v) => String(v));
-  const input = h("input", {
-    type: "range",
-    class: "tps-slider-input",
-    value,
-    min,
-    max,
-    step,
-    onInput: /* @__PURE__ */ __name((e) => {
-      const target = (
-        /** @type {HTMLInputElement} */
-        e.target
-      );
-      const v = Number(target.value);
-      readout.textContent = fmt(v);
-      onChange && onChange(v, e);
-    }, "onInput")
-  });
-  const readout = h("span", { class: "tps-slider-value" }, fmt(value));
-  const reset = defaultValue != null ? h("button", {
-    type: "button",
-    class: "tps-num-reset",
-    onClick: /* @__PURE__ */ __name(() => {
-      input.value = String(defaultValue);
-      readout.textContent = fmt(defaultValue);
-      onChange && onChange(defaultValue);
-      onReset && onReset();
-    }, "onClick")
-  }, "Reset") : null;
-  return h(
-    "div",
-    { class: "tps-slider" },
-    h("span", { class: "tps-slider-label" }, label),
-    input,
-    readout,
-    reset
-  );
-}
-__name(sliderRow, "sliderRow");
-function tabs({ options, value, onChange, multiSelect = false }) {
-  const isActive = /* @__PURE__ */ __name((v) => multiSelect ? Array.isArray(value) && value.includes(v) : value === v, "isActive");
-  return h(
-    "div",
-    { class: "tps-tabs", role: "tablist" },
-    ...options.map((opt) => h("button", {
-      type: "button",
-      class: "tps-tab",
-      role: "tab",
-      "aria-pressed": String(isActive(opt.value)),
-      onClick: /* @__PURE__ */ __name(() => {
-        if (!onChange) return;
-        if (multiSelect) {
-          const cur = Array.isArray(value) ? value.slice() : [];
-          const i = cur.indexOf(opt.value);
-          if (i >= 0) cur.splice(i, 1);
-          else cur.push(opt.value);
-          onChange(cur);
-        } else {
-          onChange(opt.value);
-        }
-      }, "onClick")
-    }, opt.label))
-  );
-}
-__name(tabs, "tabs");
-function button({ label, variant = "ghost", size = "sm", onClick, disabled }) {
-  const cls = ["tps-button", `tps-button--${variant}`];
-  if (size === "md") cls.push("tps-button--md");
-  return h("button", {
-    type: "button",
-    class: cls.join(" "),
-    disabled: !!disabled,
-    onClick
-  }, label);
-}
-__name(button, "button");
-function pingInstall(_slug) {
-}
-__name(pingInstall, "pingInstall");
-function pingActive(_slug) {
-}
-__name(pingActive, "pingActive");
-var CONFIG_WRITE_QUEUES_KEY = "__tpsPluginConfigWriteQueues";
-function configWriteIdentity(plugin) {
-  let workspace = "default";
-  try {
-    workspace = plugin.getWorkspaceGuid?.() || "default";
-  } catch {
-  }
-  let guid = "";
-  try {
-    guid = plugin.getGuid?.() || plugin.collection?.getGuid?.() || "";
-  } catch {
-  }
-  let name = "plugin";
-  try {
-    name = plugin.getConfiguration?.()?.name || "plugin";
-  } catch {
-  }
-  return `${workspace}/${guid || name}`;
-}
-__name(configWriteIdentity, "configWriteIdentity");
-function queuePluginConfigWrite(plugin, task) {
-  let queues;
-  try {
-    const root = (
-      /** @type {any} */
-      globalThis
-    );
-    if (!(root[CONFIG_WRITE_QUEUES_KEY] instanceof Map)) root[CONFIG_WRITE_QUEUES_KEY] = /* @__PURE__ */ new Map();
-    queues = root[CONFIG_WRITE_QUEUES_KEY];
-  } catch {
-    return Promise.resolve().then(task);
-  }
-  const key = configWriteIdentity(plugin);
-  const prior = queues.get(key) || Promise.resolve();
-  const result = prior.then(task, task);
-  const tail = result.then(() => void 0, () => void 0);
-  queues.set(key, tail);
-  void tail.then(() => {
-    if (queues.get(key) === tail) queues.delete(key);
-  });
-  return result;
-}
-__name(queuePluginConfigWrite, "queuePluginConfigWrite");
-function readPluginVersion(conf, fallback = "0.0.1") {
-  if (!conf || typeof conf !== "object") return fallback;
-  if (typeof conf.version === "string" && conf.version) return conf.version;
-  const custom = (
-    /** @type {Record<string, unknown> | undefined} */
-    conf.custom
-  );
-  if (custom && typeof custom === "object" && typeof custom.pluginVersion === "string" && custom.pluginVersion) {
-    return custom.pluginVersion;
-  }
-  return fallback;
-}
-__name(readPluginVersion, "readPluginVersion");
-function configWithPluginVersion(conf, customPatch, pluginVersion) {
-  const base = conf && typeof conf === "object" ? conf : {};
-  const custom = base.custom && typeof base.custom === "object" ? base.custom : {};
-  return {
-    ...base,
-    version: pluginVersion,
-    custom: {
-      ...custom,
-      ...customPatch,
-      pluginVersion
-    }
-  };
-}
-__name(configWithPluginVersion, "configWithPluginVersion");
-async function resolveConfigApi(plugin) {
-  if (!plugin) return null;
-  if (typeof plugin.saveConfiguration === "function") return plugin;
-  try {
-    const data = plugin.data;
-    const guid = typeof plugin.getGuid === "function" && plugin.getGuid() || plugin.collection && typeof plugin.collection.getGuid === "function" && plugin.collection.getGuid() || null;
-    if (guid && data && typeof data.getPluginByGuid === "function") {
-      const byGuid = data.getPluginByGuid(guid);
-      if (byGuid && typeof byGuid.saveConfiguration === "function") return byGuid;
-    }
-    if (guid && data && typeof data.getAllCollections === "function") {
-      const all = await data.getAllCollections();
-      const found = (all || []).find((c) => c && typeof c.getGuid === "function" && c.getGuid() === guid);
-      if (found && typeof found.saveConfiguration === "function") return found;
-    }
-    if (data && typeof data.getAllGlobalPlugins === "function") {
-      const all = await data.getAllGlobalPlugins();
-      const name = plugin.getConfiguration?.()?.name;
-      const found = all.find((p) => p && typeof p.getGuid === "function" && p.getGuid() === guid) || (name ? all.find((p) => p && typeof p.getName === "function" && p.getName() === name) : null);
-      if (found && typeof found.saveConfiguration === "function") return found;
-    }
-  } catch {
-  }
-  return null;
-}
-__name(resolveConfigApi, "resolveConfigApi");
-async function syncPluginVersionOnLoad(plugin, pluginVersion, customPatch = {}) {
-  return queuePluginConfigWrite(plugin, () => syncPluginVersionOnLoadNow(plugin, pluginVersion, customPatch));
-}
-__name(syncPluginVersionOnLoad, "syncPluginVersionOnLoad");
-async function syncPluginVersionOnLoadNow(plugin, pluginVersion, customPatch = {}) {
-  const api = await resolveConfigApi(plugin);
-  if (!api) return;
-  let conf = {};
-  try {
-    conf = api.getConfiguration?.() || plugin.getConfiguration?.() || {};
-  } catch {
-    return;
-  }
-  if (typeof conf.name !== "string" || !conf.name.trim()) return;
-  const custom = conf.custom && typeof conf.custom === "object" ? { .../** @type {Record<string, unknown>} */
-  conf.custom, ...customPatch } : { ...customPatch };
-  if (readPluginVersion(conf, "") === pluginVersion) return;
-  try {
-    let ws = "default";
-    try {
-      ws = plugin.getWorkspaceGuid?.() || "default";
-    } catch {
-    }
-    const guardKey = `tps-version-synced/${ws}/${conf.name}`;
-    if (sessionStorage.getItem(guardKey) === pluginVersion) return;
-    sessionStorage.setItem(guardKey, pluginVersion);
-  } catch {
-  }
-  try {
-    await api.saveConfiguration(configWithPluginVersion(conf, custom, pluginVersion));
-  } catch {
-  }
-}
-__name(syncPluginVersionOnLoadNow, "syncPluginVersionOnLoadNow");
-async function healPluginIdentity(plugin, identity) {
-  return queuePluginConfigWrite(plugin, () => healPluginIdentityNow(plugin, identity));
-}
-__name(healPluginIdentity, "healPluginIdentity");
-async function healPluginIdentityNow(plugin, identity) {
-  if (!identity || typeof identity.name !== "string" || !identity.name.trim()) return;
-  const STUB_NAMES = ["New Global Plugin", "New Collection", "My Global Plugin"];
-  const api = await resolveConfigApi(plugin);
-  if (!api) return;
-  let conf = {};
-  try {
-    conf = api.getConfiguration?.() || plugin.getConfiguration?.() || {};
-  } catch {
-    return;
-  }
-  if (conf.ver === void 0 && conf.custom === void 0) return;
-  const hasStubName = typeof conf.name !== "string" || !conf.name.trim() || STUB_NAMES.includes(conf.name.trim());
-  const missingRepo = identity.sourceRepo && conf.__source_repo === void 0;
-  if (!hasStubName && !missingRepo) return;
-  try {
-    let ws = "default";
-    try {
-      ws = plugin.getWorkspaceGuid?.() || "default";
-    } catch {
-    }
-    const guardKey = `tps-identity-healed/${ws}/${identity.name}`;
-    if (sessionStorage.getItem(guardKey) === "1") return;
-    sessionStorage.setItem(guardKey, "1");
-  } catch {
-  }
-  const next = { ...conf };
-  if (hasStubName) {
-    next.name = identity.name;
-    if (identity.icon) next.icon = identity.icon;
-    if (identity.description) next.description = identity.description;
-  }
-  if (missingRepo) {
-    next.__source_repo = identity.sourceRepo;
-    if (conf.__source_files === void 0 && identity.sourceFiles) {
-      next.__source_files = { ...identity.sourceFiles };
-    }
-  }
-  try {
-    await api.saveConfiguration(next);
-  } catch {
-  }
-}
-__name(healPluginIdentityNow, "healPluginIdentityNow");
-var MARKER_SYNC_HORIZON_MS = 9e4;
-function isPluginDisabled(conf) {
-  if (!conf || typeof conf !== "object") return false;
-  const custom = conf.custom;
-  return !!(custom && typeof custom === "object" && /** @type {Record<string, unknown>} */
-  custom.pluginDisabled === true);
-}
-__name(isPluginDisabled, "isPluginDisabled");
-function markerKey(plugin) {
-  let ws = "default";
-  try {
-    ws = plugin.getWorkspaceGuid?.() || "default";
-  } catch {
-  }
-  let name = "plugin";
-  try {
-    name = plugin.getConfiguration?.()?.name || "plugin";
-  } catch {
-  }
-  return `tps-kill-switch/${ws}/${name}`;
-}
-__name(markerKey, "markerKey");
-function writeKillSwitchMarker(plugin, disabled) {
-  try {
-    localStorage.setItem(markerKey(plugin), JSON.stringify({ disabled, ts: Date.now() }));
-  } catch {
-  }
-}
-__name(writeKillSwitchMarker, "writeKillSwitchMarker");
-function clearKillSwitchMarker(plugin) {
-  try {
-    localStorage.removeItem(markerKey(plugin));
-  } catch {
-  }
-}
-__name(clearKillSwitchMarker, "clearKillSwitchMarker");
-function readKillSwitch(plugin) {
-  let conf = {};
-  try {
-    conf = plugin.getConfiguration?.() || {};
-  } catch {
-  }
-  const confDisabled = isPluginDisabled(conf);
-  try {
-    const raw = localStorage.getItem(markerKey(plugin));
-    if (raw) {
-      const marker = JSON.parse(raw);
-      if (marker && typeof marker.disabled === "boolean") {
-        if (marker.disabled === confDisabled) {
-          clearKillSwitchMarker(plugin);
-          return confDisabled;
-        }
-        if (Date.now() - (Number(marker.ts) || 0) < MARKER_SYNC_HORIZON_MS) {
-          return marker.disabled;
-        }
-        clearKillSwitchMarker(plugin);
-      }
-    }
-  } catch {
-  }
-  return confDisabled;
-}
-__name(readKillSwitch, "readKillSwitch");
-async function setPluginDisabled(plugin, disabled, pluginVersion, customPatch = {}) {
-  return queuePluginConfigWrite(plugin, () => setPluginDisabledNow(plugin, disabled, pluginVersion, customPatch));
-}
-__name(setPluginDisabled, "setPluginDisabled");
-async function setPluginDisabledNow(plugin, disabled, pluginVersion, customPatch) {
-  const api = await resolveConfigApi(plugin);
-  if (!api) return false;
-  let conf = {};
-  try {
-    conf = api.getConfiguration?.() || plugin.getConfiguration?.() || {};
-  } catch {
-    return false;
-  }
-  if (typeof conf.name !== "string" || !conf.name.trim()) return false;
-  const custom = conf.custom && typeof conf.custom === "object" ? (
-    /** @type {Record<string, unknown>} */
-    conf.custom
-  ) : {};
-  const resolvedPatch = typeof customPatch === "function" ? customPatch(custom) : customPatch;
-  const patch = resolvedPatch && typeof resolvedPatch === "object" ? resolvedPatch : {};
-  if (!Object.keys(patch).length && readKillSwitch(plugin) === disabled && isPluginDisabled(conf) === disabled) return true;
-  writeKillSwitchMarker(plugin, disabled);
-  try {
-    const result = await api.saveConfiguration(configWithPluginVersion(conf, { ...patch, pluginDisabled: disabled }, pluginVersion));
-    if (result === false) throw new Error("Thymer rejected the config save.");
-    return true;
-  } catch {
-    clearKillSwitchMarker(plugin);
-    return false;
-  }
-}
-__name(setPluginDisabledNow, "setPluginDisabledNow");
-function createSettingsStore(plugin, {
-  slug,
-  key = "settings",
-  version,
-  normalize = /* @__PURE__ */ __name((raw) => raw && typeof raw === "object" ? raw : {}, "normalize"),
-  scopeKey = null,
-  readSynced = null,
-  pickSynced = null
-}) {
-  const readBag = readSynced || ((custom) => custom?.[key]);
-  const pickSyncedSubset = pickSynced || ((s) => s);
-  let current = {};
-  let dirty = false;
-  let editRevision = 0;
-  let localUnavailable = false;
-  let restoredFromMirror = false;
-  let writeChain = Promise.resolve();
-  let flushTimer = null;
-  let settleTimer = null;
-  const fnv1a = /* @__PURE__ */ __name((s) => {
-    let h2 = 2166136261;
-    for (let i = 0; i < s.length; i++) {
-      h2 ^= s.charCodeAt(i);
-      h2 = Math.imul(h2, 16777619);
-    }
-    return (h2 >>> 0).toString(36);
-  }, "fnv1a");
-  const deviceIdentityParts = /* @__PURE__ */ __name(() => {
-    try {
-      const n = (
-        /** @type {any} */
-        typeof navigator !== "undefined" ? navigator : {}
-      );
-      const ua = String(n.userAgent || "");
-      const isApp = /electron/i.test(ua);
-      const os = /android/i.test(ua) ? "android" : /iphone|ipad|ios/i.test(ua) ? "ios" : /linux/i.test(ua) ? "linux" : /mac|darwin/i.test(ua) ? "mac" : /win/i.test(ua) ? "win" : "x";
-      return { n, ua, isApp, os };
-    } catch {
-      return { n: {}, ua: "", isApp: false, os: "x" };
-    }
-  }, "deviceIdentityParts");
-  const identity = deviceIdentityParts();
-  const legacyDeviceKey = `${identity.isApp ? "app" : "web"}-${identity.os}-${fnv1a(`${identity.ua}|${identity.n.platform || ""}|${identity.n.language || ""}`)}`;
-  const stableFingerprint = `${identity.isApp ? "app" : "web"}-${identity.os}-${fnv1a(`${String(identity.ua).replace(/\d+(?:[._]\d+)*/g, "#")}|${identity.n.platform || ""}|${identity.n.language || ""}`)}`;
-  const persistentDeviceKey = /* @__PURE__ */ __name(() => {
-    const storageKey = "tps-settings-device-id";
-    try {
-      const existing = localStorage.getItem(storageKey);
-      if (existing && /^device-[a-z0-9-]+$/i.test(existing)) return existing;
-      let id = "";
-      try {
-        id = `device-${crypto.randomUUID()}`;
-      } catch {
-      }
-      if (!id) id = `device-${fnv1a(`${Date.now()}|${Math.random()}|${stableFingerprint}`)}`;
-      localStorage.setItem(storageKey, id);
-      if (localStorage.getItem(storageKey) === id) return id;
-    } catch {
-    }
-    return stableFingerprint;
-  }, "persistentDeviceKey");
-  const deviceKey = persistentDeviceKey();
-  const asMap = /* @__PURE__ */ __name((bag) => {
-    if (bag && typeof bag === "object" && bag.byDevice && typeof bag.byDevice === "object") {
-      return {
-        shared: bag.shared,
-        byDevice: { ...bag.byDevice },
-        aliases: bag.aliases && typeof bag.aliases === "object" ? { ...bag.aliases } : {}
-      };
-    }
-    if (bag && typeof bag === "object" && Object.keys(bag).length) {
-      return { shared: bag, byDevice: {}, aliases: {} };
-    }
-    return { shared: void 0, byDevice: {}, aliases: {} };
-  }, "asMap");
-  const readCustom = /* @__PURE__ */ __name(() => {
-    try {
-      const conf = plugin.getConfiguration?.();
-      const custom = conf && conf.custom;
-      return custom && typeof custom === "object" ? (
-        /** @type {Record<string, unknown>} */
-        custom
-      ) : {};
-    } catch {
-      return {};
-    }
-  }, "readCustom");
-  const resolveDeviceSlotKey = /* @__PURE__ */ __name((m) => {
-    if (Object.prototype.hasOwnProperty.call(m.byDevice, deviceKey)) return deviceKey;
-    const aliased = m.aliases[stableFingerprint];
-    if (aliased && Object.prototype.hasOwnProperty.call(m.byDevice, aliased)) return aliased;
-    if (Object.prototype.hasOwnProperty.call(m.byDevice, stableFingerprint)) return stableFingerprint;
-    if (Object.prototype.hasOwnProperty.call(m.byDevice, legacyDeviceKey)) return legacyDeviceKey;
-    return null;
-  }, "resolveDeviceSlotKey");
-  const readSyncedDevice = /* @__PURE__ */ __name((custom) => {
-    const m = asMap(readBag(custom));
-    const slotKey = resolveDeviceSlotKey(m);
-    if (slotKey) return m.byDevice[slotKey];
-    return m.shared ?? null;
-  }, "readSyncedDevice");
-  const prune = /* @__PURE__ */ __name((m) => {
-    const out = { byDevice: m.byDevice };
-    if (m.shared !== void 0) out.shared = m.shared;
-    if (Object.keys(m.aliases).length) out.aliases = m.aliases;
-    return out;
-  }, "prune");
-  const buildDevicePatch = /* @__PURE__ */ __name((custom, subset) => {
-    const m = asMap(readBag(custom));
-    m.byDevice[deviceKey] = subset;
-    m.aliases[stableFingerprint] = deviceKey;
-    return { [key]: prune(m) };
-  }, "buildDevicePatch");
-  const buildAllPatch = /* @__PURE__ */ __name((custom, subset) => {
-    const m = asMap(readBag(custom));
-    m.shared = subset;
-    for (const k of Object.keys(m.byDevice)) m.byDevice[k] = subset;
-    m.byDevice[deviceKey] = subset;
-    m.aliases[stableFingerprint] = deviceKey;
-    return { [key]: prune(m) };
-  }, "buildAllPatch");
-  const buildResetPatch = /* @__PURE__ */ __name((custom) => {
-    const m = asMap(readBag(custom));
-    const resolved = resolveDeviceSlotKey(m);
-    if (resolved) delete m.byDevice[resolved];
-    delete m.byDevice[deviceKey];
-    delete m.byDevice[stableFingerprint];
-    delete m.byDevice[legacyDeviceKey];
-    delete m.aliases[stableFingerprint];
-    return { [key]: prune(m) };
-  }, "buildResetPatch");
-  const normalizedStringify = /* @__PURE__ */ __name((raw) => JSON.stringify(normalize(raw)), "normalizedStringify");
-  const workspaceGuid = /* @__PURE__ */ __name(() => {
-    try {
-      return String(plugin.getWorkspaceGuid?.() || "") || "default";
-    } catch {
-      return "default";
-    }
-  }, "workspaceGuid");
-  const scope = /* @__PURE__ */ __name(() => {
-    if (!scopeKey) return "";
-    try {
-      return `/${String(scopeKey() || "scope")}`;
-    } catch {
-      return "/scope";
-    }
-  }, "scope");
-  const cacheKey = /* @__PURE__ */ __name(() => `${slug}/${workspaceGuid()}${scope()}/${deviceKey}/cache`, "cacheKey");
-  const legacyCacheKey = /* @__PURE__ */ __name(() => `${slug}/${workspaceGuid()}${scope()}/${legacyDeviceKey}/cache`, "legacyCacheKey");
-  const readCache = /* @__PURE__ */ __name(() => {
-    try {
-      const raw = localStorage.getItem(cacheKey()) ?? localStorage.getItem(legacyCacheKey());
-      if (raw === null) return null;
-      const parsed = JSON.parse(raw);
-      return parsed && typeof parsed === "object" ? parsed : null;
-    } catch {
-      return null;
-    }
-  }, "readCache");
-  const writeCache = /* @__PURE__ */ __name((value) => {
-    try {
-      const keyName = cacheKey();
-      localStorage.setItem(keyName, value);
-      if (localStorage.getItem(keyName) !== value) throw new Error("localStorage read-back mismatch");
-      localUnavailable = false;
-      return true;
-    } catch {
-      localUnavailable = true;
-      return false;
-    }
-  }, "writeCache");
-  const clearCache = /* @__PURE__ */ __name(() => {
-    try {
-      localStorage.removeItem(cacheKey());
-      localStorage.removeItem(legacyCacheKey());
-    } catch {
-    }
-  }, "clearCache");
-  const mirrorKey = /* @__PURE__ */ __name(() => `${slug}/${workspaceGuid()}${scope()}/mirror`, "mirrorKey");
-  const readMirror = /* @__PURE__ */ __name(() => {
-    try {
-      const raw = localStorage.getItem(mirrorKey());
-      if (raw === null) return null;
-      const parsed = JSON.parse(raw);
-      return parsed && typeof parsed === "object" ? parsed : null;
-    } catch {
-      return null;
-    }
-  }, "readMirror");
-  const writeMirror = /* @__PURE__ */ __name((bag) => {
-    try {
-      const m = asMap(bag);
-      if (m.shared === void 0 && !Object.keys(m.byDevice).length) return;
-      localStorage.setItem(mirrorKey(), JSON.stringify(prune(m)));
-    } catch {
-    }
-  }, "writeMirror");
-  const recoveryFlagKey = /* @__PURE__ */ __name(() => `tps-settings-recovered/${slug}/${workspaceGuid()}${scope()}`, "recoveryFlagKey");
-  const recoveryAttempted = /* @__PURE__ */ __name(() => {
-    try {
-      return sessionStorage.getItem(recoveryFlagKey()) === "1";
-    } catch {
-      return false;
-    }
-  }, "recoveryAttempted");
-  const markRecoveryAttempted = /* @__PURE__ */ __name(() => {
-    try {
-      sessionStorage.setItem(recoveryFlagKey(), "1");
-    } catch {
-    }
-  }, "markRecoveryAttempted");
-  const bagIsAbsent = /* @__PURE__ */ __name((custom) => {
-    const bag = readBag(custom);
-    if (!bag || typeof bag !== "object") return true;
-    const m = asMap(bag);
-    return m.shared === void 0 && !Object.keys(m.byDevice).length;
-  }, "bagIsAbsent");
-  const saveCustomNow = /* @__PURE__ */ __name(async (buildPatch) => {
-    try {
-      const api = await resolveConfigApi(plugin);
-      if (!api || typeof api.saveConfiguration !== "function") return false;
-      let conf = {};
-      try {
-        conf = api.getConfiguration?.() || plugin.getConfiguration?.() || {};
-      } catch {
-        return false;
-      }
-      if (typeof conf.name !== "string" || !conf.name.trim()) return false;
-      const custom = conf.custom && typeof conf.custom === "object" ? conf.custom : {};
-      const patch = buildPatch(custom);
-      const patchKeys = Object.keys(patch);
-      if (!patchKeys.length) return true;
-      const converged = patchKeys.every((patchKey) => patchKey === key ? bagConverged(custom[key], patch[key]) : JSON.stringify(custom[patchKey]) === JSON.stringify(patch[patchKey]));
-      if (converged) {
-        if (patch[key] !== void 0) writeMirror(patch[key]);
-        return true;
-      }
-      const result = await api.saveConfiguration(configWithPluginVersion(conf, patch, version));
-      if (result === false) return false;
-      if (patch[key] !== void 0) writeMirror(patch[key]);
-      return true;
-    } catch {
-      return false;
-    }
-  }, "saveCustomNow");
-  const saveCustom = /* @__PURE__ */ __name((buildPatch) => {
-    const run = /* @__PURE__ */ __name(() => queuePluginConfigWrite(plugin, () => saveCustomNow(buildPatch)), "run");
-    const result = writeChain.then(run, run);
-    writeChain = result.then(() => void 0, () => void 0);
-    return result;
-  }, "saveCustom");
-  const bagConverged = /* @__PURE__ */ __name((a, b) => {
-    const ma = asMap(a);
-    const mb = asMap(b);
-    if (normalizedStringify(ma.shared || {}) !== normalizedStringify(mb.shared || {})) return false;
-    const keys = /* @__PURE__ */ new Set([...Object.keys(ma.byDevice), ...Object.keys(mb.byDevice)]);
-    for (const k of keys) {
-      if (normalizedStringify(ma.byDevice[k] || {}) !== normalizedStringify(mb.byDevice[k] || {})) return false;
-    }
-    if (JSON.stringify(Object.entries(ma.aliases).sort()) !== JSON.stringify(Object.entries(mb.aliases).sort())) return false;
-    return true;
-  }, "bagConverged");
-  const FLUSH_DELAY_MS = 4e3;
-  const cancelFlush = /* @__PURE__ */ __name(() => {
-    if (flushTimer) {
-      clearTimeout(flushTimer);
-      flushTimer = null;
-    }
-  }, "cancelFlush");
-  const flushDevice = /* @__PURE__ */ __name(async () => {
-    cancelFlush();
-    if (!dirty) return true;
-    const revision = editRevision;
-    const subset = pickSyncedSubset(normalize(current));
-    const ok = await saveCustom((custom) => buildDevicePatch(custom, subset));
-    if (ok && editRevision === revision) {
-      dirty = false;
-      clearCache();
-    } else if (dirty) scheduleFlush();
-    return ok;
-  }, "flushDevice");
-  const scheduleFlush = /* @__PURE__ */ __name(() => {
-    cancelFlush();
-    flushTimer = setTimeout(() => {
-      flushTimer = null;
-      void flushDevice();
-    }, FLUSH_DELAY_MS);
-  }, "scheduleFlush");
-  const store = {
-    /**
-     * Read this device's settings from the synced config. A localStorage cache
-     * that differs (an edit not yet flushed before a crash/reload) wins and is
-     * re-flushed. Read-only w.r.t. the synced config.
-     */
-    load() {
-      if (dirty) return { settings: current, diverged: this.isDiverged() };
-      let custom = readCustom();
-      {
-        const mirrored = readMirror();
-        const mm = mirrored ? asMap(mirrored) : null;
-        const mirrorSlot = mm ? resolveDeviceSlotKey(mm) : null;
-        if (mm && bagIsAbsent(custom)) {
-          restoredFromMirror = true;
-          custom = { ...custom, [key]: prune(mm) };
-          if (!recoveryAttempted()) {
-            markRecoveryAttempted();
-            void saveCustomNow(() => ({ [key]: prune(mm) }));
-          }
-        } else if (mm && mirrorSlot && !resolveDeviceSlotKey(asMap(readBag(custom)))) {
-          const merged = asMap(readBag(custom));
-          merged.byDevice[mirrorSlot] = mm.byDevice[mirrorSlot];
-          merged.aliases = { ...merged.aliases, ...mm.aliases };
-          if (merged.shared === void 0 && mm.shared !== void 0) merged.shared = mm.shared;
-          restoredFromMirror = true;
-          custom = { ...custom, [key]: prune(merged) };
-          if (!recoveryAttempted()) {
-            markRecoveryAttempted();
-            void saveCustomNow((liveCustom) => {
-              const live = asMap(readBag(liveCustom));
-              if (resolveDeviceSlotKey(live)) return {};
-              live.byDevice[mirrorSlot] = mm.byDevice[mirrorSlot];
-              live.aliases = { ...live.aliases, ...mm.aliases };
-              return { [key]: prune(live) };
-            });
-          }
-        }
-      }
-      const synced = normalize(readSyncedDevice(custom) || {});
-      const cached = readCache();
-      if (cached && normalizedStringify(cached) !== JSON.stringify(synced)) {
-        current = normalize(cached);
-        dirty = true;
-        scheduleFlush();
-      } else {
-        current = synced;
-        dirty = false;
-        writeMirror(readBag(custom));
-        if (cached) clearCache();
-        const resolved = resolveDeviceSlotKey(asMap(readBag(custom)));
-        if (resolved && resolved !== deviceKey) {
-          dirty = true;
-          editRevision += 1;
-          if (writeCache(JSON.stringify(current))) scheduleFlush();
-          else void flushDevice();
-        }
-      }
-      return { settings: current, diverged: this.isDiverged() };
-    },
-    get() {
-      return current;
-    },
-    /** This device's settings differ from the shared baseline (informational). */
-    isDiverged() {
-      const shared = asMap(readBag(readCustom())).shared;
-      return normalizedStringify(shared || {}) !== JSON.stringify(normalize(current));
-    },
-    /** True when the immediate recovery journal could not be verified. */
-    isLocalUnavailable() {
-      return localUnavailable;
-    },
-    /**
-     * True when this load found the synced settings gone and rebuilt them from
-     * the durable local mirror. Worth surfacing to the user — a silent recovery
-     * hides that something wiped their config, and they should know to check
-     * whatever did it.
-     */
-    wasRestoredFromMirror() {
-      return restoredFromMirror;
-    },
-    /**
-     * Lossless migration/recovery entry point. The normalized value is journaled
-     * through the store's real cache key and retried to synced config; callers
-     * never need to know or recreate that private key.
-     */
-    recover(raw) {
-      const next = normalize(raw);
-      const synced = normalize(readSyncedDevice(readCustom()) || {});
-      if (JSON.stringify(next) === JSON.stringify(synced)) return false;
-      current = next;
-      dirty = true;
-      editRevision += 1;
-      if (writeCache(JSON.stringify(current))) scheduleFlush();
-      else void flushDevice();
-      return true;
-    },
-    /** Force this device's pending settings into its durable synced slot. */
-    flush() {
-      return flushDevice();
-    },
-    /**
-     * Apply an edit to THIS device: update memory, cache locally for instant UI,
-     * and schedule a durable flush to this device's synced slot. Never touches
-     * another device's slot or the shared baseline.
-     */
-    update(patch) {
-      current = normalize({ ...current, ...patch });
-      dirty = true;
-      editRevision += 1;
-      if (writeCache(JSON.stringify(current))) scheduleFlush();
-      else void flushDevice();
-      return { settings: current, diverged: this.isDiverged() };
-    },
-    /**
-     * "Copy these settings to all my devices": write the current settings to the
-     * shared baseline AND every existing device slot, in ONE saveConfiguration.
-     * (This is the header pill's ↑ action.)
-     */
-    async pushToAll() {
-      cancelFlush();
-      const revision = editRevision;
-      const subset = pickSyncedSubset(normalize(current));
-      const ok = await saveCustom((custom) => buildAllPatch(custom, subset));
-      if (ok && editRevision === revision) {
-        dirty = false;
-        clearCache();
-      } else if (dirty) scheduleFlush();
-      return ok;
-    },
-    /**
-     * "Reset this device": drop this device's slot so it re-inherits the shared
-     * baseline (or defaults). (The header pill's ↺ action.) Returns the settings
-     * this device now shows.
-     */
-    discardLocal() {
-      cancelFlush();
-      const shared = asMap(readBag(readCustom())).shared;
-      current = normalize(shared || {});
-      dirty = true;
-      editRevision += 1;
-      const revision = editRevision;
-      writeCache(JSON.stringify(current));
-      void saveCustom((custom) => buildResetPatch(custom)).then((ok) => {
-        if (ok && editRevision === revision) {
-          dirty = false;
-          clearCache();
-        } else if (dirty) scheduleFlush();
-      });
-      return current;
-    },
-    /**
-     * Persist sibling custom data and this device's pending settings in one
-     * serialized save. Data-owning plugins use this instead of manually
-     * snapshotting the settings bag from a potentially stale config instance.
-     */
-    async saveCustomPatch(extraPatch = {}) {
-      cancelFlush();
-      const revision = editRevision;
-      const hadDirty = dirty;
-      const subset = hadDirty ? pickSyncedSubset(normalize(current)) : null;
-      const ok = await saveCustom((custom) => ({
-        ...typeof extraPatch === "function" ? extraPatch(custom) : extraPatch,
-        ...hadDirty ? buildDevicePatch(custom, subset) : {}
-      }));
-      if (ok && hadDirty && editRevision === revision) {
-        dirty = false;
-        clearCache();
-      } else if (dirty) scheduleFlush();
-      return ok;
-    },
-    /**
-     * The canonical settings-aware kill switch. Pending device settings and any
-     * sibling data patch land atomically with pluginDisabled, and recovery is
-     * cleared only after Thymer confirms the save.
-     */
-    async setDisabled(disabled, extraPatch = {}) {
-      cancelFlush();
-      const revision = editRevision;
-      const hadDirty = dirty;
-      const subset = hadDirty ? pickSyncedSubset(normalize(current)) : null;
-      const run = /* @__PURE__ */ __name(() => setPluginDisabled(plugin, disabled, version, (custom) => ({
-        ...extraPatch,
-        ...hadDirty ? buildDevicePatch(custom, subset) : {}
-      })), "run");
-      const okPromise = writeChain.then(run, run);
-      writeChain = okPromise.then(() => void 0, () => void 0);
-      const ok = await okPromise;
-      if (ok && hadDirty && editRevision === revision) {
-        dirty = false;
-        clearCache();
-      } else if (dirty) scheduleFlush();
-      return ok;
-    },
-    /**
-     * Post-push pill settle. A successful push saves the config, which reloads
-     * the plugin; the fresh instance can render its scope pill from a config
-     * snapshot the save hasn't reached yet, and the follow-up config event is
-     * filtered as local (attachLifecycle, by design) — so nothing repaints and
-     * the pill sits on "This device" even though the push landed. Re-read the
-     * synced config on a short interval until it converges: when the adopted
-     * settings changed, `onAdopt(settings)` fires (apply + full panel render);
-     * otherwise `refreshPill()` fires (pill-only repaint). A genuine local
-     * edit still wins — load() carries it through the crash cache. No-ops
-     * instantly when already settled. Call from the push success callback AND
-     * the post-reload panel heal; returns a cancel fn for onUnload.
-     */
-    settleAfterPush({ onAdopt = void 0, refreshPill = void 0, tries = 8, intervalMs = 500 } = {}) {
-      if (settleTimer) {
-        clearTimeout(settleTimer);
-        settleTimer = null;
-      }
-      const tick = /* @__PURE__ */ __name((left) => {
-        const before = JSON.stringify(current);
-        const next = this.load().settings;
-        if (JSON.stringify(next) !== before) onAdopt?.(next);
-        else refreshPill?.();
-        if (left <= 0 || !this.isDiverged()) return;
-        settleTimer = setTimeout(() => {
-          settleTimer = null;
-          tick(left - 1);
-        }, intervalMs);
-      }, "tick");
-      tick(tries);
-      return () => {
-        if (settleTimer) {
-          clearTimeout(settleTimer);
-          settleTimer = null;
-        }
-      };
-    },
-    /**
-     * Live-follow: when another device does "apply to all" (or edits propagate),
-     * `global-plugin.updated` (or, for CollectionPlugins, the collection event the
-     * adopter also wires) fires; re-read this device's synced settings and, if
-     * they changed, hand them to the plugin's central apply. Also registers the
-     * boundary flush (hidden / pagehide) so a just-made edit isn't stranded in the
-     * localStorage cache. Returns a detach function for onUnload.
-     */
-    attachLifecycle({ onRemoteChange } = {}) {
-      const handlerIds = [];
-      const onHide = /* @__PURE__ */ __name(() => {
-        if (document.visibilityState === "hidden") void flushDevice();
-      }, "onHide");
-      const onPageHide = /* @__PURE__ */ __name(() => {
-        void flushDevice();
-      }, "onPageHide");
-      try {
-        document.addEventListener("visibilitychange", onHide);
-        window.addEventListener("pagehide", onPageHide);
-      } catch {
-      }
-      try {
-        const id = plugin.events?.on?.("global-plugin.updated", (event) => {
-          try {
-            if (dirty) return;
-            if (event?.source?.isLocal) return;
-            const guid = plugin.getGuid?.();
-            const eventGuid = event?.pluginGuid || event?.guid || event?.rootId || null;
-            if (eventGuid && guid && eventGuid !== guid) return;
-            const next = normalize(readSyncedDevice(readCustom()) || {});
-            if (JSON.stringify(next) === JSON.stringify(current)) return;
-            current = next;
-            onRemoteChange?.(current);
-          } catch {
-          }
-        });
-        if (id) handlerIds.push(id);
-      } catch {
-      }
-      return () => {
-        cancelFlush();
-        if (settleTimer) {
-          clearTimeout(settleTimer);
-          settleTimer = null;
-        }
-        try {
-          document.removeEventListener("visibilitychange", onHide);
-          window.removeEventListener("pagehide", onPageHide);
-        } catch {
-        }
-        for (const id of handlerIds) {
-          try {
-            plugin.events?.off?.(id);
-          } catch {
-          }
-        }
-      };
-    }
-  };
-  return store;
-}
-__name(createSettingsStore, "createSettingsStore");
 var TW_SHADES = Object.freeze([50, 100, 200, 300, 400, 500, 600, 700, 800, 900, 950]);
-var TW_MID_INDEX = 5;
 function mirrorShadeIdx(idx) {
   const n = TW_SHADES.length;
   const i = Math.max(0, Math.min(n - 1, Number(idx) || 0));
@@ -4288,7 +403,7 @@ var NUM_SPECS = {
   soundVariation: { min: 0, max: 1, step: 0.01 }
 };
 var ENUMS = {
-  cursorStyle: ["Line", "Box", "Underline"],
+  cursorStyle: ["Line", "Box", "Underline", "Beam"],
   overlayFollowMode: ["caret", "mouse", "auto"]
 };
 var HEX_KEYS = /* @__PURE__ */ new Set([
@@ -4423,6 +538,22 @@ function codeToPreset(code) {
 }
 __name(codeToPreset, "codeToPreset");
 var BUILTIN_PRESETS = Object.freeze({
+  Svy: normalizePresetSnapshot({
+    cursorStyle: "Beam",
+    colorLight: "#00695e",
+    colorDark: "#48d0c0",
+    caretWidthPx: 3,
+    glow: true,
+    blinkingEnabled: false,
+    showChar: false,
+    cursorOpacity: 1,
+    lineSerifs: false,
+    smoothEnabled: false,
+    smear: false,
+    popLetters: false,
+    flameTrail: false,
+    backspaceDisintegrate: false
+  }),
   Fast: normalizePresetSnapshot(DEFAULTS),
   "Jell-O": {
     cursorStyle: "Box",
@@ -4695,185 +826,6 @@ body.${BODY_ACTIVE_CLASS} .${ROOT_CLASS}-panel .cs-demo {
 	display: none !important;
 }
 `;
-var PANEL_LOCAL_CSS = `
-.${ROOT_CLASS}-panel .cs-preset-row {
-	display: flex;
-	align-items: center;
-	gap: 8px;
-	padding: 6px 8px;
-	border: 1px solid var(--border-default, rgba(127, 127, 127, 0.12));
-	border-radius: var(--tps-radius, 6px);
-	background: var(--bg-default, rgba(127, 127, 127, 0.06));
-	margin-bottom: 6px;
-}
-.${ROOT_CLASS}-panel .cs-preset-row.cs-preset-active {
-	border-color: var(--tps-accent, #04d1ab);
-	background: var(--bg-hover, rgba(127, 127, 127, 0.04));
-}
-.${ROOT_CLASS}-panel .cs-preset-name {
-	flex: 1 1 auto;
-	min-width: 0;
-	overflow: hidden;
-	text-overflow: ellipsis;
-	white-space: nowrap;
-	font-weight: 600;
-}
-.${ROOT_CLASS}-panel .cs-preset-active .cs-preset-name::before {
-	content: '●';
-	margin-right: 6px;
-	color: var(--tps-accent, #04d1ab);
-}
-.${ROOT_CLASS}-panel .cs-preset-actions {
-	display: flex;
-	gap: 4px;
-	flex: 0 0 auto;
-}
-.${ROOT_CLASS}-panel .cs-text-input {
-	flex: 1 1 auto;
-	min-width: 0;
-	box-sizing: border-box;
-	padding: 5px 8px;
-	border-radius: var(--tps-radius, 6px);
-	border: 1px solid var(--border-default, rgba(127, 127, 127, 0.12));
-	background: var(--bg-default, rgba(127, 127, 127, 0.06));
-	color: var(--text-default, inherit);
-	font: inherit;
-	font-size: 12px;
-}
-.${ROOT_CLASS}-panel .cs-text-input:focus {
-	outline: none;
-	border-color: var(--tps-accent, #04d1ab);
-}
-.${ROOT_CLASS}-panel .cs-input-row {
-	display: flex;
-	align-items: center;
-	gap: 6px;
-	margin-top: 8px;
-}
-.${ROOT_CLASS}-panel .cs-color-row {
-	display: flex;
-	align-items: flex-start;
-	gap: 10px;
-	margin-bottom: 10px;
-}
-.${ROOT_CLASS}-panel .cs-color-label {
-	flex: 0 0 96px;
-	padding-top: 4px;
-	font-size: 12px;
-	color: var(--text-muted, rgba(127, 127, 127, 0.9));
-}
-.${ROOT_CLASS}-panel .cs-color-field {
-	flex: 1 1 auto;
-	min-width: 0;
-}
-/* NOTE: never use backticks in these comments — this whole stylesheet is a JS
- template literal and a stray backtick terminates it. (Same family as the
- no-HTML-in-injectCSS-comments rule in CLAUDE.md.)
-
- position:sticky resolves against the nearest SCROLLING ancestor. The shared
- panel root declares overflow:auto, which would make it that ancestor — but
- Thymer's panel body gives it no definite height, so height:100% resolves to
- auto, the root grows to fit its content, and it never scrolls internally. A
- sticky child then has nothing to stick within and simply scrolls away with
- the outer container.
-
- (The preview failing to stick is itself the proof: were this root the real
- scroller, sticky would already have worked.)
-
- Dropping the declaration for our panel only hands the job to Thymer's own
- .panel-scroller-y. Safe precisely because this element is not scrolling —
- there is no overflow here for visible to spill. Doubled class to outrank
- the shared .tps-panel rule. */
-.${ROOT_CLASS}-panel.${ROOT_CLASS}-panel {
-	overflow: visible;
-}
-
-/* Pinned to the top of the scrolling panel so the sandbox is always reachable.
- Tuning a blink rate or a smear means typing in it over and over; having to
- scroll back up between every adjustment made it useless.
-
- Needs an opaque background — the settings scroll UNDER it, and the panel's
- own surface is what they must disappear behind. The negative margins plus
- matching padding let that background bleed to the panel's edges while the
- content stays on the normal inset. */
-.${ROOT_CLASS}-panel .cs-sticky-preview {
-	position: sticky;
-	/* Offset by the panel bar's height, which panel.js measures and writes here.
-	   The bar sits INSIDE .panel-scroller-y and stays pinned at its top, so a
-	   sticky child at 0 pins underneath it and gets its first N pixels covered.
-	   No transparent strip results, because the bar itself is what occupies the
-	   offset. The fallback matches the observed 35px bar. */
-	top: var(--cs-sticky-top, 35px);
-	z-index: 3;
-	margin: 0 -12px 14px;
-	padding: 30px 12px 12px;
-	background: var(--bg-default, rgba(127, 127, 127, 0.06));
-	border-bottom: 1px solid var(--border-default, rgba(127, 127, 127, 0.12));
-	/* Opaque: the panel background token can be translucent, and text sliding
-	   under a see-through preview is worse than not pinning it at all. */
-	backdrop-filter: blur(8px);
-}
-
-.${ROOT_CLASS}-panel .cs-demo {
-	display: block;
-	width: 100%;
-	box-sizing: border-box;
-	resize: vertical;
-	min-height: 68px;
-	padding: 8px 10px;
-	border-radius: var(--tps-radius, 6px);
-	border: 1px solid var(--border-default, rgba(127, 127, 127, 0.12));
-	background: var(--bg-default, rgba(127, 127, 127, 0.06));
-	color: var(--text-default, inherit);
-	font: inherit;
-	line-height: 1.5;
-}
-.${ROOT_CLASS}-panel .cs-demo:focus {
-	outline: none;
-	border-color: var(--tps-accent, #04d1ab);
-}
-
-/* Palette chips. Each is its own gradient preview, so the swatch IS the label —
- a grid of named buttons would say "Sunset" without showing what that means. */
-.${ROOT_CLASS}-panel .cs-palette-grid {
-	display: grid;
-	grid-template-columns: repeat(auto-fill, minmax(104px, 1fr));
-	gap: 6px;
-	margin: 8px 0;
-}
-.${ROOT_CLASS}-panel .cs-palette-chip {
-	position: relative;
-	height: 30px;
-	padding: 0;
-	border: 1px solid var(--border-default, rgba(127, 127, 127, 0.12));
-	border-radius: var(--tps-radius, 6px);
-	cursor: pointer;
-	overflow: hidden;
-}
-.${ROOT_CLASS}-panel .cs-palette-chip:hover {
-	border-color: var(--tps-accent, #04d1ab);
-}
-.${ROOT_CLASS}-panel .cs-palette-name {
-	position: absolute;
-	inset: 0;
-	display: flex;
-	align-items: center;
-	justify-content: center;
-	font-size: 11px;
-	font-weight: 600;
-	color: #fff;
-	/* The ramps run light to dark, so neither a light nor a dark label is legible
-	   across all of them. A shadow on white works on every stop. */
-	text-shadow: 0 1px 2px rgba(0, 0, 0, 0.75), 0 0 6px rgba(0, 0, 0, 0.5);
-}
-
-.${ROOT_CLASS}-panel .cs-hint {
-	margin: 6px 0 0;
-	font-size: 11px;
-	line-height: 1.45;
-	color: var(--text-muted, rgba(127, 127, 127, 0.9));
-}
-`;
 function isTextCaretHost(el2) {
   if (!el2) return false;
   if (el2.isContentEditable) return true;
@@ -4907,7 +859,10 @@ function caretCoords(e) {
     top: rect.y,
     bottom: rect.y + h2,
     h: h2,
-    w: e.styleFor("cursorStyle") === "Line" ? e.styleFor("caretWidthPx") : charWidth,
+    w: (() => {
+      const style = e.styleFor("cursorStyle");
+      return style === "Line" || style === "Beam" ? e.styleFor("caretWidthPx") : charWidth;
+    })(),
     actualCharWidth: charWidth,
     char: rect.glyph || "",
     textColor: rect.color || "#ffffff",
@@ -5866,6 +1821,66 @@ function drawLineCaret(e, isUnderline) {
   ctx.restore();
 }
 __name(drawLineCaret, "drawLineCaret");
+var BEAM_RADIUS = 3;
+function beamRect(x, top, lineH, caretW) {
+  const rw = caretW ?? 3;
+  const rh = Math.max(2, lineH * 0.82);
+  return {
+    rx: x - rw / 2,
+    ry: top + (lineH - rh) / 2,
+    rw,
+    rh
+  };
+}
+__name(beamRect, "beamRect");
+function fillBeamShape(ctx, rx, ry, rw, rh) {
+  const r = BEAM_RADIUS;
+  if (typeof ctx.roundRect === "function") {
+    ctx.roundRect(rx, ry, rw, rh, r);
+  } else {
+    const rad = Math.min(r, rw / 2, rh / 2);
+    ctx.beginPath();
+    ctx.moveTo(rx + rad, ry);
+    ctx.lineTo(rx + rw - rad, ry);
+    ctx.quadraticCurveTo(rx + rw, ry, rx + rw, ry + rad);
+    ctx.lineTo(rx + rw, ry + rh - rad);
+    ctx.quadraticCurveTo(rx + rw, ry + rh, rx + rw - rad, ry + rh);
+    ctx.lineTo(rx + rad, ry + rh);
+    ctx.quadraticCurveTo(rx, ry + rh, rx, ry + rh - rad);
+    ctx.lineTo(rx, ry + rad);
+    ctx.quadraticCurveTo(rx, ry, rx + rad, ry);
+    ctx.closePath();
+  }
+  ctx.fill();
+}
+__name(fillBeamShape, "fillBeamShape");
+function drawBeamCaret(e) {
+  const ctx = e.ctx;
+  const settings = e.settings;
+  const active = e.animActive;
+  const now = performance.now();
+  const trailColor = e.getActiveColor();
+  const opacity = Math.max(0, Math.min(1, settings.cursorOpacity ?? 1)) * e.idleAlpha();
+  const caretW = e.styleFor("caretWidthPx") ?? 3;
+  forEachTrailPoint(e, (p, alpha2) => {
+    const { rx: rx2, ry: ry2, rw: rw2, rh: rh2 } = beamRect(p.x, p.y, p.h, p.w || caretW);
+    ctx.fillStyle = cursorPaint(e, rx2, ry2, rw2, rh2, trailColor, alpha2 * opacity);
+    fillBeamShape(ctx, rx2, ry2, rw2, rh2);
+  });
+  if (!active) return;
+  const alpha = blinkAlpha(e, now);
+  const color = e.getActiveColor() || active.textColor || "#ffffff";
+  ctx.save();
+  if ((settings.crtEffect || comboGlow(e) > 0) && settings.glow) {
+    ctx.shadowColor = color;
+    ctx.shadowBlur = (8 + comboGlow(e) * 14) * alpha;
+  }
+  const { rx, ry, rw, rh } = beamRect(active.x, active.top, active.h, caretW);
+  ctx.fillStyle = settings.energyEffect ? createEnergyGradient(e, rx, ry, rw, rh, color, 0.9 * alpha * opacity) : cursorPaint(e, rx, ry, rw, rh, color, 0.9 * alpha * opacity);
+  fillBeamShape(ctx, rx, ry, rw, rh);
+  ctx.restore();
+}
+__name(drawBeamCaret, "drawBeamCaret");
 function drawBoxCaret(e) {
   const ctx = e.ctx;
   const settings = e.settings;
@@ -6017,6 +2032,9 @@ function draw(e) {
       break;
     case "Underline":
       drawLineCaret(e, true);
+      break;
+    case "Beam":
+      drawBeamCaret(e);
       break;
     default:
       drawBoxCaret(e);
@@ -7464,1198 +3482,1050 @@ var CursorEngine = (_a = class {
     resizeCanvas(this);
   }
 }, __name(_a, "CursorEngine"), _a);
-var DEFAULT_THEME_SOURCES = [
-  ":root",
-  "body",
-  ".sidebar--icons",
-  ".sidebar"
-];
-var CURRENT_THEME_VARS = Object.freeze([
-  // Accent
-  { name: "--logo-color", label: "Accent" },
-  // Text
-  { name: "--text-default", label: "Text" },
-  { name: "--text-muted", label: "Muted text" },
-  { name: "--text-subtle", label: "Subtle text" },
-  { name: "--text-hilite", label: "Highlight text" },
-  { name: "--text-brighter", label: "Brighter text" },
-  { name: "--text-disabled", label: "Disabled text" },
-  { name: "--text-status-offline", label: "Offline text" },
-  { name: "--text-warning", label: "Warning text" },
-  { name: "--cmdpal-hilite-color", label: "Command palette highlight" },
-  { name: "--color-text-900", label: "Legacy text" },
-  // Tag / pill
-  { name: "--tag-fg-color", label: "Tag" },
-  // Surfaces
-  { name: "--panel-bg-color", label: "Panel background" },
-  { name: "--input-bg-color", label: "Input background" },
-  { name: "--hover-subtle", label: "Hover background" },
-  { name: "--sidebar-bg-hover", label: "Sidebar hover" },
-  { name: "--active-bg-color", label: "Active background" },
-  // Borders / dividers
-  { name: "--divider-color", label: "Divider" },
-  { name: "--thin-divider-color", label: "Thin divider" },
-  { name: "--faint-divider-color", label: "Faint divider" },
-  { name: "--input-border-color", label: "Input border" },
-  { name: "--sidebar-divider-color", label: "Sidebar divider" },
-  { name: "--titlebar-border-color", label: "Titlebar border" },
-  { name: "--selection-border", label: "Selection border" },
-  // Enum/tag palette (Thymer ships 16 hues — no amber, lime, or violet)
-  { name: "--enum-red-fg", label: "Red" },
-  { name: "--enum-orange-fg", label: "Orange" },
-  { name: "--enum-yellow-fg", label: "Yellow" },
-  { name: "--enum-green-fg", label: "Green" },
-  { name: "--enum-teal-fg", label: "Teal" },
-  { name: "--enum-cyan-fg", label: "Cyan" },
-  { name: "--enum-sky-fg", label: "Sky" },
-  { name: "--enum-blue-fg", label: "Blue" },
-  { name: "--enum-indigo-fg", label: "Indigo" },
-  { name: "--enum-purple-fg", label: "Purple" },
-  { name: "--enum-fuchsia-fg", label: "Fuchsia" },
-  { name: "--enum-pink-fg", label: "Pink" },
-  { name: "--enum-rose-fg", label: "Rose" },
-  { name: "--enum-stone-fg", label: "Stone" },
-  { name: "--enum-zinc-fg", label: "Zinc" }
-]);
-function elementOrNull(node) {
-  return node instanceof Element ? node : null;
+
+// src/settings.js
+var OPTIONS_KEY = "options";
+var MIRROR = Object.freeze({
+  "cs-enabled": "enabled",
+  "cs-preset": "activePreset",
+  "cs-shape": "cursorStyle",
+  "cs-color-light": "colorLight",
+  "cs-color-dark": "colorDark",
+  "cs-width": "caretWidthPx",
+  "cs-glow": "glow",
+  "cs-blink": "blinkingEnabled",
+  "cs-show-char": "showChar",
+  "cs-hide-native": "hideNativeCaret",
+  "cs-hide-blur": "hideOnWindowBlur"
+});
+function loadOptions(extensionAPI) {
+  const raw = extensionAPI.settings.get(OPTIONS_KEY);
+  return raw == null ? null : raw;
 }
-__name(elementOrNull, "elementOrNull");
-function themeVariableRoots(options = {}) {
-  const roots = [];
-  const seen = /* @__PURE__ */ new Set();
-  const add = /* @__PURE__ */ __name((node) => {
-    const el2 = elementOrNull(node);
-    if (!el2 || seen.has(el2)) return;
-    seen.add(el2);
-    roots.push(el2);
-  }, "add");
-  add(document.documentElement);
-  add(document.body);
-  for (const selector of options.selectors || DEFAULT_THEME_SOURCES) {
-    try {
-      document.querySelectorAll(selector).forEach(add);
-    } catch {
-    }
-  }
-  for (const root of options.roots || []) add(root);
-  return roots;
+async function persistOptions(extensionAPI, value) {
+  await extensionAPI.settings.set(OPTIONS_KEY, value);
 }
-__name(themeVariableRoots, "themeVariableRoots");
-function resolveRenderedColor(cssColor, root = document.body) {
-  const host = elementOrNull(root) || document.body || document.documentElement;
-  if (!host) return "";
-  const probe = document.createElement("span");
-  probe.style.position = "absolute";
-  probe.style.pointerEvents = "none";
-  probe.style.visibility = "hidden";
-  probe.style.color = "transparent";
-  host.appendChild(probe);
-  const attempts = [cssColor];
-  if (cssColor.startsWith("var(")) {
-    attempts.push(`rgb(${cssColor})`, `rgba(${cssColor}, 1)`, `hsl(${cssColor})`, `hsla(${cssColor}, 1)`);
-  }
-  try {
-    for (const attempt of attempts) {
-      probe.style.color = "";
-      probe.style.color = attempt;
-      const resolved = getComputedStyle(probe).color;
-      if (resolved && resolved !== "rgba(0, 0, 0, 0)" && resolved !== "transparent") return resolved;
+function projectToDepot(settings) {
+  const out = {};
+  for (const [depotId, blobKey] of Object.entries(MIRROR)) {
+    const value = settings[blobKey];
+    if (depotId === "cs-preset") {
+      out[depotId] = settings.activePreset || "Custom";
+    } else if (depotId === "cs-width") {
+      out[depotId] = String(value);
+    } else if (depotId === "cs-color-light" || depotId === "cs-color-dark") {
+      out[depotId] = value;
+    } else {
+      out[depotId] = value;
     }
-  } finally {
-    probe.remove();
   }
-  return "";
+  return out;
 }
-__name(resolveRenderedColor, "resolveRenderedColor");
-var THEME_GROUPS = (
-  /** @type {ThemeGroupDef[]} */
-  Object.freeze([
-    {
-      key: "hues",
-      label: "Theme colors",
-      tokens: [
-        { token: "--enum-red-fg", label: "Red" },
-        { token: "--enum-orange-fg", label: "Orange" },
-        { token: "--enum-yellow-fg", label: "Yellow" },
-        { token: "--enum-green-fg", label: "Green" },
-        { token: "--enum-teal-fg", label: "Teal" },
-        { token: "--enum-cyan-fg", label: "Cyan" },
-        { token: "--enum-sky-fg", label: "Sky" },
-        { token: "--enum-blue-fg", label: "Blue" },
-        { token: "--enum-indigo-fg", label: "Indigo" },
-        { token: "--enum-purple-fg", label: "Purple" },
-        { token: "--enum-fuchsia-fg", label: "Fuchsia" },
-        { token: "--enum-pink-fg", label: "Pink" },
-        { token: "--enum-rose-fg", label: "Rose" },
-        { token: "--tag-fg-color", label: "Tag" },
-        { token: "--text-warning", label: "Warning" }
-      ]
-    },
-    {
-      key: "text",
-      label: "Text & neutrals",
-      tokens: [
-        { token: "--text-default", label: "Text" },
-        { token: "--text-muted", label: "Muted text" },
-        { token: "--text-subtle", label: "Subtle text" },
-        { token: "--text-hilite", label: "Highlight text" },
-        { token: "--text-brighter", label: "Brighter text" },
-        { token: "--text-disabled", label: "Disabled text" },
-        { token: "--enum-stone-fg", label: "Stone" },
-        { token: "--enum-zinc-fg", label: "Zinc" }
-      ]
-    },
-    {
-      key: "surfaces",
-      label: "Surfaces & lines",
-      marginal: true,
-      tokens: [
-        { token: "--panel-bg-color", label: "Panel background" },
-        { token: "--input-bg-color", label: "Input background" },
-        { token: "--hover-subtle", label: "Hover background" },
-        { token: "--active-bg-color", label: "Active background" },
-        { token: "--divider-color", label: "Divider" },
-        { token: "--thin-divider-color", label: "Thin divider" },
-        { token: "--faint-divider-color", label: "Faint divider" },
-        { token: "--input-border-color", label: "Input border" },
-        { token: "--titlebar-border-color", label: "Titlebar border" },
-        { token: "--selection-border", label: "Selection border" }
-      ]
+async function mirrorToDepot(extensionAPI, settings, keys) {
+  const projected = projectToDepot(settings);
+  const ids = keys ?? Object.keys(MIRROR);
+  let writes = 0;
+  for (const id of ids) {
+    if (!(id in MIRROR)) continue;
+    const value = projected[id];
+    if (extensionAPI.settings.get(id) !== value) {
+      await extensionAPI.settings.set(id, value);
+      writes += 1;
     }
-  ])
-);
-function resolveThemeToken(token, roots) {
-  const rs = roots || themeVariableRoots();
-  for (const root of rs) {
-    const raw = getComputedStyle(root).getPropertyValue(token).trim();
-    if (!raw) continue;
-    const resolved = resolveRenderedColor(`var(${token})`, root);
-    if (resolved) return resolved;
   }
-  return "";
+  return writes;
 }
-__name(resolveThemeToken, "resolveThemeToken");
-function resolveThemeGroups({ exclude = [] } = {}) {
-  const roots = themeVariableRoots();
-  const excludeSet = new Set(exclude);
-  const groups = [];
-  for (const def of THEME_GROUPS) {
-    const swatches = [];
-    const seen = /* @__PURE__ */ new Set();
-    for (const { token, label } of def.tokens) {
-      if (excludeSet.has(token)) continue;
-      const color = resolveThemeToken(token, roots);
-      if (!color || seen.has(color)) continue;
-      seen.add(color);
-      swatches.push({ token, label, color });
-    }
-    if (swatches.length) {
-      groups.push({ key: def.key, label: def.label, hint: def.hint, marginal: def.marginal, swatches });
-    }
-  }
-  return groups;
+function readSvyBeamColors(getComputedStyleFn, root = globalThis.document?.documentElement) {
+  if (typeof getComputedStyleFn !== "function" || !root) return null;
+  const style = getComputedStyleFn(root);
+  const colorLight = normalizeHex(style.getPropertyValue("--svy-beam-caret-light").trim(), null);
+  const colorDark = normalizeHex(style.getPropertyValue("--svy-beam-caret-dark").trim(), null);
+  if (colorLight == null || colorDark == null) return null;
+  return { colorLight, colorDark };
 }
-__name(resolveThemeGroups, "resolveThemeGroups");
-var TIP_SELECTOR = "[data-tps-tip],[data-cf-tip]";
-var STYLE_ID = "tps-tip-css";
-var WIN_FLAG = "__tpsInstantTooltip";
-function installInstantTooltip() {
-  if (typeof document === "undefined") return;
-  if (typeof window !== "undefined" && /** @type {any} */
-  window[WIN_FLAG]) return;
-  if (typeof window !== "undefined") window[WIN_FLAG] = true;
-  injectTooltipCss();
-  const tip = document.createElement("div");
-  tip.className = "tps-tip";
-  tip.setAttribute("aria-hidden", "true");
-  (document.body || document.documentElement).appendChild(tip);
-  const hide = /* @__PURE__ */ __name(() => tip.classList.remove("is-visible"), "hide");
-  const label = /* @__PURE__ */ __name((el2) => el2.getAttribute("data-tps-tip") || el2.getAttribute("data-cf-tip") || "", "label");
-  document.addEventListener("mouseover", (e) => {
-    const t = e.target instanceof Element ? e.target.closest(TIP_SELECTOR) : null;
-    if (!t) {
-      hide();
-      return;
-    }
-    const text = label(t);
-    if (!text) {
-      hide();
-      return;
-    }
-    tip.textContent = text;
-    const r = t.getBoundingClientRect();
-    tip.style.left = `${r.left + r.width / 2}px`;
-    tip.style.top = `${r.top}px`;
-    tip.classList.add("is-visible");
-  }, true);
-  document.addEventListener("mouseout", (e) => {
-    const t = e.target instanceof Element ? e.target.closest(TIP_SELECTOR) : null;
-    const to = e.relatedTarget instanceof Element ? e.relatedTarget : null;
-    if (t && (!to || !t.contains(to))) hide();
-  }, true);
-  window.addEventListener("scroll", hide, true);
-  window.addEventListener("blur", hide);
-}
-__name(installInstantTooltip, "installInstantTooltip");
-function injectTooltipCss() {
-  if (document.getElementById(STYLE_ID)) return;
-  const style = document.createElement("style");
-  style.id = STYLE_ID;
-  style.textContent = [
-    ".tps-tip{position:fixed;z-index:2147483000;transform:translate(-50%,calc(-100% - 8px));",
-    "padding:3px 8px;border-radius:var(--tps-radius-sm,5px);background:var(--tps-text,#1a1a1a);",
-    "color:var(--tps-panel-bg,#fff);font-size:11px;font-weight:500;line-height:1.3;white-space:nowrap;",
-    "pointer-events:none;opacity:0;box-shadow:0 2px 8px rgba(0,0,0,.35)}",
-    ".tps-tip.is-visible{opacity:1}"
-  ].join("");
-  (document.head || document.documentElement).appendChild(style);
-}
-__name(injectTooltipCss, "injectTooltipCss");
-var MAX_CUSTOM = 44;
-function colorField({ value = null, onPick, featured = [], allowNone = true, customSwatches = [], onCustomSwatchesChange } = {}) {
-  const emit = /* @__PURE__ */ __name((r) => {
-    if (typeof onPick === "function") onPick(r);
-  }, "emit");
-  let curFamily = "blue";
-  let curShade = TW_MID_INDEX;
-  let invertLightness = false;
-  let mode = "theme";
-  let customList = Array.isArray(customSwatches) ? customSwatches.filter(isHex).map((s) => s.toLowerCase()).slice(0, MAX_CUSTOM) : [];
-  let selection = null;
-  if (value && value.type === "tw" && value.family && TAILWIND[value.family]) {
-    const idx = Math.max(0, Math.min(TW_SHADES.length - 1, Number(value.shadeIdx) || 0));
-    curFamily = value.family;
-    curShade = idx;
-    invertLightness = !!value.invert;
-    selection = { kind: "hex", hex: TAILWIND[value.family][idx] };
-    mode = "tailwind";
-  } else {
-    selection = normalizeValue(value);
-    if (selection && selection.kind === "hex") {
-      const ex = exactTailwind(selection.hex);
-      if (ex) {
-        curFamily = ex.family;
-        curShade = ex.shadeIdx;
-        mode = "tailwind";
-      } else {
-        const near = nearestTailwind(selection.hex);
-        if (near) {
-          curFamily = near.family;
-          curShade = near.shadeIdx;
-        }
-        mode = "custom";
-      }
-    }
-  }
-  const root = h("div", { class: "tps-color-field" });
-  const tabs2 = { theme: tabBtn("theme", "Theme"), tailwind: tabBtn("tailwind", "Tailwind"), custom: tabBtn("custom", "Custom") };
-  root.appendChild(h("div", { class: "tps-cf-tabs" }, tabs2.theme, tabs2.tailwind, tabs2.custom));
-  function tabBtn(m, label) {
-    const b = h("button", { type: "button", class: "tps-cf-tab", dataset: { mode: m } }, label);
-    b.addEventListener("click", () => setMode(m));
-    return b;
-  }
-  __name(tabBtn, "tabBtn");
-  const paneTheme = h("div", { class: "tps-cf-pane", dataset: { pane: "theme" } });
-  const featuredTokens = featured.map((f) => f.token);
-  if (featured.length) {
-    const featRow = h("div", { class: "tps-cf-featured" });
-    for (const f of featured) {
-      const color = resolveThemeToken(f.token);
-      if (!color) continue;
-      featRow.appendChild(themeTile(f.label, f.token, color));
-    }
-    if (featRow.children.length) paneTheme.appendChild(featRow);
-  }
-  for (const g of resolveThemeGroups({ exclude: featuredTokens })) {
-    paneTheme.appendChild(h(
+function createPreviewComponent(React = globalThis.window?.React) {
+  if (typeof React?.createElement !== "function") return null;
+  const h2 = React.createElement;
+  return function RoamCaretPreview() {
+    return h2(
       "div",
-      { class: "tps-cf-group" },
-      h(
-        "div",
-        { class: "tps-cf-group-head" },
-        h("span", { class: "tps-cf-group-label" }, g.label),
-        g.hint ? h("span", { class: "tps-cf-group-hint" }, g.hint) : null
-      ),
-      h("div", { class: "tps-cf-dots" }, ...g.swatches.map((s) => themeDot(s.label, s.token, s.color)))
-    ));
-  }
-  root.appendChild(paneTheme);
-  const paneTw = h("div", { class: "tps-cf-pane", dataset: { pane: "tailwind" } });
-  const hueCells = {};
-  const hueRow = h("div", { class: "tps-cf-dots" });
-  for (const fam of TW_FAMILIES) {
-    const dot = h("button", {
-      type: "button",
-      class: "tps-cf-swatch tps-cf-dot tps-cf-hue-dot",
-      dataset: { cfTip: fam },
-      "aria-label": fam,
-      style: { background: TAILWIND[fam][TW_MID_INDEX] }
-    });
-    dot.addEventListener("click", () => {
-      curFamily = fam;
-      buildLightRamp();
-      pickTailwind(fam, curShade);
-    });
-    hueCells[fam] = dot;
-    hueRow.appendChild(dot);
-  }
-  const lightRamp = h("div", { class: "tps-cf-ramp" });
-  const invertCheckbox = h("input", { type: "checkbox", class: "tps-cf-invert-cb" });
-  invertCheckbox.checked = invertLightness;
-  const invertRow = h(
-    "label",
-    { class: "tps-cf-invert" },
-    invertCheckbox,
-    h("span", null, "Invert lightness in light/dark"),
-    h("span", { class: "tps-cf-invert-hint" }, "e.g. 900 in light → 100 in dark")
-  );
-  invertCheckbox.addEventListener("change", () => {
-    invertLightness = invertCheckbox.checked;
-    renderSelection();
-    if (selection && selection.kind === "hex") {
-      const ex = exactTailwind(selection.hex);
-      if (ex) emit({ type: "tw", family: ex.family, shadeIdx: ex.shadeIdx, invert: invertLightness, hex: selection.hex });
-    }
+      null,
+      h2("textarea", {
+        className: "cs-demo",
+        rows: 2,
+        placeholder: "Type here to see the caret"
+      }),
+      h2("p", { style: { fontSize: "12px", opacity: 0.8, margin: "6px 0 0" } }, "Live preview of the current caret look")
+    );
+  };
+}
+function buildDepotPanel({
+  settings: _settings = {},
+  builtinNames,
+  userNames,
+  handlers = {},
+  React = globalThis.window?.React
+} = {}) {
+  const presetItems = [
+    "Custom",
+    ...builtinNames || Object.keys(BUILTIN_PRESETS),
+    ...userNames || []
+  ];
+  const onChange = handlers.onChange ?? (() => {
   });
-  paneTw.appendChild(labeledGroup("Hue", hueRow));
-  paneTw.appendChild(labeledGroup("Lightness", lightRamp));
-  paneTw.appendChild(invertRow);
-  root.appendChild(paneTw);
-  function buildLightRamp() {
-    lightRamp.textContent = "";
-    TW_SHADES.forEach((s, si) => {
-      const hex = TAILWIND[curFamily][si];
-      const cell = h("button", {
+  const rows = [
+    {
+      id: "cs-enabled",
+      name: "Enabled",
+      action: {
+        type: "switch",
+        onChange: (event) => onChange("cs-enabled", event.target.checked)
+      }
+    },
+    {
+      id: "cs-preset",
+      name: "Look",
+      action: {
+        type: "select",
+        items: presetItems,
+        onChange: (event) => onChange("cs-preset", event.target?.value ?? event)
+      }
+    },
+    {
+      id: "cs-shape",
+      name: "Shape",
+      action: {
+        type: "select",
+        items: ["Beam", "Line", "Box", "Underline"],
+        onChange: (event) => onChange("cs-shape", event.target?.value ?? event)
+      }
+    },
+    {
+      id: "cs-color-light",
+      name: "Color (light)",
+      action: {
+        type: "input",
+        placeholder: "#00695e",
+        onChange: (event) => onChange("cs-color-light", event.target?.value ?? event)
+      }
+    },
+    {
+      id: "cs-color-dark",
+      name: "Color (dark)",
+      action: {
+        type: "input",
+        placeholder: "#48d0c0",
+        onChange: (event) => onChange("cs-color-dark", event.target?.value ?? event)
+      }
+    },
+    {
+      id: "cs-width",
+      name: "Width (px)",
+      action: {
+        type: "input",
+        placeholder: "3",
+        onChange: (event) => onChange("cs-width", event.target?.value ?? event)
+      }
+    },
+    {
+      id: "cs-glow",
+      name: "Glow",
+      description: "Soft halo around the caret.",
+      action: {
+        type: "switch",
+        onChange: (event) => onChange("cs-glow", event.target.checked)
+      }
+    },
+    {
+      id: "cs-blink",
+      name: "Blink",
+      action: {
+        type: "switch",
+        onChange: (event) => onChange("cs-blink", event.target.checked)
+      }
+    },
+    {
+      id: "cs-show-char",
+      name: "Show letter in Box",
+      action: {
+        type: "switch",
+        onChange: (event) => onChange("cs-show-char", event.target.checked)
+      }
+    },
+    {
+      id: "cs-hide-native",
+      name: "Hide Roam's caret",
+      action: {
+        type: "switch",
+        onChange: (event) => onChange("cs-hide-native", event.target.checked)
+      }
+    },
+    {
+      id: "cs-hide-blur",
+      name: "Hide when window unfocused",
+      action: {
+        type: "switch",
+        onChange: (event) => onChange("cs-hide-blur", event.target.checked)
+      }
+    },
+    {
+      id: "cs-match-svy",
+      name: "Match Svy Theme colors",
+      action: {
         type: "button",
-        class: "tps-cf-ramp-cell",
-        dataset: { si: String(si), cfTip: `${curFamily}-${s} · ${hex}` },
-        "aria-label": `${curFamily} ${s}`,
-        style: { background: hex, color: textOn(hex) }
-      }, String(s));
-      cell.addEventListener("click", () => {
-        curShade = si;
-        pickTailwind(curFamily, si);
-      });
-      lightRamp.appendChild(cell);
-    });
-  }
-  __name(buildLightRamp, "buildLightRamp");
-  function pickTailwind(family, shadeIdx) {
-    curFamily = family;
-    curShade = shadeIdx;
-    const hex = TAILWIND[family][shadeIdx];
-    selection = { kind: "hex", hex };
-    renderSelection();
-    emit({ type: "tw", family, shadeIdx, invert: invertLightness, hex });
-  }
-  __name(pickTailwind, "pickTailwind");
-  const paneCustom = h("div", { class: "tps-cf-pane", dataset: { pane: "custom" } });
-  const customRow = h("div", { class: "tps-cf-dots tps-cf-custom-row" });
-  const hexDot = h("span", { class: "tps-cf-hex-dot" });
-  const hexInput = h("input", { type: "text", class: "tps-cf-hex-input", placeholder: "#hex", maxLength: 7, spellcheck: false, "aria-label": "Custom hex color" });
-  const addBtn = h("button", { type: "button", class: "tps-cf-add" }, "Add");
-  const removeBtn = h("button", { type: "button", class: "tps-cf-remove" }, "Remove");
-  removeBtn.hidden = true;
-  const countEl = h("span", { class: "tps-cf-custom-count" });
-  paneCustom.appendChild(customRow);
-  paneCustom.appendChild(h(
-    "div",
-    { class: "tps-cf-addrow" },
-    h("span", { class: "tps-cf-hexbox" }, hexDot, hexInput),
-    addBtn,
-    removeBtn,
-    countEl
-  ));
-  root.appendChild(paneCustom);
-  removeBtn.addEventListener("click", () => {
-    if (!selection || selection.kind !== "hex") return;
-    const idx = customList.indexOf(selection.hex);
-    if (idx >= 0) removeCustom(idx);
-  });
-  let dragIdx = -1;
-  function renderCustomRow() {
-    customRow.textContent = "";
-    if (!customList.length) {
-      customRow.appendChild(h("span", { class: "tps-cf-custom-empty" }, "No saved colors yet — add a hex, then select one and press Remove to delete it."));
-    }
-    customList.forEach((hex, i) => {
-      const dot = h("button", {
+        onClick: handlers.onMatchSvy
+      }
+    },
+    {
+      id: "cs-copy-code",
+      name: "Copy share code",
+      action: {
         type: "button",
-        class: "tps-cf-swatch tps-cf-dot tps-cf-custom-dot",
-        draggable: "true",
-        dataset: { hex, idx: String(i), cfTip: hex.toUpperCase() },
-        "aria-label": hex,
-        style: { background: hex }
-      });
-      dot.addEventListener("click", () => pickHex(hex));
-      dot.addEventListener("dragstart", () => {
-        dragIdx = i;
-        dot.classList.add("is-dragging");
-      });
-      dot.addEventListener("dragend", () => dot.classList.remove("is-dragging"));
-      dot.addEventListener("dragover", (e) => e.preventDefault());
-      dot.addEventListener("drop", (e) => {
-        e.preventDefault();
-        if (dragIdx >= 0 && dragIdx !== i) reorderCustom(dragIdx, i);
-        dragIdx = -1;
-      });
-      customRow.appendChild(dot);
-    });
-    countEl.textContent = `${customList.length}/${MAX_CUSTOM}`;
-    renderSelection();
-  }
-  __name(renderCustomRow, "renderCustomRow");
-  const commitCustom = /* @__PURE__ */ __name(() => {
-    if (typeof onCustomSwatchesChange === "function") onCustomSwatchesChange(customList.slice());
-  }, "commitCustom");
-  function addCustom() {
-    const hex = normHex(hexInput.value);
-    if (!hex) return;
-    if (!customList.includes(hex) && customList.length < MAX_CUSTOM) {
-      customList = [...customList, hex];
-      commitCustom();
-      renderCustomRow();
-    }
-    hexInput.value = "";
-    hexDot.style.background = "";
-    pickHex(hex);
-  }
-  __name(addCustom, "addCustom");
-  function removeCustom(i) {
-    customList = customList.filter((_, j) => j !== i);
-    commitCustom();
-    renderCustomRow();
-  }
-  __name(removeCustom, "removeCustom");
-  function reorderCustom(from, to) {
-    const arr = customList.slice();
-    const [m] = arr.splice(from, 1);
-    arr.splice(to, 0, m);
-    customList = arr;
-    commitCustom();
-    renderCustomRow();
-  }
-  __name(reorderCustom, "reorderCustom");
-  addBtn.addEventListener("click", addCustom);
-  hexInput.addEventListener("keydown", (e) => {
-    if (e.key === "Enter") {
-      e.preventDefault();
-      addCustom();
-    }
-  });
-  hexInput.addEventListener("input", () => {
-    const hadHash = hexInput.value.trimStart().startsWith("#");
-    const digits = hexInput.value.replace(/[^0-9a-fA-F]/g, "").slice(0, 6);
-    const cleaned = (hadHash ? "#" : "") + digits;
-    if (cleaned !== hexInput.value) hexInput.value = cleaned;
-    const hex = normHex(hexInput.value);
-    hexDot.style.background = hex || "";
-    if (hex) {
-      selection = { kind: "hex", hex };
-      renderSelection();
-      emit({ type: "hex", hex });
-    }
-  });
-  let noneRef = null;
-  if (allowNone) {
-    const noneBtn = h("button", { type: "button", class: "tps-cf-none" }, h("span", { class: "tps-cf-none-sw" }), "No color");
-    noneBtn.addEventListener("click", () => {
-      selection = { kind: "none" };
-      renderAll();
-      emit(null);
-    });
-    root.appendChild(h("div", { class: "tps-cf-divider" }));
-    root.appendChild(h("div", { class: "tps-cf-universal" }, noneBtn));
-    noneRef = noneBtn;
-  }
-  function pickHex(hex) {
-    selection = { kind: "hex", hex };
-    renderSelection();
-    emit({ type: "hex", hex });
-  }
-  __name(pickHex, "pickHex");
-  function renderSelection() {
-    root.querySelectorAll(".is-sel, .is-sel-mirror").forEach((e) => e.classList.remove("is-sel", "is-sel-mirror"));
-    Object.values(hueCells).forEach((c) => c.classList.remove("is-active"));
-    if (hueCells[curFamily]) hueCells[curFamily].classList.add("is-active");
-    removeBtn.hidden = !(selection && selection.kind === "hex" && customList.includes(selection.hex));
-    let twShadeSelected = false;
-    if (selection) {
-      if (selection.kind === "theme") {
-        const el2 = root.querySelector(`.tps-cf-swatch[data-token="${cssEscape(selection.token)}"]`);
-        if (el2) el2.classList.add("is-sel");
-      } else if (selection.kind === "hex") {
-        const selHex = selection.hex;
-        const rc = lightRamp.querySelector(`.tps-cf-ramp-cell[data-si="${curShade}"]`);
-        if (rc && TAILWIND[curFamily][curShade] === selHex) {
-          rc.classList.add("is-sel");
-          twShadeSelected = true;
-        }
-        customRow.querySelectorAll(".tps-cf-custom-dot").forEach((d) => {
-          if (d.dataset.hex === selHex) d.classList.add("is-sel");
-        });
-      } else if (selection.kind === "none") {
-        if (noneRef) noneRef.classList.add("is-sel");
+        onClick: handlers.onCopyCode
+      }
+    },
+    {
+      id: "cs-import-code",
+      name: "Share code to import",
+      action: {
+        type: "input",
+        onChange: (event) => onChange("cs-import-code", event.target?.value ?? event)
+      }
+    },
+    {
+      id: "cs-import",
+      name: "Import share code",
+      action: {
+        type: "button",
+        onClick: handlers.onImport
+      }
+    },
+    {
+      id: "cs-studio",
+      name: "Open Studio (every effect)",
+      action: {
+        type: "button",
+        onClick: handlers.onStudio
       }
     }
-    const canInvert = twShadeSelected && curShade !== TW_MID_INDEX;
-    invertCheckbox.disabled = !canInvert;
-    invertRow.classList.toggle("is-disabled", !canInvert);
-    if (canInvert && invertLightness) {
-      const mc = lightRamp.querySelector(`.tps-cf-ramp-cell[data-si="${mirrorShadeIdx(curShade)}"]`);
-      if (mc) mc.classList.add("is-sel-mirror");
-    }
+  ];
+  const preview = createPreviewComponent(React);
+  if (preview) {
+    rows.push({
+      id: "cs-preview",
+      name: "Preview",
+      action: {
+        type: "reactComponent",
+        component: preview
+      }
+    });
   }
-  __name(renderSelection, "renderSelection");
-  function setMode(m) {
-    mode = m;
-    for (const k in tabs2) tabs2[k].classList.toggle("is-active", k === m);
-    paneTheme.classList.toggle("is-active", m === "theme");
-    paneTw.classList.toggle("is-active", m === "tailwind");
-    paneCustom.classList.toggle("is-active", m === "custom");
-  }
-  __name(setMode, "setMode");
-  function renderAll() {
-    setMode(mode);
-    renderSelection();
-  }
-  __name(renderAll, "renderAll");
-  function themeTile(label, token, color) {
-    const tile = h(
-      "button",
-      { type: "button", class: "tps-cf-swatch tps-cf-tile", dataset: { token }, "aria-label": label },
-      h("span", { class: "tps-cf-tile-dot", style: { background: color } }),
-      h("span", { class: "tps-cf-tile-label" }, label)
-    );
-    tile.addEventListener("click", () => selectTheme(token));
-    return tile;
-  }
-  __name(themeTile, "themeTile");
-  function themeDot(label, token, color) {
-    const dot = h("button", { type: "button", class: "tps-cf-swatch tps-cf-dot", dataset: { token, cfTip: label }, "aria-label": label, style: { background: color } });
-    dot.addEventListener("click", () => selectTheme(token));
-    return dot;
-  }
-  __name(themeDot, "themeDot");
-  function selectTheme(token) {
-    selection = { kind: "theme", token };
-    renderSelection();
-    const rendered = resolveThemeToken(token);
-    emit({ type: "theme", token, hex: renderedToHex(rendered) || rendered });
-  }
-  __name(selectTheme, "selectTheme");
-  function labeledGroup(label, body) {
-    return h("div", { class: "tps-cf-group" }, h("div", { class: "tps-cf-group-head" }, h("span", { class: "tps-cf-group-label" }, label)), body);
-  }
-  __name(labeledGroup, "labeledGroup");
-  installInstantTooltip();
-  buildLightRamp();
-  renderCustomRow();
-  if (selection && selection.kind === "hex" && mode === "custom" && !customList.includes(selection.hex)) {
-    hexInput.value = selection.hex;
-    hexDot.style.background = selection.hex;
-  }
-  renderAll();
-  return root;
+  return { tabTitle: "Roam Caret", settings: rows };
 }
-__name(colorField, "colorField");
-function normalizeValue(value) {
-  if (!value) return null;
-  if (value.type === "hex" && isHex(value.hex)) return { kind: "hex", hex: value.hex.toLowerCase() };
-  if (value.type === "theme" && value.token) return { kind: "theme", token: value.token };
-  return null;
-}
-__name(normalizeValue, "normalizeValue");
-function cssEscape(s) {
-  return String(s).replace(/"/g, '\\"');
-}
-__name(cssEscape, "cssEscape");
-function normHex(input) {
-  if (typeof input !== "string") return null;
-  let s = input.trim().toLowerCase();
-  if (!s) return null;
-  if (!s.startsWith("#")) s = `#${s}`;
-  if (/^#[0-9a-f]{3}$/.test(s)) s = `#${s.slice(1).split("").map((c) => c + c).join("")}`;
-  return /^#[0-9a-f]{6}$/.test(s) ? s : null;
-}
-__name(normHex, "normHex");
-function textOn(hex) {
-  const n = parseInt(hex.slice(1), 16);
-  const r = n >> 16 & 255, g = n >> 8 & 255, b = n & 255;
-  const l = (0.299 * r + 0.587 * g + 0.114 * b) / 255;
-  return l > 0.6 ? "rgba(0,0,0,0.72)" : "rgba(255,255,255,0.92)";
-}
-__name(textOn, "textOn");
-function renderedToHex(str) {
-  if (!str) return "";
-  if (/^#[0-9a-f]{6}$/i.test(str)) return str.toLowerCase();
-  const m = str.match(/rgba?\(([^)]+)\)/i);
-  if (!m) return "";
-  const parts = m[1].split(",").map((s) => parseFloat(s.trim()));
-  if (parts.length < 3 || parts.some((n) => Number.isNaN(n))) return "";
-  const t = /* @__PURE__ */ __name((n) => Math.max(0, Math.min(255, Math.round(n))).toString(16).padStart(2, "0"), "t");
-  return `#${t(parts[0])}${t(parts[1])}${t(parts[2])}`;
-}
-__name(renderedToHex, "renderedToHex");
-var PALETTE_PRESETS = Object.freeze([
-  { id: "rainbow", label: "Rainbow", shadeIdx: 5, families: ["red", "orange", "amber", "yellow", "lime", "green", "emerald", "teal", "cyan", "sky", "blue", "indigo", "violet", "purple", "fuchsia", "pink", "rose"] },
-  { id: "sunset", label: "Sunset", shadeIdx: 5, families: ["rose", "red", "orange", "amber", "yellow"] },
-  { id: "fire", label: "Fire", shadeIdx: 5, families: ["yellow", "amber", "orange", "red"] },
-  { id: "ocean", label: "Ocean", shadeIdx: 5, families: ["teal", "cyan", "sky", "blue", "indigo"] },
-  { id: "forest", label: "Forest", shadeIdx: 6, families: ["lime", "green", "emerald", "teal", "cyan"] },
-  { id: "meadow", label: "Meadow", shadeIdx: 5, families: ["lime", "green", "emerald", "teal"] },
-  { id: "berry", label: "Berry", shadeIdx: 5, families: ["blue", "indigo", "violet", "purple", "fuchsia", "pink"] },
-  { id: "candy", label: "Candy", shadeIdx: 5, families: ["rose", "pink", "fuchsia", "purple", "violet"] },
-  { id: "warm", label: "Warm", shadeIdx: 5, families: ["red", "orange", "amber", "yellow", "rose"] },
-  { id: "cool", label: "Cool", shadeIdx: 5, families: ["teal", "cyan", "sky", "blue", "indigo", "violet"] },
-  { id: "neon", label: "Neon", shadeIdx: 4, families: ["lime", "cyan", "blue", "fuchsia", "rose"] },
-  { id: "pastels", label: "Pastels", shadeIdx: 3, families: ["rose", "orange", "amber", "lime", "emerald", "sky", "blue", "violet", "fuchsia"] },
-  { id: "jewel", label: "Jewel", shadeIdx: 7, families: ["emerald", "teal", "blue", "violet", "fuchsia", "rose"] },
-  { id: "grayscale", label: "Grayscale", family: "slate", shades: [5, 6, 7, 8, 9] },
-  { id: "mono", label: "Mono Blue", family: "blue", shades: [4, 5, 6, 7, 8] }
+
+// src/caret-measure.js
+var MARKER_CHAR = "​";
+var SKIP_HOST_SELECTOR = ".rg-root, .pxd-root";
+var MIRROR_PROPERTIES = Object.freeze([
+  "boxSizing",
+  "width",
+  "paddingTop",
+  "paddingRight",
+  "paddingBottom",
+  "paddingLeft",
+  "borderTopWidth",
+  "borderRightWidth",
+  "borderBottomWidth",
+  "borderLeftWidth",
+  "fontFamily",
+  "fontSize",
+  "fontWeight",
+  "fontStyle",
+  "fontVariant",
+  "letterSpacing",
+  "textTransform",
+  "textIndent",
+  "lineHeight",
+  "tabSize",
+  "direction"
 ]);
-function palettePresetHexes(preset, { shadeShift = 0 } = {}) {
-  if (!preset) return [];
-  const clamp = /* @__PURE__ */ __name((i) => Math.max(0, Math.min(TW_SHADES.length - 1, i)), "clamp");
-  const out = [];
-  if (preset.family && Array.isArray(preset.shades)) {
-    const ramp = TAILWIND[preset.family];
-    if (!ramp) return [];
-    for (const shade of preset.shades) {
-      const hex = ramp[clamp(shade + shadeShift)];
-      if (typeof hex === "string") out.push(hex);
+function isTextTarget(element) {
+  if (!element || !element.tagName) return false;
+  if (element.tagName === "TEXTAREA") return true;
+  if (element.tagName !== "INPUT") return false;
+  const type = (element.getAttribute?.("type") || "text").toLowerCase();
+  return ["text", "search", "url", "tel", "email", "number"].includes(type);
+}
+function isSkippedHost(el) {
+  return !!el?.closest?.(SKIP_HOST_SELECTOR);
+}
+function px(value, fallback = 0) {
+  const parsed = Number.parseFloat(value);
+  return Number.isFinite(parsed) ? parsed : fallback;
+}
+function projectCaretRect({
+  box,
+  offsetW,
+  offsetH,
+  markerLeft,
+  markerTop,
+  scrollLeft,
+  scrollTop,
+  borderLeft,
+  borderTop,
+  padLeft,
+  padTop,
+  padRight,
+  padBottom,
+  glyphWidth,
+  lineHeightPx,
+  hasGlyph,
+  glyph
+}) {
+  const scaleX = offsetW ? box.width / offsetW : 1;
+  const scaleY = offsetH ? box.height / offsetH : 1;
+  const x = box.left + (borderLeft + markerLeft - scrollLeft) * scaleX;
+  const y = box.top + (borderTop + markerTop - scrollTop) * scaleY;
+  const width = glyphWidth * scaleX;
+  const height = lineHeightPx * scaleY;
+  const boxRight = box.right ?? box.left + box.width;
+  const boxBottom = box.bottom ?? box.top + box.height;
+  const content = {
+    left: box.left + (borderLeft + padLeft) * scaleX,
+    top: box.top + (borderTop + padTop) * scaleY,
+    right: boxRight - (borderLeft + padRight) * scaleX,
+    bottom: boxBottom - (borderTop + padBottom) * scaleY
+  };
+  const visible = x + width > content.left && x < content.right && y + height > content.top && y < content.bottom;
+  return {
+    x,
+    y,
+    width,
+    height,
+    glyph: hasGlyph ? glyph : "",
+    visible
+  };
+}
+function readMetrics(computed) {
+  const fontSizePx = px(computed.fontSize, 16);
+  return {
+    borderLeft: px(computed.borderLeftWidth),
+    borderTop: px(computed.borderTopWidth),
+    padLeft: px(computed.paddingLeft),
+    padTop: px(computed.paddingTop),
+    padRight: px(computed.paddingRight),
+    padBottom: px(computed.paddingBottom),
+    lineHeightPx: px(computed.lineHeight) || fontSizePx * 1.2 || 19,
+    fontFamily: computed.fontFamily || "",
+    fontSize: computed.fontSize || "",
+    fontWeight: computed.fontWeight || "",
+    fontStyle: computed.fontStyle || "",
+    color: computed.color || "",
+    fontSizePx
+  };
+}
+function glyphAt(value, start) {
+  const underCaret = value[start] && value[start] !== "\n" ? value[start] : "0";
+  const hasGlyph = underCaret !== "0" || value[start] === "0";
+  return { underCaret, hasGlyph };
+}
+function createCaretMeasurer({ doc, win, lifecycle } = {}) {
+  const documentRef = doc || globalThis.document;
+  const windowRef = win || documentRef?.defaultView || globalThis;
+  const subscribers = /* @__PURE__ */ new Set();
+  let cachedEl = null;
+  let metrics = null;
+  let latestRect = null;
+  let disposed = false;
+  const mirror = documentRef.createElement("div");
+  const style = mirror.style;
+  style.position = "absolute";
+  style.top = "0";
+  style.left = "-99999px";
+  style.visibility = "hidden";
+  style.height = "auto";
+  style.whiteSpace = "pre-wrap";
+  style.overflowWrap = "break-word";
+  mirror.setAttribute("aria-hidden", "true");
+  const prefixNode = documentRef.createElement("span");
+  const marker = documentRef.createElement("span");
+  marker.style.display = "inline-block";
+  marker.style.width = "0";
+  marker.style.verticalAlign = "top";
+  marker.textContent = MARKER_CHAR;
+  const glyphEl = documentRef.createElement("span");
+  mirror.appendChild(prefixNode);
+  mirror.appendChild(marker);
+  mirror.appendChild(glyphEl);
+  const parent = documentRef.body || documentRef.documentElement || globalThis.document?.body;
+  if (lifecycle) lifecycle.node(mirror, parent);
+  else parent.append(mirror);
+  const invalidate = () => {
+    cachedEl = null;
+    metrics = null;
+  };
+  if (windowRef?.addEventListener) {
+    windowRef.addEventListener("resize", invalidate);
+  }
+  const notify = (rect) => {
+    for (const fn of subscribers) fn(rect);
+  };
+  const measure = (el) => {
+    if (disposed) return null;
+    if (!isTextTarget(el) || isSkippedHost(el)) return null;
+    if (el !== cachedEl) {
+      const computedStyle = windowRef.getComputedStyle(el);
+      for (const name of MIRROR_PROPERTIES) style[name] = computedStyle[name];
+      metrics = readMetrics(computedStyle);
+      cachedEl = el;
     }
-    return out;
-  }
-  const idx = clamp((preset.shadeIdx ?? TW_MID_INDEX) + shadeShift);
-  for (const family of preset.families || []) {
-    const hex = TAILWIND[family] ? TAILWIND[family][idx] : null;
-    if (typeof hex === "string") out.push(hex);
-  }
-  return out;
+    const value = el.value ?? "";
+    const start = Math.min(el.selectionStart ?? value.length, value.length);
+    const { underCaret, hasGlyph } = glyphAt(value, start);
+    prefixNode.textContent = value.slice(0, start);
+    marker.style.height = `${metrics.lineHeightPx}px`;
+    glyphEl.textContent = underCaret;
+    const box = el.getBoundingClientRect();
+    const glyphWidth = glyphEl.offsetWidth || metrics.fontSizePx * 0.6 || 8;
+    const rect = {
+      ...projectCaretRect({
+        box,
+        offsetW: el.offsetWidth || 0,
+        offsetH: el.offsetHeight || 0,
+        markerLeft: marker.offsetLeft || 0,
+        markerTop: marker.offsetTop || 0,
+        scrollLeft: el.scrollLeft || 0,
+        scrollTop: el.scrollTop || 0,
+        borderLeft: metrics.borderLeft,
+        borderTop: metrics.borderTop,
+        padLeft: metrics.padLeft,
+        padTop: metrics.padTop,
+        padRight: metrics.padRight,
+        padBottom: metrics.padBottom,
+        glyphWidth,
+        lineHeightPx: metrics.lineHeightPx,
+        hasGlyph,
+        glyph: underCaret
+      }),
+      fontFamily: metrics.fontFamily,
+      fontSize: metrics.fontSize,
+      fontWeight: metrics.fontWeight,
+      fontStyle: metrics.fontStyle,
+      color: metrics.color,
+      el
+    };
+    latestRect = rect;
+    notify(rect);
+    return rect;
+  };
+  return {
+    measure,
+    latest() {
+      return latestRect;
+    },
+    subscribe(fn) {
+      subscribers.add(fn);
+      return () => subscribers.delete(fn);
+    },
+    isSkippedHost,
+    dispose() {
+      if (disposed) return;
+      disposed = true;
+      subscribers.clear();
+      cachedEl = null;
+      metrics = null;
+      latestRect = null;
+      if (windowRef?.removeEventListener) {
+        windowRef.removeEventListener("resize", invalidate);
+      }
+      mirror.remove();
+    }
+  };
 }
-__name(palettePresetHexes, "palettePresetHexes");
-function samplePalette(preset, count, opts = {}) {
-  const hexes = palettePresetHexes(preset, opts);
-  if (!hexes.length) return [];
-  const n = Math.max(1, Math.round(count));
-  if (n === 1) return [hexes[0]];
-  if (hexes.length === 1) return Array.from({ length: n }, () => hexes[0]);
+
+// src/caret-lite.js
+function isPasswordField(el) {
+  if (!el) return false;
+  const type = String(el.type || el.getAttribute?.("type") || "").toLowerCase();
+  return type === "password";
+}
+function isDark(doc, prefersDarkMq) {
+  const root = doc?.documentElement;
+  const body = doc?.body;
+  if (root?.classList?.contains("bp3-dark")) return true;
+  if (body?.classList?.contains("bt-theme-dark")) return true;
+  if (body?.classList?.contains("rm-dark-theme")) return true;
+  if (body?.classList?.contains("roam-body") && body?.classList?.contains("dark")) return true;
+  const prefersDark = !!prefersDarkMq?.matches;
+  return prefersDark && !root?.classList?.contains("bp3-light");
+}
+function hasRangeSelection(el) {
+  if (el?.selectionStart == null || el?.selectionEnd == null) return false;
+  return el.selectionStart !== el.selectionEnd;
+}
+function installLiteCaret({ doc, win, measurer, lifecycle, getSettings } = {}) {
+  const documentRef = doc || globalThis.document;
+  const windowRef = win || documentRef?.defaultView || globalThis;
+  let settings = typeof getSettings === "function" ? getSettings() || {} : {};
+  let active = null;
+  let disposed = false;
+  let lastSig = "";
+  const overlay = documentRef.createElement("div");
+  overlay.className = "cs-lite-caret";
+  const style = overlay.style;
+  style.pointerEvents = "none";
+  style.position = "fixed";
+  style.top = "0";
+  style.left = "0";
+  style.zIndex = "40";
+  style.willChange = "transform";
+  style.transformOrigin = "0 0";
+  style.display = "none";
+  const glyph = documentRef.createElement("span");
+  glyph.className = "cs-lite-glyph";
+  overlay.appendChild(glyph);
+  const parent = documentRef.body || documentRef.documentElement;
+  if (lifecycle?.node) lifecycle.node(overlay, parent);
+  else parent.append(overlay);
+  const motionQuery = windowRef?.matchMedia?.("(prefers-reduced-motion: reduce)");
+  const prefersDarkMq = windowRef?.matchMedia?.("(prefers-color-scheme: dark)");
+  let reducedMotion = !!motionQuery?.matches;
+  const computeSig = (el) => {
+    if (!el) return "";
+    return [el, el.value?.length, el.selectionStart, el.selectionEnd, el.scrollLeft, el.scrollTop].join("\0");
+  };
+  const readSettings = () => {
+    if (typeof getSettings === "function") settings = getSettings() || {};
+    return settings;
+  };
+  const hide = () => {
+    overlay.style.display = "none";
+  };
+  const syncBlink = ({ ping } = {}) => {
+    const shouldBlink = !!settings.blinkingEnabled && !reducedMotion;
+    if (ping) overlay.classList.remove("cs-lite-blink");
+    if (shouldBlink) {
+      if (ping) void overlay.offsetWidth;
+      overlay.classList.add("cs-lite-blink");
+    } else {
+      overlay.classList.remove("cs-lite-blink");
+    }
+  };
+  const applyTransform = (rect, el) => {
+    if (!el || isPasswordField(el) || !isTextTarget(el) || isSkippedHost(el) || hasRangeSelection(el) || !rect || !rect.visible) {
+      hide();
+      return;
+    }
+    const color = isDark(documentRef, prefersDarkMq) ? settings.colorDark || "" : settings.colorLight || "";
+    const cursorStyle = settings.cursorStyle || "Box";
+    let x = rect.x;
+    let y = rect.y;
+    let width = rect.width;
+    let height = rect.height;
+    if (cursorStyle === "Line") {
+      width = settings.caretWidthPx ?? 2;
+      height = rect.height;
+      overlay.style.borderRadius = "";
+      overlay.style.border = "";
+      overlay.style.background = color;
+    } else if (cursorStyle === "Underline") {
+      const bar = settings.underlineWidthPx || 2;
+      width = rect.width;
+      height = bar;
+      y = rect.y + rect.height - bar;
+      overlay.style.borderRadius = "";
+      overlay.style.border = "";
+      overlay.style.background = color;
+    } else if (cursorStyle === "Beam") {
+      width = settings.caretWidthPx ?? 3;
+      height = Math.max(2, rect.height * 0.82);
+      y = rect.y + (rect.height - height) / 2;
+      x = rect.x - width / 2;
+      overlay.style.borderRadius = "3px";
+      overlay.style.border = "";
+      overlay.style.background = color;
+    } else {
+      overlay.style.borderRadius = "1px";
+      if (settings.boxHollow) {
+        overlay.style.background = "transparent";
+        overlay.style.border = `${settings.boxHollowWidth || 2}px solid ${color}`;
+      } else {
+        overlay.style.border = "";
+        overlay.style.background = color;
+      }
+    }
+    overlay.style.display = "";
+    overlay.style.transform = `translate(${x}px, ${y}px)`;
+    overlay.style.width = `${width}px`;
+    overlay.style.height = `${height}px`;
+    overlay.style.boxShadow = settings.glow ? `0 0 0 1px ${hexToRgba(color, 0.18)}, 0 0 8px ${hexToRgba(color, 0.3)}` : "";
+    if (settings.showChar) {
+      glyph.textContent = rect.glyph || "";
+      glyph.style.display = "block";
+    } else {
+      glyph.textContent = "";
+      glyph.style.display = "none";
+    }
+  };
+  const measureAndApply = (el, { ping } = {}) => {
+    if (disposed) return;
+    readSettings();
+    const target = el || documentRef.activeElement;
+    if (!target || isPasswordField(target) || !isTextTarget(target)) {
+      hide();
+      return;
+    }
+    active = target;
+    const rect = measurer.measure(target);
+    applyTransform(rect, target);
+    syncBlink({ ping });
+  };
+  const onFocusIn = (event) => {
+    const target = event?.target;
+    if (!target || isPasswordField(target) || !isTextTarget(target)) return;
+    active = target;
+    measureAndApply(target, { ping: true });
+    lastSig = computeSig(target);
+  };
+  const onFocusOut = (event) => {
+    const next = event?.relatedTarget || documentRef.activeElement;
+    if (next && isTextTarget(next) && !isPasswordField(next)) return;
+    active = null;
+    hide();
+  };
+  const onInput = (event) => {
+    const target = event?.target || documentRef.activeElement;
+    measureAndApply(target, { ping: true });
+    lastSig = computeSig(target);
+  };
+  const onRefreshEvent = () => {
+    const target = documentRef.activeElement;
+    const sig = computeSig(target);
+    if (sig === lastSig) return;
+    lastSig = sig;
+    measureAndApply(target);
+  };
+  const onMotionChange = () => {
+    reducedMotion = !!motionQuery?.matches;
+    syncBlink();
+  };
+  const refresh = () => {
+    if (disposed) return;
+    readSettings();
+    const target = documentRef.activeElement;
+    if (target && isTextTarget(target) && !isPasswordField(target)) {
+      active = target;
+      const rect = measurer.measure(target);
+      applyTransform(rect, target);
+      syncBlink({ ping: true });
+      return;
+    }
+    hide();
+  };
+  const docListeners = [
+    ["focusin", onFocusIn, false],
+    ["focusout", onFocusOut, false],
+    ["input", onInput, true],
+    ["selectionchange", onRefreshEvent, false],
+    ["keyup", onRefreshEvent, true],
+    ["mouseup", onRefreshEvent, true]
+  ];
+  for (const [type, fn, capture] of docListeners) {
+    documentRef.addEventListener(type, fn, capture);
+  }
+  windowRef.addEventListener("scroll", onRefreshEvent, true);
+  windowRef.addEventListener("resize", onRefreshEvent);
+  motionQuery?.addEventListener?.("change", onMotionChange);
+  const dispose = () => {
+    if (disposed) return;
+    disposed = true;
+    for (const [type, fn, capture] of docListeners) {
+      documentRef.removeEventListener(type, fn, capture);
+    }
+    windowRef.removeEventListener("scroll", onRefreshEvent, true);
+    windowRef.removeEventListener("resize", onRefreshEvent);
+    motionQuery?.removeEventListener?.("change", onMotionChange);
+    overlay.remove();
+    active = null;
+  };
+  return {
+    refresh,
+    dispose,
+    get overlay() {
+      return overlay;
+    },
+    get active() {
+      return active;
+    }
+  };
+}
+
+// src/studio.js
+var STUDIO_CSS = `.cs-studio-overlay{position:fixed;inset:0;z-index:10000;display:flex;align-items:flex-start;justify-content:center;padding:24px 16px;overflow:auto;background:rgba(16,22,26,.55)}
+.cs-studio{position:relative;z-index:10001;width:min(560px,100%);max-height:calc(100vh - 48px);overflow:auto;box-sizing:border-box;padding:12px 14px 20px;border:1px solid rgba(127,127,127,.22);border-radius:8px;background:Canvas;color:CanvasText;color-scheme:light dark;box-shadow:0 12px 40px rgba(0,0,0,.18)}
+.cs-studio-preview{position:sticky;top:0;z-index:1;background:Canvas;padding-bottom:8px}
+.cs-demo{display:block;width:100%;box-sizing:border-box;resize:vertical;min-height:68px;padding:8px 10px;border-radius:6px;border:1px solid rgba(127,127,127,.12);background:rgba(127,127,127,.06);color:inherit;font:inherit;line-height:1.5}
+.cs-toast{font-size:12px;color:rgba(127,127,127,.8)}
+.cs-studio-overlay>.cs-toast{position:fixed;bottom:16px;left:50%;transform:translateX(-50%);z-index:10002;padding:6px 10px;border-radius:6px;background:Canvas;border:1px solid rgba(127,127,127,.22)}
+.cs-studio-row{margin:6px 0}
+.cs-studio-group{margin:10px 0;padding:10px 12px}
+.cs-studio-group h4{margin:0 0 8px;font-size:13px}
+.cs-studio-row p{margin:4px 0;font-size:11px;opacity:.65}`;
+var RERENDER_KEYS = /* @__PURE__ */ new Set([
+  "cursorStyle",
+  "gradientEnabled",
+  "blinkingEnabled",
+  "blinkBreathing",
+  "smoothEnabled",
+  "smoothAdaptive",
+  "smear",
+  "smearTaper",
+  "popLetters",
+  "flameTrail",
+  "thunderstrike",
+  "stardustEnabled",
+  "stardustAlwaysOn",
+  "stardustOrbit",
+  "speedDemon",
+  "speedDemonSparks",
+  "energyEffect",
+  "crtEffect",
+  "selectionColorEnabled",
+  "rowTypeTint",
+  "idleFadeEnabled",
+  "ghostEnabled",
+  "comboEnabled",
+  "shakeEnabled",
+  "soundEnabled",
+  "torchEffect",
+  "overlayBlinkSync",
+  "boxHollow"
+]);
+var PROP_ATTRS = /* @__PURE__ */ new Set(["value", "checked", "selected"]);
+function h(tag, attrs, ...children) {
+  const el = document.createElement(tag);
+  if (attrs) {
+    for (const [k, v] of Object.entries(attrs)) {
+      if (k === "class") el.className = v;
+      else if (k === "style") el.style.cssText = v;
+      else if (k === "onClick" || k === "onChange" || k === "onInput") el.addEventListener(k.slice(2).toLowerCase(), v);
+      else if (PROP_ATTRS.has(k)) el[k] = v;
+      else if (typeof v === "boolean") {
+        if (v) el.setAttribute(k, "");
+      } else if (v != null) el.setAttribute(k, String(v));
+    }
+  }
+  for (const child of children.flat().filter((c) => c != null)) {
+    if (typeof child === "string" || typeof child === "number") el.appendChild(document.createTextNode(String(child)));
+    else el.appendChild(child);
+  }
+  return el;
+}
+function sub(children) {
+  return h("div", { class: "cs-studio-sub", style: "margin-left:18px;margin-top:2px" }, children);
+}
+function note(text) {
+  return h("p", null, text);
+}
+function row(...kids) {
+  return h("div", { class: "cs-studio-row" }, kids);
+}
+function pct(v) {
+  return Math.round(v * 100) + "%";
+}
+function fmtMul(v) {
+  return v.toFixed(1) + "×";
+}
+function gradientColors(s, hexFn) {
+  const n = Math.max(2, Math.min(4, Math.round(s.gradientCount || 2)));
   const out = [];
-  for (let i = 0; i < n; i++) {
-    out.push(hexes[Math.round(i / (n - 1) * (hexes.length - 1))]);
-  }
+  for (let i = 1; i <= n; i++) out.push(hexFn("gradientDark" + i, `Dark ${i}`));
+  for (let i = 1; i <= n; i++) out.push(hexFn("gradientLight" + i, `Light ${i}`));
   return out;
 }
-__name(samplePalette, "samplePalette");
-var UPSTREAM_REPO = "https://github.com/Sadsnake1/cursor-smith";
-var UPSTREAM_AUTHOR = "https://github.com/Sadsnake1";
-var link = /* @__PURE__ */ __name((href, text) => h("a", { href, target: "_blank", rel: "noopener noreferrer" }, text), "link");
-function renderPanel(root, ctl) {
+function renderStudio(root, ctl) {
   const s = ctl.settings;
-  const check = /* @__PURE__ */ __name((key, label, desc) => optionRow({
-    label,
-    desc,
-    checked: !!s[key],
-    onChange: /* @__PURE__ */ __name((e) => ctl.set({ [key]: e.target.checked }), "onChange")
-  }), "check");
-  const checkShape = /* @__PURE__ */ __name((key, label, desc) => optionRow({
-    label,
-    desc,
-    checked: !!s[key],
-    onChange: /* @__PURE__ */ __name((e) => {
-      ctl.set({ [key]: e.target.checked });
-      ctl.rerender();
-    }, "onChange")
-  }), "checkShape");
-  const slider = /* @__PURE__ */ __name((key, label, opts) => {
-    const row = sliderRow({
-      label,
-      value: Number(s[key]),
-      min: opts.min,
-      max: opts.max,
-      step: opts.step,
-      format: opts.format,
-      defaultValue: (
-        /** @type {any} */
-        DEFAULTS[key]
-      ),
-      onChange: /* @__PURE__ */ __name((v) => ctl.setLive({ [key]: v }), "onChange")
+  const check = (key, label, desc) => {
+    const input = h("input", {
+      type: "checkbox",
+      class: "bp3-control-input",
+      checked: !!s[key],
+      onChange: (e) => {
+        ctl.set({ [key]: e.target.checked });
+        if (RERENDER_KEYS.has(key)) ctl.rerender();
+      }
     });
-    const input = row.querySelector('input[type="range"]');
-    if (input) input.addEventListener("change", () => ctl.set({ [key]: Number(
-      /** @type {HTMLInputElement} */
-      input.value
-    ) }));
-    return row;
-  }, "slider");
-  const num = /* @__PURE__ */ __name((key, label, opts) => {
-    const row = numberRow({
-      label,
+    const labelEl = h("label", { class: "bp3-control bp3-switch" }, input, h("span", { class: "bp3-control-indicator" }), label);
+    if (desc) return row(labelEl, note(desc));
+    return row(labelEl);
+  };
+  const num = (key, label, { min, max, step, unit }) => {
+    const input = h("input", {
+      type: "number",
+      class: "bp3-input",
       value: Number(s[key]),
-      min: opts.min,
-      max: opts.max,
-      step: opts.step,
-      unit: opts.unit,
-      defaultValue: (
-        /** @type {any} */
-        DEFAULTS[key]
-      ),
-      onChange: /* @__PURE__ */ __name((v) => {
+      min,
+      max,
+      step,
+      onInput: (e) => {
+        const v = Number(e.target.value);
         if (Number.isFinite(v)) ctl.setLive({ [key]: v });
-      }, "onChange")
+      },
+      onChange: (e) => ctl.set({ [key]: Number(e.target.value) })
     });
-    const input = row.querySelector('input[type="number"]');
-    if (input) {
-      const commit = /* @__PURE__ */ __name(() => ctl.set({ [key]: Number(
-        /** @type {HTMLInputElement} */
-        input.value
-      ) }), "commit");
-      input.addEventListener("change", commit);
-      input.addEventListener("blur", commit);
-    }
-    return row;
-  }, "num");
-  const color = /* @__PURE__ */ __name((key, label) => h(
-    "div",
-    { class: "cs-color-row" },
-    h("div", { class: "cs-color-label" }, label),
-    h("div", { class: "cs-color-field" }, colorField({
-      value: { type: "hex", hex: s[key] },
-      allowNone: false,
-      // a cursor always has a colour
-      featured: [{ label: "Accent", token: "--logo-color" }],
-      onPick: /* @__PURE__ */ __name((r) => {
-        if (r && r.hex) ctl.set({ [key]: r.hex });
-      }, "onPick")
-    }))
-  ), "color");
-  const sub = /* @__PURE__ */ __name((children) => h("div", { style: { marginLeft: "18px", marginTop: "2px" } }, children.filter(Boolean)), "sub");
-  const prev = (
-    /** @type {HTMLTextAreaElement | null} */
-    root.querySelector(".cs-demo")
-  );
+    const bits = [label, input];
+    if (unit) bits.push(" " + unit);
+    return row(...bits);
+  };
+  const range = (key, label, { min, max, step, format }) => {
+    const input = h("input", {
+      type: "range",
+      class: "bp3-input",
+      value: Number(s[key]),
+      min,
+      max,
+      step,
+      onInput: (e) => ctl.setLive({ [key]: Number(e.target.value) }),
+      onChange: (e) => ctl.set({ [key]: Number(e.target.value) })
+    });
+    const val = format ? format(Number(s[key])) : String(s[key]);
+    return row(label, " ", val, input);
+  };
+  const hex = (key, label) => {
+    const text = h("input", {
+      type: "text",
+      class: "bp3-input",
+      value: s[key] || "",
+      onChange: (e) => ctl.set({ [key]: e.target.value })
+    });
+    const picker = h("input", {
+      type: "color",
+      value: s[key] || "#000000",
+      onChange: (e) => {
+        text.value = e.target.value;
+        ctl.set({ [key]: e.target.value });
+      }
+    });
+    return row(label, picker, text);
+  };
+  const select = (key, items) => {
+    const sel = h("select", {
+      onChange: (e) => {
+        ctl.set({ [key]: e.target.value });
+        if (RERENDER_KEYS.has(key)) ctl.rerender();
+      }
+    }, items.map((item) => h("option", { value: item.value, selected: s[key] === item.value }, item.label)));
+    return row(h("div", { class: "bp3-html-select" }, sel));
+  };
+  const group = (title, children) => h("div", { class: "bp3-card cs-studio-group" }, h("h4", { class: "bp3-heading" }, title), ...children.filter(Boolean));
+  const button = (label, onClick) => h("button", { type: "button", class: "bp3-button bp3-minimal bp3-small", onClick }, label);
+  const prev = root.querySelector(".cs-demo");
   const prevValue = prev ? prev.value : "";
   const prevFocused = !!prev && root.ownerDocument.activeElement === prev;
   const prevStart = prev ? prev.selectionStart : 0;
   const prevEnd = prev ? prev.selectionEnd : 0;
   const demo = h("textarea", {
     class: "cs-demo",
-    rows: 3,
+    rows: "3",
     spellcheck: "false",
     "aria-label": "Cursor preview",
     placeholder: "Type here to see your cursor…\nPress Enter for Thunderstrike."
   });
   if (prevValue) demo.value = prevValue;
-  const presetsBody = buildPresets(ctl);
-  const cursorBody = [
-    tabs({
-      options: [
-        { value: "Box", label: "Box" },
-        { value: "Line", label: "Line" },
-        { value: "Underline", label: "Underline" }
-      ],
-      value: s.cursorStyle,
-      onChange: /* @__PURE__ */ __name((v) => {
-        ctl.set({ cursorStyle: v });
-        ctl.rerender();
-      }, "onChange")
-    }),
+  const shapeItems = (ENUMS.cursorStyle.includes("Beam") ? ["Beam", "Line", "Box", "Underline"] : ["Line", "Box", "Underline"]).map((v) => ({ value: v, label: v }));
+  const caretBody = [
+    select("cursorStyle", shapeItems),
     num("caretWidthPx", "Thickness", { min: 1, max: 12, step: 0.5, unit: "px" }),
-    slider("cursorOpacity", "Opacity", { min: 0.1, max: 1, step: 0.01, format: /* @__PURE__ */ __name((v) => Math.round(v * 100) + "%", "format") }),
-    check("glow", "Glow", "Soft halo around the cursor. Needs the CRT effect to be on."),
-    s.cursorStyle === "Box" ? checkShape("boxHollow", "Hollow", "Outline only, no fill.") : null,
+    range("cursorOpacity", "Opacity", { min: 0.1, max: 1, step: 0.01, format: (v) => pct(v) }),
+    check("glow", "Glow", "Soft halo around the caret."),
+    s.cursorStyle === "Box" ? check("boxHollow", "Hollow", "Outline only, no fill.") : null,
     s.cursorStyle === "Box" && s.boxHollow ? sub([num("boxHollowWidth", "Outline width", { min: 1, max: 8, step: 0.5, unit: "px" })]) : null,
     s.cursorStyle === "Box" && !s.boxHollow ? check("showChar", "Show the letter inside", "Draws the character under the cursor in inverted colour.") : null,
     s.cursorStyle === "Line" ? check("lineSerifs", "Serifs", "Caps on the stem — the classic I-beam.") : null,
     s.cursorStyle === "Underline" ? num("underlineWidthPx", "Bar thickness", { min: 0, max: 12, step: 0.5, unit: "px" }) : null,
-    s.cursorStyle === "Underline" ? optionNote("0 scales the bar with the line height.") : null
+    s.cursorStyle === "Underline" ? note("0 scales the bar with the line height.") : null
   ];
-  const paletteChips = h(
-    "div",
-    { class: "cs-palette-grid" },
-    PALETTE_PRESETS.map((preset) => {
-      const n = Math.max(2, Math.min(4, Math.round(s.gradientCount || 2)));
-      const darkStops = samplePalette(preset, n);
-      const lightStops = samplePalette(preset, n, { shadeShift: 2 });
-      if (!darkStops.length) return null;
-      return h("button", {
-        type: "button",
-        class: "cs-palette-chip",
-        title: preset.label,
-        "aria-label": `Apply the ${preset.label} palette`,
-        style: { backgroundImage: `linear-gradient(90deg, ${darkStops.join(", ")})` },
-        onClick: /* @__PURE__ */ __name(() => {
-          const patch = {};
-          darkStops.forEach((hex, i) => {
-            patch["gradientDark" + (i + 1)] = hex;
-          });
-          lightStops.forEach((hex, i) => {
-            patch["gradientLight" + (i + 1)] = hex;
-          });
-          ctl.set(patch);
-          ctl.rerender();
-          ctl.toast(`Palette: ${preset.label}`);
-        }, "onClick")
-      }, h("span", { class: "cs-palette-name" }, preset.label));
-    }).filter(Boolean)
-  );
   const colorBody = [
-    checkShape("gradientEnabled", "Gradient", "Paint the cursor with a colour ramp instead of one flat colour."),
+    check("gradientEnabled", "Gradient", "Paint the cursor with a colour ramp instead of one flat colour."),
     ...s.gradientEnabled ? [
       num("gradientCount", "Number of stops", { min: 2, max: 4, step: 1 }),
-      paletteChips,
-      optionNote("Pick a palette to fill every stop at once, or set them by hand below."),
-      ...gradientColors(s, color)
+      note("Set gradient stops by hand below."),
+      ...gradientColors(s, hex)
     ] : [
-      color("colorDark", "Dark theme"),
-      color("colorLight", "Light theme")
+      hex("colorDark", "Dark theme"),
+      hex("colorLight", "Light theme")
     ]
   ];
   const blinkBody = [
-    checkShape("blinkingEnabled", "Blinking"),
+    check("blinkingEnabled", "Blinking"),
     ...s.blinkingEnabled ? [sub([
-      slider("blinkSpeed", "Speed", { min: 0.1, max: 5, step: 0.1, format: /* @__PURE__ */ __name((v) => v.toFixed(1) + "×", "format") }),
-      slider("blinkOnOffBalance", "Balance", { min: 0.1, max: 0.9, step: 0.01, format: /* @__PURE__ */ __name((v) => Math.round(v * 100) + "% lit", "format") }),
+      range("blinkSpeed", "Speed", { min: 0.1, max: 5, step: 0.1, format: fmtMul }),
+      range("blinkOnOffBalance", "Balance", { min: 0.1, max: 0.9, step: 0.01, format: (v) => pct(v) + " lit" }),
       num("blinkDelayMs", "Delay after typing", { min: 0, max: 5e3, step: 50, unit: "ms" }),
-      optionNote("How long the cursor stays fully lit after any move or keystroke before blinking resumes."),
-      checkShape("blinkBreathing", "Breathing", "Shrink and swell instead of fading out, so the cursor never disappears."),
-      s.blinkBreathing ? sub([slider("blinkBreathDepth", "Breath depth", { min: 0.05, max: 0.5, step: 0.01, format: /* @__PURE__ */ __name((v) => Math.round(v * 100) + "%", "format") })]) : null
+      note("How long the cursor stays fully lit after any move or keystroke before blinking resumes."),
+      check("blinkBreathing", "Breathing", "Shrink and swell instead of fading out, so the cursor never disappears."),
+      s.blinkBreathing ? sub([range("blinkBreathDepth", "Breath depth", { min: 0.05, max: 0.5, step: 0.01, format: pct })]) : null
     ])] : [],
     check("hideNativeCaret", "Hide Roam's native caret", "Turn this off to see both at once — useful when diagnosing alignment."),
     check("hideOnWindowBlur", "Hide when the window loses focus", "What every other writing app does.")
   ];
   const smoothBody = [
-    checkShape("smoothEnabled", "Smooth movement", "The cursor glides between positions instead of jumping."),
+    check("smoothEnabled", "Smooth movement", "The cursor glides between positions instead of jumping."),
     ...s.smoothEnabled ? [sub([
-      slider("smoothness", "Glide", { min: 0.05, max: 0.3, step: 0.01, format: /* @__PURE__ */ __name((v) => Math.round(v * 100) + "%", "format") }),
-      slider("catchUpSpeed", "Catch-up speed", { min: 0.3, max: 0.8, step: 0.01, format: /* @__PURE__ */ __name((v) => Math.round(v * 100) + "%", "format") }),
-      checkShape("smoothAdaptive", "Speed up when typing fast"),
-      s.smoothAdaptive ? sub([slider("maxCatchUpSpeed", "Max catch-up", { min: 0.5, max: 1, step: 0.01, format: /* @__PURE__ */ __name((v) => Math.round(v * 100) + "%", "format") })]) : null,
+      range("smoothness", "Glide", { min: 0.05, max: 0.3, step: 0.01, format: pct }),
+      range("catchUpSpeed", "Catch-up speed", { min: 0.3, max: 0.8, step: 0.01, format: pct }),
+      check("smoothAdaptive", "Speed up when typing fast"),
+      s.smoothAdaptive ? sub([range("maxCatchUpSpeed", "Max catch-up", { min: 0.5, max: 1, step: 0.01, format: pct })]) : null,
       check("smoothStopBlinking", "Don't blink while typing")
     ])] : [],
-    // Outside the smoothEnabled block on purpose: it governs the smear and the
-    // ghost too, both of which streak across line breaks with glide switched off.
     check("snapOnNewline", "Snap across line breaks", "Jump to the new line instead of sweeping diagonally through the text between."),
     num("moveDelayMs", "Movement delay", { min: 0, max: 400, step: 10, unit: "ms" })
   ];
   const smearBody = [
-    checkShape("smear", "Motion smear", "The cursor stretches along its line of travel."),
+    check("smear", "Motion smear", "The cursor stretches along its line of travel."),
     ...s.smear ? [sub([
-      slider("smearStiffness", "Stiffness", { min: 0.05, max: 1, step: 0.01, format: /* @__PURE__ */ __name((v) => Math.round(v * 100) + "%", "format") }),
-      slider("smearTrailingStiffness", "Trailing stiffness", { min: 0.05, max: 1, step: 0.01, format: /* @__PURE__ */ __name((v) => Math.round(v * 100) + "%", "format") }),
-      slider("smearDamping", "Damping", { min: 0.1, max: 1, step: 0.01, format: /* @__PURE__ */ __name((v) => Math.round(v * 100) + "%", "format") }),
-      checkShape("smearTaper", "Tapered trail", "Narrow the trailing end to a point, like a comet tail."),
-      s.smearTaper ? sub([slider("smearTaperAmount", "Taper amount", { min: 0, max: 1, step: 0.01, format: /* @__PURE__ */ __name((v) => Math.round(v * 100) + "%", "format") })]) : null
+      range("smearStiffness", "Stiffness", { min: 0.05, max: 1, step: 0.01, format: pct }),
+      range("smearTrailingStiffness", "Trailing stiffness", { min: 0.05, max: 1, step: 0.01, format: pct }),
+      range("smearDamping", "Damping", { min: 0.1, max: 1, step: 0.01, format: pct }),
+      check("smearTaper", "Tapered trail", "Narrow the trailing end to a point, like a comet tail."),
+      s.smearTaper ? sub([range("smearTaperAmount", "Taper amount", { min: 0, max: 1, step: 0.01, format: pct })]) : null
     ])] : []
   ];
   const effectsBody = [
-    checkShape("popLetters", "Popping letters", "Typed characters fly off the cursor."),
+    check("popLetters", "Popping letters", "Typed characters fly off the cursor."),
     s.popLetters ? sub([check("popRainbow", "Rainbow", "Step each letter through the colour wheel.")]) : null,
-    checkShape("flameTrail", "Pixel trail", "A burst of fading pixels every time the cursor moves."),
+    check("flameTrail", "Pixel trail", "A burst of fading pixels every time the cursor moves."),
     ...s.flameTrail ? [sub([
       check("backspaceDisintegrate", "Backspace disintegration", "Deleting throws the pixels outward in inverted colours."),
-      checkShape("thunderstrike", "Thunderstrike", "Enter calls down a bolt of pixelated lightning onto the new line."),
+      check("thunderstrike", "Thunderstrike", "Enter calls down a bolt of pixelated lightning onto the new line."),
       ...s.thunderstrike ? [sub([
         num("thunderstrikeSize", "Bolt size", { min: 1, max: 8, step: 1, unit: "px" }),
-        slider("thunderstrikeStrength", "Strength", { min: 0.1, max: 1, step: 0.01, format: /* @__PURE__ */ __name((v) => Math.round(v * 100) + "%", "format") })
+        range("thunderstrikeStrength", "Strength", { min: 0.1, max: 1, step: 0.01, format: pct })
       ])] : []
     ])] : [],
-    checkShape("stardustEnabled", "Stardust", "A slow stream of drifting, fading motes."),
+    check("stardustEnabled", "Stardust", "A slow stream of drifting, fading motes."),
     ...s.stardustEnabled ? [sub([
-      checkShape("stardustAlwaysOn", "Always on", "Stream continuously instead of only while idle."),
+      check("stardustAlwaysOn", "Always on", "Stream continuously instead of only while idle."),
       s.stardustAlwaysOn ? null : num("stardustDelayMs", "Idle delay", { min: 0, max: 1e4, step: 100, unit: "ms" }),
-      slider("stardustRate", "Density", { min: 0.2, max: 3, step: 0.1, format: /* @__PURE__ */ __name((v) => v.toFixed(1) + "×", "format") }),
-      checkShape("stardustOrbit", "Orbit", "Motes circle the cursor like fireflies instead of drifting up."),
+      range("stardustRate", "Density", { min: 0.2, max: 3, step: 0.1, format: fmtMul }),
+      check("stardustOrbit", "Orbit", "Motes circle the cursor like fireflies instead of drifting up."),
       s.stardustOrbit ? sub([num("stardustOrbitRadius", "Orbit radius", { min: 6, max: 80, step: 1, unit: "px" })]) : null
     ])] : [],
-    checkShape("speedDemon", "Speed demon", "The cursor heats toward white-hot as you type faster."),
+    check("speedDemon", "Speed demon", "The cursor heats toward white-hot as you type faster."),
     ...s.speedDemon ? [sub([
-      slider("speedDemonSensitivity", "Sensitivity", { min: 0.5, max: 2, step: 0.1, format: /* @__PURE__ */ __name((v) => v.toFixed(1) + "×", "format") }),
-      checkShape("speedDemonSparks", "Fire sparks", "Throw embers off the cursor at high heat."),
+      range("speedDemonSensitivity", "Sensitivity", { min: 0.5, max: 2, step: 0.1, format: fmtMul }),
+      check("speedDemonSparks", "Fire sparks", "Throw embers off the cursor at high heat."),
       ...s.speedDemonSparks ? [sub([
-        slider("speedDemonSparkQuantity", "Spark quantity", { min: 0, max: 3, step: 0.1, format: /* @__PURE__ */ __name((v) => v.toFixed(1) + "×", "format") }),
+        range("speedDemonSparkQuantity", "Spark quantity", { min: 0, max: 3, step: 0.1, format: fmtMul }),
         num("speedDemonSparkTrail", "Spark trail", { min: 0, max: 30, step: 1, unit: "px" })
       ])] : []
     ])] : [],
-    checkShape("energyEffect", "Energy beam", "A brightness wave travelling along the cursor."),
+    check("energyEffect", "Energy beam", "A brightness wave travelling along the cursor."),
     ...s.energyEffect ? [sub([
-      slider("energySpeed", "Beam speed", { min: 0.2, max: 3, step: 0.1, format: /* @__PURE__ */ __name((v) => v.toFixed(1) + "×", "format") }),
-      s.gradientEnabled ? check("energyAurora", "Aurora", "Warp and cross-mix the gradient instead of scrolling it rigidly.") : optionNote("Turn Gradient on for the Aurora variant.")
+      range("energySpeed", "Beam speed", { min: 0.2, max: 3, step: 0.1, format: fmtMul }),
+      s.gradientEnabled ? check("energyAurora", "Aurora", "Warp and cross-mix the gradient instead of scrolling it rigidly.") : note("Turn Gradient on for the Aurora variant.")
     ])] : [],
-    checkShape("crtEffect", "CRT effect", "A phosphor trail behind the cursor, and the glow halo."),
+    check("crtEffect", "CRT effect", "A phosphor trail behind the cursor, and the glow halo."),
     ...s.crtEffect ? [sub([
       num("trailLength", "Trail length", { min: 1, max: 40, step: 1 }),
       num("trailFadeMs", "Trail fade", { min: 80, max: 2e3, step: 10, unit: "ms" })
     ])] : []
   ];
   const contextBody = [
-    checkShape("selectionColorEnabled", "Selection colour", "Switch colour while text is selected."),
+    check("selectionColorEnabled", "Selection colour", "Switch colour while text is selected."),
     ...s.selectionColorEnabled ? [sub([
-      color("selectionColorDark", "Dark theme"),
-      color("selectionColorLight", "Light theme")
+      hex("selectionColorDark", "Dark theme"),
+      hex("selectionColorLight", "Light theme")
     ])] : [],
-    checkShape("rowTypeTint", "Tint by row type", "Headings, tasks, code and quotes each shift the cursor’s hue."),
+    check("rowTypeTint", "Tint by row type", "Headings, tasks, code and quotes each shift the cursor's hue."),
     ...s.rowTypeTint ? [sub([
-      slider("rowTypeTintAmount", "Shift", { min: 0, max: 180, step: 5, format: /* @__PURE__ */ __name((v) => v + "°", "format") }),
-      optionNote("Plain text keeps your colour; every other row type moves away from it.")
+      range("rowTypeTintAmount", "Shift", { min: 0, max: 180, step: 5, format: (v) => v + "°" }),
+      note("Plain text keeps your colour; every other row type moves away from it.")
     ])] : []
   ];
   const idleBody = [
-    checkShape("idleFadeEnabled", "Fade when idle", "Dim the cursor after you stop typing."),
+    check("idleFadeEnabled", "Fade when idle", "Dim the cursor after you stop typing."),
     ...s.idleFadeEnabled ? [sub([
       num("idleFadeDelayMs", "After", { min: 500, max: 3e4, step: 250, unit: "ms" }),
-      slider("idleFadeTo", "Fade to", { min: 0, max: 0.9, step: 0.01, format: /* @__PURE__ */ __name((v) => Math.round(v * 100) + "%", "format") })
+      range("idleFadeTo", "Fade to", { min: 0, max: 0.9, step: 0.01, format: pct })
     ])] : [],
-    checkShape("ghostEnabled", "Ghost cursor", "A second, fainter cursor trailing behind the real one."),
+    check("ghostEnabled", "Ghost cursor", "A second, fainter cursor trailing behind the real one."),
     ...s.ghostEnabled ? [sub([
-      slider("ghostOpacity", "Ghost opacity", { min: 0.05, max: 0.8, step: 0.01, format: /* @__PURE__ */ __name((v) => Math.round(v * 100) + "%", "format") }),
-      slider("ghostLag", "Catch-up", { min: 0.01, max: 0.3, step: 0.01, format: /* @__PURE__ */ __name((v) => Math.round(v * 100) + "%", "format") })
+      range("ghostOpacity", "Ghost opacity", { min: 0.05, max: 0.8, step: 0.01, format: pct }),
+      range("ghostLag", "Catch-up", { min: 0.01, max: 0.3, step: 0.01, format: pct })
     ])] : []
   ];
   const feedbackBody = [
-    checkShape("comboEnabled", "Combo", "Sustained typing streaks escalate the cursor."),
+    check("comboEnabled", "Combo", "Sustained typing streaks escalate the cursor."),
     ...s.comboEnabled ? [sub([
       num("comboThreshold", "Full combo at", { min: 5, max: 100, step: 1, unit: " keys" }),
       check("comboGlow", "Glow with the streak"),
       check("comboShower", "Throw sparks at high streak"),
-      optionNote("A streak resets after about a second without typing.")
+      note("A streak resets after about a second without typing.")
     ])] : [],
-    checkShape("shakeEnabled", "Shake on delete", "A short kick when you press Backspace or Delete."),
+    check("shakeEnabled", "Shake on delete", "A short kick when you press Backspace or Delete."),
     ...s.shakeEnabled ? [sub([
-      slider("shakeStrength", "Strength", { min: 0.5, max: 12, step: 0.5, format: /* @__PURE__ */ __name((v) => v + "px", "format") }),
+      range("shakeStrength", "Strength", { min: 0.5, max: 12, step: 0.5, format: (v) => v + "px" }),
       num("shakeDurationMs", "Duration", { min: 60, max: 600, step: 10, unit: "ms" })
     ])] : [],
-    checkShape("soundEnabled", "Typewriter sound", "A synthesised click on every keystroke."),
+    check("soundEnabled", "Typewriter sound", "A synthesised click on every keystroke."),
     ...s.soundEnabled ? [sub([
-      slider("soundVolume", "Volume", { min: 0.01, max: 1, step: 0.01, format: /* @__PURE__ */ __name((v) => Math.round(v * 100) + "%", "format") }),
-      slider("soundPitch", "Pitch", { min: 0.4, max: 2.5, step: 0.05, format: /* @__PURE__ */ __name((v) => v.toFixed(2) + "×", "format") }),
-      slider("soundVariation", "Variation", { min: 0, max: 1, step: 0.01, format: /* @__PURE__ */ __name((v) => Math.round(v * 100) + "%", "format") }),
-      optionNote("Never included when you roll a random look — a surprise noise is not consent.")
+      range("soundVolume", "Volume", { min: 0.01, max: 1, step: 0.01, format: pct }),
+      range("soundPitch", "Pitch", { min: 0.4, max: 2.5, step: 0.05, format: (v) => v.toFixed(2) + "×" }),
+      range("soundVariation", "Variation", { min: 0, max: 1, step: 0.01, format: pct }),
+      note("Never included when you roll a random look — a surprise noise is not consent.")
     ])] : []
   ];
   const torchBody = [
-    checkShape("torchEffect", "Torch spotlight", "Darken the panel except for a pool of light around the cursor."),
+    check("torchEffect", "Torch spotlight", "Darken the panel except for a pool of light around the cursor."),
     ...s.torchEffect ? [sub([
-      tabs({
-        options: [
-          { value: "caret", label: "Follow cursor" },
-          { value: "mouse", label: "Follow pointer" },
-          { value: "auto", label: "Auto" }
-        ],
-        value: s.overlayFollowMode,
-        onChange: /* @__PURE__ */ __name((v) => ctl.set({ overlayFollowMode: v }), "onChange")
-      }),
+      select("overlayFollowMode", [
+        { value: "caret", label: "Follow cursor" },
+        { value: "mouse", label: "Follow pointer" },
+        { value: "auto", label: "Auto" }
+      ]),
       num("overlayRadius", "Light size", { min: 60, max: 900, step: 10, unit: "px" }),
-      slider("overlayDarkness", "Darkness", { min: 0, max: 1, step: 0.01, format: /* @__PURE__ */ __name((v) => Math.round(v * 100) + "%", "format") }),
-      slider("overlayIntensity", "Warmth", { min: 0, max: 1, step: 0.01, format: /* @__PURE__ */ __name((v) => Math.round(v * 100) + "%", "format") }),
-      color("overlayColor", "Light colour"),
-      slider("overlaySpeed", "Follow speed", { min: 0.02, max: 1, step: 0.01, format: /* @__PURE__ */ __name((v) => Math.round(v * 100) + "%", "format") }),
-      checkShape("overlayBlinkSync", "Blink sync", "The light breathes with the cursor’s blink."),
-      s.overlayBlinkSync ? sub([slider("overlayBlinkDepth", "Blink depth", { min: 0.05, max: 0.6, step: 0.01, format: /* @__PURE__ */ __name((v) => Math.round(v * 100) + "%", "format") })]) : null
+      range("overlayDarkness", "Darkness", { min: 0, max: 1, step: 0.01, format: pct }),
+      range("overlayIntensity", "Warmth", { min: 0, max: 1, step: 0.01, format: pct }),
+      hex("overlayColor", "Light colour"),
+      range("overlaySpeed", "Follow speed", { min: 0.02, max: 1, step: 0.01, format: pct }),
+      check("overlayBlinkSync", "Blink sync", "The light breathes with the cursor's blink."),
+      s.overlayBlinkSync ? sub([range("overlayBlinkDepth", "Blink depth", { min: 0.05, max: 0.6, step: 0.01, format: pct })]) : null
     ])] : []
   ];
-  const built = panel({ pluginClass: `${ROOT_CLASS}-panel` }, [
-    // Cast: pluginHeader's opts typedef does not include `localUnavailable`
-    // inside `scope`, though it is accepted and forwarded.
-    pluginHeader(
-      /** @type {any} */
-      {
-        title: "Cursor Smith",
-        lede: [
-          "MIT-licensed port of ",
-          link(UPSTREAM_REPO, "Cursor-Smith"),
-          " by ",
-          link(UPSTREAM_AUTHOR, "SadSnake1"),
-          " for Roam Research."
-        ],
-        helper: ctl.conf?.instructions,
-        icon: "wand",
-        version: ctl.version,
-        repository: ctl.conf?.repository || "https://github.com/Svyk/roam-cursor-smith",
-        killSwitch: { on: !ctl.disabled, onToggle: ctl.toggleDisabled }
-      }
-    ),
-    // Sticky so it stays reachable while you scroll the settings below it —
-    // judging a blink rate or a smear means typing in it repeatedly, and
-    // scrolling back to the top each time made that unusable.
-    section({ label: "Preview", body: [demo, optionNote("Nothing typed here is saved.")], persistKey: "preview" }),
-    section({ label: "Presets", collapsible: true, defaultOpen: false, body: presetsBody }),
-    section({ label: "Cursor", body: cursorBody.filter(Boolean) }),
-    section({ label: "Colour", collapsible: true, defaultOpen: false, body: colorBody.filter(Boolean) }),
-    section({ label: "Blinking", collapsible: true, defaultOpen: false, body: blinkBody.filter(Boolean) }),
-    section({ label: "Smooth movement", collapsible: true, defaultOpen: false, body: smoothBody.filter(Boolean) }),
-    section({ label: "Motion smear", collapsible: true, defaultOpen: false, body: smearBody.filter(Boolean) }),
-    section({ label: "After effects", collapsible: true, defaultOpen: false, body: effectsBody.filter(Boolean) }),
-    section({ label: "Context", collapsible: true, defaultOpen: false, body: contextBody.filter(Boolean) }),
-    section({ label: "Idle & ghost", collapsible: true, defaultOpen: false, body: idleBody.filter(Boolean) }),
-    section({ label: "Feedback", collapsible: true, defaultOpen: false, body: feedbackBody.filter(Boolean) }),
-    section({ label: "Torch", collapsible: true, defaultOpen: false, body: torchBody.filter(Boolean) })
-  ]);
-  const previewSection = built.querySelector(".tps-section");
-  if (previewSection) {
-    previewSection.classList.add("cs-sticky-preview");
-    try {
-      const bar = root.closest(".panel")?.querySelector(".panel-bar");
-      const barH = bar ? Math.round(bar.getBoundingClientRect().height) : 0;
-      if (barH > 0) built.style.setProperty("--cs-sticky-top", barH + "px");
-    } catch {
-    }
+  const resetBody = [
+    row(button("Random look", () => ctl.randomize()), button("Reset to defaults", () => ctl.resetLook()))
+  ];
+  const built = [
+    group("Preview", [h("div", { class: "cs-studio-preview" }, demo, note("Nothing typed here is saved."))]),
+    group("Caret", caretBody),
+    group("Colour", colorBody),
+    group("Blinking", blinkBody),
+    group("Smooth movement", smoothBody),
+    group("Motion smear", smearBody),
+    group("After effects", effectsBody),
+    group("Context", contextBody),
+    group("Idle & ghost", idleBody),
+    group("Feedback", feedbackBody),
+    group("Torch", torchBody),
+    group("Reset", resetBody)
+  ];
+  if (typeof root.replaceChildren === "function") root.replaceChildren(...built);
+  else {
+    while (root.firstChild) root.removeChild(root.firstChild);
+    for (const child of built) root.appendChild(child);
   }
-  root.replaceChildren(built);
   if (prevFocused) {
     try {
-      const el2 = (
-        /** @type {HTMLTextAreaElement} */
-        demo
-      );
-      el2.focus({ preventScroll: true });
-      el2.setSelectionRange(prevStart, prevEnd);
+      demo.focus({ preventScroll: true });
+      demo.setSelectionRange(prevStart, prevEnd);
     } catch {
     }
   }
 }
-__name(renderPanel, "renderPanel");
-function gradientColors(s, color) {
-  const n = Math.max(2, Math.min(4, Math.round(s.gradientCount || 2)));
-  const out = [];
-  for (let i = 1; i <= n; i++) out.push(color("gradientDark" + i, `Dark ${i}`));
-  for (let i = 1; i <= n; i++) out.push(color("gradientLight" + i, `Light ${i}`));
-  return out;
-}
-__name(gradientColors, "gradientColors");
-function buildPresets(ctl) {
-  const s = ctl.settings;
-  const presets = s.presets || {};
-  const names = Object.keys(presets);
-  const nameInput = h("input", {
-    type: "text",
-    class: "cs-text-input",
-    placeholder: "Name this look…",
-    value: ctl.pendingPresetName || "",
-    // Kept on the controller rather than in this closure, so changing a
-    // setting mid-way doesn't erase what has been typed when the panel
-    // re-renders.
-    onInput: /* @__PURE__ */ __name((e) => {
-      ctl.pendingPresetName = e.target.value;
-    }, "onInput"),
-    onKeyDown: /* @__PURE__ */ __name((e) => {
-      if (e.key === "Enter") savePreset();
-    }, "onKeyDown")
-  });
-  const importInput = h("input", {
-    type: "text",
-    class: "cs-text-input",
-    placeholder: "Paste a share code…",
-    onKeyDown: /* @__PURE__ */ __name((e) => {
-      if (e.key === "Enter") importPreset();
-    }, "onKeyDown")
-  });
-  function savePreset() {
-    const name = String(nameInput.value || "").trim();
-    if (!name) {
-      ctl.toast("Give the preset a name first.");
-      return;
-    }
-    ctl.set({ presets: { ...presets, [name]: pickLook(s) }, activePreset: name });
-    ctl.pendingPresetName = "";
-    ctl.rerender();
-    ctl.toast(`Saved “${name}”.`);
-  }
-  __name(savePreset, "savePreset");
-  function importPreset() {
-    const decoded = codeToPreset(String(importInput.value || ""));
-    if (!decoded) {
-      ctl.toast("That share code couldn't be read.");
-      return;
-    }
-    let name = decoded.name;
-    let n = 2;
-    while (Object.prototype.hasOwnProperty.call(presets, name)) name = `${decoded.name} ${n++}`;
-    ctl.set({ presets: { ...presets, [name]: decoded.snap } });
-    ctl.rerender();
-    ctl.toast(`Imported “${name}”.`);
-  }
-  __name(importPreset, "importPreset");
-  function loadPreset(name, snapshot) {
-    const snap = snapshot || presets[name];
-    if (!snap) return;
-    ctl.set({ ...normalizePresetSnapshot(snap), activePreset: snapshot ? "" : name });
-    ctl.rerender();
-    ctl.toast(`Loaded “${name}”.`);
-  }
-  __name(loadPreset, "loadPreset");
-  function editPreset(name) {
-    loadPreset(name);
-    ctl.pendingPresetName = name;
-    ctl.rerender();
-  }
-  __name(editPreset, "editPreset");
-  function deletePreset(name) {
-    const next = { ...presets };
-    delete next[name];
-    ctl.set({ presets: next, activePreset: s.activePreset === name ? "" : s.activePreset });
-    ctl.rerender();
-    ctl.toast(`Deleted “${name}”.`);
-  }
-  __name(deletePreset, "deletePreset");
-  function copyCode(name, snapshot) {
-    const snap = snapshot || presets[name];
-    if (!snap) return;
-    ctl.copyToClipboard(presetToCode(name, normalizePresetSnapshot(snap)));
-    ctl.toast("Share code copied.");
-  }
-  __name(copyCode, "copyCode");
-  const userRows = names.map((name) => h(
-    "div",
-    {
-      class: "cs-preset-row" + (s.activePreset === name ? " cs-preset-active" : "")
-    },
-    h("span", { class: "cs-preset-name" }, name),
-    h(
-      "span",
-      { class: "cs-preset-actions" },
-      button({ label: "Load", onClick: /* @__PURE__ */ __name(() => loadPreset(name), "onClick") }),
-      button({ label: "Edit", onClick: /* @__PURE__ */ __name(() => editPreset(name), "onClick") }),
-      button({ label: "Copy", onClick: /* @__PURE__ */ __name(() => copyCode(name), "onClick") }),
-      button({ label: "Delete", onClick: /* @__PURE__ */ __name(() => deletePreset(name), "onClick") })
-    )
-  ));
-  const builtinRows = Object.entries(BUILTIN_PRESETS).map(([name, snap]) => h(
-    "div",
-    { class: "cs-preset-row" },
-    h("span", { class: "cs-preset-name" }, name),
-    h(
-      "span",
-      { class: "cs-preset-actions" },
-      button({ label: "Load", onClick: /* @__PURE__ */ __name(() => loadPreset(name, snap), "onClick") }),
-      button({ label: "Copy", onClick: /* @__PURE__ */ __name(() => copyCode(name, snap), "onClick") })
-    )
-  ));
-  return [
-    optionNote("Your presets"),
-    ...userRows.length ? userRows : [optionNote("None yet. Dial the cursor in below, then save it here.")],
-    h("div", { class: "cs-input-row" }, nameInput, button({ label: "Save", onClick: savePreset })),
-    optionNote("A preset stores every look and effect setting — not the plugin on/off state or the two caret-hiding options."),
-    h("div", { class: "cs-input-row" }, importInput, button({ label: "Import", onClick: importPreset })),
-    h(
-      "div",
-      { class: "cs-input-row" },
-      button({ label: "Roll a random look", onClick: /* @__PURE__ */ __name(() => ctl.randomize(), "onClick") }),
-      button({ label: "Reset to defaults", onClick: /* @__PURE__ */ __name(() => ctl.resetLook(), "onClick") })
-    ),
-    optionNote("Rolling keeps your presets, the plugin on/off state and the caret-hiding options untouched. Save one you like before rolling again."),
-    optionNote("Starting points"),
-    ...builtinRows,
-    optionNote("Load one, tweak it, then save it above under your own name.")
-  ];
-}
-__name(buildPresets, "buildPresets");
 
 // src/extension.js
-var VERSION = "0.2.0";
+var VERSION = "0.3.0";
 var CANVAS_Z_INDEX = 40;
 var VERSION_FLAG = "__ROAM_CURSOR_SMITH_VERSION";
 var activeLifecycle = null;
@@ -8707,11 +4577,14 @@ var CursorSmithRuntime = class {
     this._measurer = null;
     this._mode = null;
     this._pumpInstalled = false;
+    this._pumpListeners = [];
+    this._measureCount = 0;
     this._overlay = null;
     this._panelEl = null;
     this._panelStyle = null;
     this._toastEl = null;
     this._fatalNotice = false;
+    this._depotPanelReady = false;
     this.pendingPresetName = "";
     this.lifecycle.add(() => this.teardown());
   }
@@ -8756,8 +4629,13 @@ var CursorSmithRuntime = class {
         win: document.defaultView || globalThis,
         lifecycle: this.lifecycle
       });
+      const inner = this._measurer.measure.bind(this._measurer);
+      this._measurer.measure = (el) => {
+        this._measureCount += 1;
+        return inner(el);
+      };
     } catch (err) {
-      console.error("[cursor-smith] measurer failed to start:", err);
+      console.error("[roam-caret] measurer failed to start:", err);
       this._measurer = null;
     }
   }
@@ -8768,30 +4646,44 @@ var CursorSmithRuntime = class {
     }
     this._measurer = null;
   }
+  _bindPumpListener(target, type, fn, capture) {
+    target.addEventListener(type, fn, capture);
+    this._pumpListeners.push({ target, type, fn, capture: !!capture });
+  }
   ensurePump() {
     if (this._pumpInstalled || typeof document === "undefined") return;
     const pump = () => {
       try {
-        const el2 = document.activeElement;
-        if (this._measurer && el2) this._measurer.measure(el2);
+        const el = document.activeElement;
+        if (this._measurer && el) this._measurer.measure(el);
       } catch {
       }
     };
     this._pumpInstalled = true;
-    this.lifecycle.event(document, "focusin", pump, true);
-    this.lifecycle.event(document, "input", pump, true);
-    this.lifecycle.event(document, "selectionchange", pump);
-    this.lifecycle.event(document, "keyup", pump, true);
+    this._bindPumpListener(document, "focusin", pump, true);
+    this._bindPumpListener(document, "input", pump, true);
+    this._bindPumpListener(document, "selectionchange", pump, false);
+    this._bindPumpListener(document, "keyup", pump, true);
     const win = document.defaultView || globalThis;
     if (typeof win?.addEventListener === "function") {
-      this.lifecycle.event(win, "scroll", pump, true);
-      this.lifecycle.event(win, "resize", pump);
+      this._bindPumpListener(win, "scroll", pump, true);
+      this._bindPumpListener(win, "resize", pump, false);
     }
+  }
+  stopPump() {
+    if (!this._pumpInstalled) return;
+    for (const { target, type, fn, capture } of this._pumpListeners) {
+      try {
+        target.removeEventListener(type, fn, capture);
+      } catch {
+      }
+    }
+    this._pumpListeners = [];
+    this._pumpInstalled = false;
   }
   startLite() {
     if (this.mobile || !this._settings.enabled || this._lite || !canStartLite()) return;
     this.ensureMeasurer();
-    this.ensurePump();
     if (!this._measurer) return;
     try {
       this._lite = installLiteCaret({
@@ -8804,7 +4696,7 @@ var CursorSmithRuntime = class {
       this._lite.refresh();
       this.applyBodyClasses();
     } catch (err) {
-      console.error("[cursor-smith] lite caret failed to start:", err);
+      console.error("[roam-caret] lite caret failed to start:", err);
       this.stopLite();
     }
   }
@@ -8835,24 +4727,23 @@ var CursorSmithRuntime = class {
       this._engine.start();
       this.applyBodyClasses();
     } catch (err) {
-      console.error("[cursor-smith] engine failed to start:", err);
+      console.error("[roam-caret] engine failed to start:", err);
       this.stopEngine();
     }
   }
   stopEngine() {
-    if (!this._engine) {
-      this.applyBodyClasses();
-      return;
+    if (this._engine) {
+      try {
+        this._engine.stop();
+      } catch {
+      }
+      this._engine = null;
     }
-    try {
-      this._engine.stop();
-    } catch {
-    }
-    this._engine = null;
+    this.stopPump();
     this.applyBodyClasses();
   }
   engineFailed(err) {
-    console.error("[cursor-smith] engine stopped after repeated frame errors:", err);
+    console.error("[roam-caret] engine stopped after repeated frame errors:", err);
     this.stopEngine();
     this.clearBodyClasses();
     if (this._fatalNotice) return;
@@ -8860,7 +4751,7 @@ var CursorSmithRuntime = class {
     const palette = this.extensionAPI?.ui?.commandPalette;
     if (palette) {
       void this.lifecycle.command(palette, {
-        label: "Cursor Smith: engine stopped (see console)",
+        label: "Roam Caret: engine stopped (see console)",
         callback: () => this.openSettings()
       }).catch((error) => console.error(error));
     }
@@ -8888,17 +4779,100 @@ var CursorSmithRuntime = class {
     }
     this.applyBodyClasses();
   }
+  _depotIdsForPatch(patch) {
+    const ids = [];
+    for (const [depotId, blobKey] of Object.entries(MIRROR)) {
+      if (Object.prototype.hasOwnProperty.call(patch, blobKey)) ids.push(depotId);
+    }
+    return ids;
+  }
+  depotPanelConfig() {
+    return buildDepotPanel({
+      settings: this._settings,
+      builtinNames: Object.keys(BUILTIN_PRESETS),
+      userNames: Object.keys(this._settings.presets || {}),
+      React: globalThis.window?.React || globalThis.React,
+      handlers: {
+        onChange: (id, raw) => this.setFromDepot(id, raw),
+        onMatchSvy: () => this.matchSvy(),
+        onCopyCode: () => this.copyShareCode(),
+        onImport: () => this.importShareCode(),
+        onStudio: () => this.openSettings()
+      }
+    });
+  }
+  async rebuildPanel() {
+    await mirrorToDepot(this.extensionAPI, this._settings);
+    if (!this._depotPanelReady) return;
+    await this.lifecycle.settingsPanel(this.extensionAPI, this.depotPanelConfig());
+  }
+  async setFromDepot(id, raw) {
+    if (id === "cs-import-code") {
+      await this.extensionAPI.settings.set("cs-import-code", raw);
+      return;
+    }
+    if (!(id in MIRROR)) return;
+    const blobKey = MIRROR[id];
+    if (id === "cs-preset") {
+      if (raw === "Custom") {
+        this._set({ activePreset: "" });
+      } else {
+        const snap = BUILTIN_PRESETS[raw] ?? this._settings.presets?.[raw];
+        if (snap) {
+          this._set({ ...pickLook(snap), activePreset: raw });
+          await this.rebuildPanel();
+        }
+      }
+      return;
+    }
+    const patch = id === "cs-width" ? { [blobKey]: Number(raw) } : { [blobKey]: raw };
+    this._set(patch);
+    await mirrorToDepot(this.extensionAPI, this._settings, [id]);
+  }
+  matchSvy() {
+    const getStyle = typeof document !== "undefined" ? (el) => getComputedStyle(el) : null;
+    const result = readSvyBeamColors(getStyle, document?.documentElement);
+    if (result) {
+      this._set(result);
+      void this.rebuildPanel();
+      this.toast("Matched Svy Theme colors");
+    } else {
+      this.toast("Svy Theme not loaded");
+    }
+  }
+  copyShareCode() {
+    const code = presetToCode(this._settings.activePreset || "Current", pickLook(this._settings));
+    copyToClipboard(code);
+    this.toast("Share code copied.");
+  }
+  async importShareCode() {
+    const code = this.extensionAPI.settings.get("cs-import-code");
+    const decoded = codeToPreset(code);
+    if (!decoded) {
+      this.toast("Could not import that code");
+      return;
+    }
+    const { name, snap } = decoded;
+    const presets = { ...this._settings.presets || {}, [name]: snap };
+    this._set({ ...snap, activePreset: name, presets });
+    await this.extensionAPI.settings.set("cs-import-code", "");
+    await this.rebuildPanel();
+    this.toast(`Imported "${name}".`);
+  }
   _set(patch) {
     this._settings = normalizeSettings({ ...this._settings, ...patch });
+    const depotIds = this._depotIdsForPatch(patch);
     void persistOptions(this.extensionAPI, this._settings);
     this.applySettings();
+    if (depotIds.length) void mirrorToDepot(this.extensionAPI, this._settings, depotIds);
+    if (this._depotPanelReady) void this.rebuildPanel();
   }
   _setLive(patch) {
     this._settings = { ...this._settings, ...patch };
     this.applySettings();
   }
   toast(message) {
-    console.info("[cursor-smith]", message);
+    console.info("[roam-caret]", message);
     if (this._toastEl) this._toastEl.textContent = message;
   }
   _injectPanelStyle() {
@@ -8906,8 +4880,8 @@ var CursorSmithRuntime = class {
     if (typeof document === "undefined" || !document.createElement) return;
     if (!this._panelStyle) {
       const style = document.createElement("style");
-      style.setAttribute("data-cursor-smith", "panel");
-      style.textContent = PANEL_CSS + "\n" + PANEL_LOCAL_CSS;
+      style.setAttribute("data-cursor-smith", "studio");
+      style.textContent = STUDIO_CSS;
       this._panelStyle = style;
     }
     try {
@@ -8927,21 +4901,14 @@ var CursorSmithRuntime = class {
     if (typeof document === "undefined" || !document.body || !document.createElement) return;
     this._injectPanelStyle();
     const overlay = document.createElement("div");
-    overlay.className = "cs-panel-overlay";
+    overlay.className = "cs-studio-overlay";
     overlay.setAttribute("role", "dialog");
-    overlay.setAttribute("aria-label", "Cursor Smith settings");
+    overlay.setAttribute("aria-label", "Roam Caret studio");
     overlay.addEventListener("click", (ev) => {
       if (ev.target === overlay) this.closeSettings();
     });
     const panelRoot = document.createElement("div");
-    panelRoot.className = `cs-panel ${ROOT_CLASS}-panel`;
-    try {
-      const bodyBg = getComputedStyle(document.body).backgroundColor;
-      if (bodyBg && bodyBg !== "transparent" && !/,\s*0\)$/.test(bodyBg)) {
-        panelRoot.style.setProperty("--cs-panel-bg", bodyBg);
-      }
-    } catch {
-    }
+    panelRoot.className = "cs-studio";
     const toastEl = document.createElement("div");
     toastEl.className = "cs-toast";
     overlay.append(panelRoot, toastEl);
@@ -8971,7 +4938,7 @@ var CursorSmithRuntime = class {
     if (!this._panelEl) return;
     const plugin = this;
     try {
-      renderPanel(this._panelEl, {
+      renderStudio(this._panelEl, {
         version: VERSION,
         conf: {
           repository: "https://github.com/Svyk/roam-cursor-smith"
@@ -8997,7 +4964,7 @@ var CursorSmithRuntime = class {
         }
       });
     } catch (err) {
-      console.error("[cursor-smith] settings panel failed:", err);
+      console.error("[roam-caret] settings panel failed:", err);
     }
   }
   randomize() {
@@ -9014,7 +4981,7 @@ var CursorSmithRuntime = class {
     const next = !this._settings.enabled;
     this._set({ enabled: next });
     this.renderPanel();
-    this.toast(next ? "Cursor Smith on." : "Cursor Smith off.");
+    this.toast(next ? "Roam Caret on." : "Roam Caret off.");
   }
   cyclePreset() {
     const presets = this._settings.presets || {};
@@ -9029,7 +4996,8 @@ var CursorSmithRuntime = class {
     this.renderPanel();
     this.toast(`Preset: ${next}`);
   }
-  diagnoseCaret() {
+  diagnoseCaret(ms = 5e3) {
+    this._measureCount = 0;
     const describe = (el2) => {
       if (!el2 || typeof el2.getBoundingClientRect !== "function") return null;
       const r = el2.getBoundingClientRect();
@@ -9062,8 +5030,7 @@ var CursorSmithRuntime = class {
       log.push({
         reason,
         t: Math.round(performance.now()),
-        carets: [],
-        listviewCarets: [],
+        measureCount: this._measureCount,
         active: active ? describe(active) : null,
         textarea: textarea ? {
           id: textarea.id,
@@ -9098,7 +5065,7 @@ var CursorSmithRuntime = class {
       if (log.length < 60) sample("keydown");
     };
     window.addEventListener("keydown", onKey, true);
-    this.toast("Diagnosing for 5s — click into a block and type.");
+    this.toast(`Diagnosing for ${ms / 1e3}s — click into a block and type.`);
     this.lifecycle.timeout(() => {
       try {
         mo?.disconnect();
@@ -9107,10 +5074,10 @@ var CursorSmithRuntime = class {
       window.removeEventListener("keydown", onKey, true);
       sample("end");
       const text = JSON.stringify(log, null, 2);
-      console.log("[cursor-smith] caret diagnostic\n" + text);
+      console.log("[roam-caret] caret diagnostic\n" + text);
       copyToClipboard(text);
       this.toast(`Caret diagnostic: ${log.length} samples, copied to clipboard.`);
-    }, 5e3);
+    }, ms);
   }
 };
 async function onload({ extensionAPI, extension }) {
@@ -9122,32 +5089,42 @@ async function onload({ extensionAPI, extension }) {
   try {
     globalThis[VERSION_FLAG] = VERSION;
     runtime = new CursorSmithRuntime({ extensionAPI, lifecycle, mobile });
+    await mirrorToDepot(extensionAPI, runtime._settings);
+    await lifecycle.settingsPanel(extensionAPI, runtime.depotPanelConfig());
+    runtime._depotPanelReady = true;
     const palette = extensionAPI.ui.commandPalette;
     await lifecycle.command(palette, {
-      label: "Cursor Smith: Settings",
+      label: "Roam Caret: Open settings",
+      callback: async () => {
+        const ok = await openRoamCaretSettings();
+        if (!ok) runtime.toast("Open Roam Depot, then choose Roam Caret under Extension Settings.");
+      }
+    });
+    await lifecycle.command(palette, {
+      label: "Roam Caret: Studio",
       callback: () => runtime.openSettings()
     });
     await lifecycle.command(palette, {
-      label: "Cursor Smith: Toggle on/off",
+      label: "Roam Caret: Toggle on/off",
       callback: () => runtime.toggleEnabled()
     });
     await lifecycle.command(palette, {
-      label: "Cursor Smith: Random look",
+      label: "Roam Caret: Random look",
       callback: () => runtime.randomize()
     });
     await lifecycle.command(palette, {
-      label: "Cursor Smith: Cycle preset",
+      label: "Roam Caret: Cycle preset",
       callback: () => runtime.cyclePreset()
     });
     await lifecycle.command(palette, {
-      label: "Cursor Smith: Diagnose caret (5s)",
+      label: "Roam Caret: Diagnose caret (5s)",
       callback: () => runtime.diagnoseCaret()
     });
     if (typeof document !== "undefined") {
       lifecycle.event(document, "keydown", (ev) => runtime.onEscape(ev), true);
     }
     if (!mobile) runtime.applySettings();
-    console.info(`[cursor-smith] Loaded v${extension?.version || VERSION}`);
+    console.info(`[roam-caret] Loaded v${extension?.version || VERSION}`);
   } catch (error) {
     if (activeLifecycle === lifecycle) activeLifecycle = null;
     runtime = null;
@@ -9173,7 +5150,7 @@ async function onunload() {
     document.body?.classList?.remove(BODY_ACTIVE_CLASS, BODY_HIDE_NATIVE_CLASS);
   } catch {
   }
-  console.info("[cursor-smith] Unloaded");
+  console.info("[roam-caret] Unloaded");
 }
 function getRuntime() {
   return runtime;

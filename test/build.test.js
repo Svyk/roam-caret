@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
-import { access, cp, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { access, cp, mkdir, mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { basename, resolve } from "node:path";
 import { pathToFileURL, fileURLToPath } from "node:url";
@@ -40,7 +40,7 @@ test("build emits deterministic, matching browser ESM artifacts with a default e
   const packageMetadata = JSON.parse(await readFile(new URL("../package.json", import.meta.url), "utf8"));
   const rebuilt = await bundleEntry({
     rootDirectory: rootPath,
-    banner: `/* Cursor Smith v${packageMetadata.version} | MIT | generated; edit src/ */`,
+    banner: `/* Roam Caret v${packageMetadata.version} | MIT | generated; edit src/ */`,
   });
   assert.equal(rebuilt, rootJs);
 
@@ -48,6 +48,9 @@ test("build emits deterministic, matching browser ESM artifacts with a default e
   const loaded = await import(`${pathToFileURL(resolve(rootPath, "extension.js")).href}?test=${Date.now()}`);
   assert.equal(typeof loaded.default.onload, "function");
   assert.equal(typeof loaded.default.onunload, "function");
+
+  const { size } = await stat(new URL("../extension.js", import.meta.url));
+  assert.ok(size < 200_000, `extension.js is ${size} bytes (expected < 200000)`);
 });
 
 test("esbuild bundles legitimate relative source modules", async () => {

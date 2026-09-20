@@ -4,6 +4,21 @@ All notable changes to this project follow [Keep a Changelog](https://keepachang
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-09-19
+
+### Added
+- Native Roam Depot tab (Roam Caret) with write-through `cs-*` mirrors; blob `options` stays source of truth.
+- Command `Roam Caret: Open settings` (Depot tab) and `Roam Caret: Studio` (Blueprint overlay).
+- Lite **Beam** shape and builtin **Svy** preset.
+- Match Svy Theme colors (read-only CSS variables).
+
+### Changed
+- Product name Roam Caret. Repo / Pages URL unchanged.
+- Studio no longer uses Thymer panel chrome.
+
+### Removed
+- User-facing port lede. Thymer `tps-*` settings CSS from the boot bundle.
+
 ## [0.2.0] - 2026-09-19
 
 ### Added

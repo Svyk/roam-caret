@@ -1,4 +1,5 @@
 import { isSkippedHost, isTextTarget } from "./caret-measure.js";
+import { hexToRgba } from "./settings.js";
 
 function isPasswordField(el) {
   if (!el) return false;
@@ -6,14 +7,14 @@ function isPasswordField(el) {
   return type === "password";
 }
 
-function isDark(doc, win) {
+function isDark(doc, prefersDarkMq) {
   const root = doc?.documentElement;
   const body = doc?.body;
   if (root?.classList?.contains("bp3-dark")) return true;
   if (body?.classList?.contains("bt-theme-dark")) return true;
   if (body?.classList?.contains("rm-dark-theme")) return true;
   if (body?.classList?.contains("roam-body") && body?.classList?.contains("dark")) return true;
-  const prefersDark = !!win?.matchMedia?.("(prefers-color-scheme: dark)")?.matches;
+  const prefersDark = !!prefersDarkMq?.matches;
   return prefersDark && !root?.classList?.contains("bp3-light");
 }
 
@@ -28,6 +29,7 @@ export function installLiteCaret({ doc, win, measurer, lifecycle, getSettings } 
   let settings = typeof getSettings === "function" ? getSettings() || {} : {};
   let active = null;
   let disposed = false;
+  let lastSig = "";
 
   const overlay = documentRef.createElement("div");
   overlay.className = "cs-lite-caret";
@@ -50,7 +52,13 @@ export function installLiteCaret({ doc, win, measurer, lifecycle, getSettings } 
   else parent.append(overlay);
 
   const motionQuery = windowRef?.matchMedia?.("(prefers-reduced-motion: reduce)");
+  const prefersDarkMq = windowRef?.matchMedia?.("(prefers-color-scheme: dark)");
   let reducedMotion = !!motionQuery?.matches;
+
+  const computeSig = (el) => {
+    if (!el) return "";
+    return [el, el.value?.length, el.selectionStart, el.selectionEnd, el.scrollLeft, el.scrollTop].join("\0");
+  };
 
   const readSettings = () => {
     if (typeof getSettings === "function") settings = getSettings() || {};
@@ -86,7 +94,7 @@ export function installLiteCaret({ doc, win, measurer, lifecycle, getSettings } 
       return;
     }
 
-    const color = isDark(documentRef, windowRef)
+    const color = isDark(documentRef, prefersDarkMq)
       ? settings.colorDark || ""
       : settings.colorLight || "";
     const cursorStyle = settings.cursorStyle || "Box";
@@ -109,6 +117,14 @@ export function installLiteCaret({ doc, win, measurer, lifecycle, getSettings } 
       overlay.style.borderRadius = "";
       overlay.style.border = "";
       overlay.style.background = color;
+    } else if (cursorStyle === "Beam") {
+      width = settings.caretWidthPx ?? 3;
+      height = Math.max(2, rect.height * 0.82);
+      y = rect.y + (rect.height - height) / 2;
+      x = rect.x - width / 2;
+      overlay.style.borderRadius = "3px";
+      overlay.style.border = "";
+      overlay.style.background = color;
     } else {
       overlay.style.borderRadius = "1px";
       if (settings.boxHollow) {
@@ -124,7 +140,9 @@ export function installLiteCaret({ doc, win, measurer, lifecycle, getSettings } 
     overlay.style.transform = `translate(${x}px, ${y}px)`;
     overlay.style.width = `${width}px`;
     overlay.style.height = `${height}px`;
-    overlay.style.boxShadow = settings.glow ? `0 0 6px ${color}` : "";
+    overlay.style.boxShadow = settings.glow
+      ? `0 0 0 1px ${hexToRgba(color, 0.18)}, 0 0 8px ${hexToRgba(color, 0.3)}`
+      : "";
 
     if (settings.showChar) {
       glyph.textContent = rect.glyph || "";
@@ -154,6 +172,7 @@ export function installLiteCaret({ doc, win, measurer, lifecycle, getSettings } 
     if (!target || isPasswordField(target) || !isTextTarget(target)) return;
     active = target;
     measureAndApply(target, { ping: true });
+    lastSig = computeSig(target);
   };
 
   const onFocusOut = (event) => {
@@ -166,10 +185,15 @@ export function installLiteCaret({ doc, win, measurer, lifecycle, getSettings } 
   const onInput = (event) => {
     const target = event?.target || documentRef.activeElement;
     measureAndApply(target, { ping: true });
+    lastSig = computeSig(target);
   };
 
   const onRefreshEvent = () => {
-    measureAndApply(documentRef.activeElement);
+    const target = documentRef.activeElement;
+    const sig = computeSig(target);
+    if (sig === lastSig) return;
+    lastSig = sig;
+    measureAndApply(target);
   };
 
   const onMotionChange = () => {

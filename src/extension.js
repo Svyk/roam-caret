@@ -1,24 +1,32 @@
 import { createLifecycle } from "./lifecycle.js";
-import { loadOptions, persistOptions } from "./settings.js";
+import { openRoamCaretSettings } from "./open-settings.js";
+import {
+  MIRROR,
+  buildDepotPanel,
+  loadOptions,
+  mirrorToDepot,
+  persistOptions,
+  readSvyBeamColors,
+} from "./settings.js";
 import { createCaretMeasurer } from "./caret-measure.js";
 import { installLiteCaret } from "./caret-lite.js";
 import {
   BODY_ACTIVE_CLASS,
   BODY_HIDE_NATIVE_CLASS,
+  BUILTIN_PRESETS,
   CursorEngine,
   DEFAULTS,
-  PANEL_CSS,
-  PANEL_LOCAL_CSS,
-  ROOT_CLASS,
+  codeToPreset,
   needsCanvas,
   normalizePresetSnapshot,
   normalizeSettings,
   pickLook,
+  presetToCode,
   randomizeLook,
-  renderPanel,
 } from "./cursor-smith.js";
+import { renderStudio, STUDIO_CSS } from "./studio.js";
 
-export const VERSION = "0.2.0";
+export const VERSION = "0.3.0";
 const CANVAS_Z_INDEX = 40; // PROVISIONAL
 const VERSION_FLAG = "__ROAM_CURSOR_SMITH_VERSION";
 
@@ -79,11 +87,14 @@ class CursorSmithRuntime {
     this._measurer = null;
     this._mode = null;
     this._pumpInstalled = false;
+    this._pumpListeners = [];
+    this._measureCount = 0;
     this._overlay = null;
     this._panelEl = null;
     this._panelStyle = null;
     this._toastEl = null;
     this._fatalNotice = false;
+    this._depotPanelReady = false;
     this.pendingPresetName = "";
     this.lifecycle.add(() => this.teardown());
   }
@@ -132,8 +143,13 @@ class CursorSmithRuntime {
         win: document.defaultView || globalThis,
         lifecycle: this.lifecycle,
       });
+      const inner = this._measurer.measure.bind(this._measurer);
+      this._measurer.measure = (el) => {
+        this._measureCount += 1;
+        return inner(el);
+      };
     } catch (err) {
-      console.error("[cursor-smith] measurer failed to start:", err);
+      console.error("[roam-caret] measurer failed to start:", err);
       this._measurer = null;
     }
   }
@@ -146,6 +162,11 @@ class CursorSmithRuntime {
     this._measurer = null;
   }
 
+  _bindPumpListener(target, type, fn, capture) {
+    target.addEventListener(type, fn, capture);
+    this._pumpListeners.push({ target, type, fn, capture: !!capture });
+  }
+
   ensurePump() {
     if (this._pumpInstalled || typeof document === "undefined") return;
     const pump = () => {
@@ -156,21 +177,32 @@ class CursorSmithRuntime {
       }
     };
     this._pumpInstalled = true;
-    this.lifecycle.event(document, "focusin", pump, true);
-    this.lifecycle.event(document, "input", pump, true);
-    this.lifecycle.event(document, "selectionchange", pump);
-    this.lifecycle.event(document, "keyup", pump, true);
+    this._bindPumpListener(document, "focusin", pump, true);
+    this._bindPumpListener(document, "input", pump, true);
+    this._bindPumpListener(document, "selectionchange", pump, false);
+    this._bindPumpListener(document, "keyup", pump, true);
     const win = document.defaultView || globalThis;
     if (typeof win?.addEventListener === "function") {
-      this.lifecycle.event(win, "scroll", pump, true);
-      this.lifecycle.event(win, "resize", pump);
+      this._bindPumpListener(win, "scroll", pump, true);
+      this._bindPumpListener(win, "resize", pump, false);
     }
+  }
+
+  stopPump() {
+    if (!this._pumpInstalled) return;
+    for (const { target, type, fn, capture } of this._pumpListeners) {
+      try {
+        target.removeEventListener(type, fn, capture);
+      } catch {
+      }
+    }
+    this._pumpListeners = [];
+    this._pumpInstalled = false;
   }
 
   startLite() {
     if (this.mobile || !this._settings.enabled || this._lite || !canStartLite()) return;
     this.ensureMeasurer();
-    this.ensurePump();
     if (!this._measurer) return;
     try {
       this._lite = installLiteCaret({
@@ -183,7 +215,7 @@ class CursorSmithRuntime {
       this._lite.refresh();
       this.applyBodyClasses();
     } catch (err) {
-      console.error("[cursor-smith] lite caret failed to start:", err);
+      console.error("[roam-caret] lite caret failed to start:", err);
       this.stopLite();
     }
   }
@@ -216,26 +248,25 @@ class CursorSmithRuntime {
       this._engine.start();
       this.applyBodyClasses();
     } catch (err) {
-      console.error("[cursor-smith] engine failed to start:", err);
+      console.error("[roam-caret] engine failed to start:", err);
       this.stopEngine();
     }
   }
 
   stopEngine() {
-    if (!this._engine) {
-      this.applyBodyClasses();
-      return;
+    if (this._engine) {
+      try {
+        this._engine.stop();
+      } catch {
+      }
+      this._engine = null;
     }
-    try {
-      this._engine.stop();
-    } catch {
-    }
-    this._engine = null;
+    this.stopPump();
     this.applyBodyClasses();
   }
 
   engineFailed(err) {
-    console.error("[cursor-smith] engine stopped after repeated frame errors:", err);
+    console.error("[roam-caret] engine stopped after repeated frame errors:", err);
     this.stopEngine();
     this.clearBodyClasses();
     if (this._fatalNotice) return;
@@ -243,7 +274,7 @@ class CursorSmithRuntime {
     const palette = this.extensionAPI?.ui?.commandPalette;
     if (palette) {
       void this.lifecycle.command(palette, {
-        label: "Cursor Smith: engine stopped (see console)",
+        label: "Roam Caret: engine stopped (see console)",
         callback: () => this.openSettings(),
       }).catch((error) => console.error(error));
     }
@@ -273,10 +304,105 @@ class CursorSmithRuntime {
     this.applyBodyClasses();
   }
 
+  _depotIdsForPatch(patch) {
+    const ids = [];
+    for (const [depotId, blobKey] of Object.entries(MIRROR)) {
+      if (Object.prototype.hasOwnProperty.call(patch, blobKey)) ids.push(depotId);
+    }
+    return ids;
+  }
+
+  depotPanelConfig() {
+    return buildDepotPanel({
+      settings: this._settings,
+      builtinNames: Object.keys(BUILTIN_PRESETS),
+      userNames: Object.keys(this._settings.presets || {}),
+      React: globalThis.window?.React || globalThis.React,
+      handlers: {
+        onChange: (id, raw) => this.setFromDepot(id, raw),
+        onMatchSvy: () => this.matchSvy(),
+        onCopyCode: () => this.copyShareCode(),
+        onImport: () => this.importShareCode(),
+        onStudio: () => this.openSettings(),
+      },
+    });
+  }
+
+  async rebuildPanel() {
+    await mirrorToDepot(this.extensionAPI, this._settings);
+    if (!this._depotPanelReady) return;
+    await this.lifecycle.settingsPanel(this.extensionAPI, this.depotPanelConfig());
+  }
+
+  async setFromDepot(id, raw) {
+    if (id === "cs-import-code") {
+      await this.extensionAPI.settings.set("cs-import-code", raw);
+      return;
+    }
+    if (!(id in MIRROR)) return;
+
+    const blobKey = MIRROR[id];
+
+    if (id === "cs-preset") {
+      if (raw === "Custom") {
+        this._set({ activePreset: "" });
+      } else {
+        const snap = BUILTIN_PRESETS[raw] ?? this._settings.presets?.[raw];
+        if (snap) {
+          this._set({ ...pickLook(snap), activePreset: raw });
+          await this.rebuildPanel();
+        }
+      }
+      return;
+    }
+
+    const patch = id === "cs-width" ? { [blobKey]: Number(raw) } : { [blobKey]: raw };
+    this._set(patch);
+    await mirrorToDepot(this.extensionAPI, this._settings, [id]);
+  }
+
+  matchSvy() {
+    const getStyle = typeof document !== "undefined"
+      ? (el) => getComputedStyle(el)
+      : null;
+    const result = readSvyBeamColors(getStyle, document?.documentElement);
+    if (result) {
+      this._set(result);
+      void this.rebuildPanel();
+      this.toast("Matched Svy Theme colors");
+    } else {
+      this.toast("Svy Theme not loaded");
+    }
+  }
+
+  copyShareCode() {
+    const code = presetToCode(this._settings.activePreset || "Current", pickLook(this._settings));
+    copyToClipboard(code);
+    this.toast("Share code copied.");
+  }
+
+  async importShareCode() {
+    const code = this.extensionAPI.settings.get("cs-import-code");
+    const decoded = codeToPreset(code);
+    if (!decoded) {
+      this.toast("Could not import that code");
+      return;
+    }
+    const { name, snap } = decoded;
+    const presets = { ...(this._settings.presets || {}), [name]: snap };
+    this._set({ ...snap, activePreset: name, presets });
+    await this.extensionAPI.settings.set("cs-import-code", "");
+    await this.rebuildPanel();
+    this.toast(`Imported "${name}".`);
+  }
+
   _set(patch) {
     this._settings = normalizeSettings({ ...this._settings, ...patch });
+    const depotIds = this._depotIdsForPatch(patch);
     void persistOptions(this.extensionAPI, this._settings);
     this.applySettings();
+    if (depotIds.length) void mirrorToDepot(this.extensionAPI, this._settings, depotIds);
+    if (this._depotPanelReady) void this.rebuildPanel();
   }
 
   _setLive(patch) {
@@ -285,7 +411,7 @@ class CursorSmithRuntime {
   }
 
   toast(message) {
-    console.info("[cursor-smith]", message);
+    console.info("[roam-caret]", message);
     if (this._toastEl) this._toastEl.textContent = message;
   }
 
@@ -294,8 +420,8 @@ class CursorSmithRuntime {
     if (typeof document === "undefined" || !document.createElement) return;
     if (!this._panelStyle) {
       const style = document.createElement("style");
-      style.setAttribute("data-cursor-smith", "panel");
-      style.textContent = PANEL_CSS + "\n" + PANEL_LOCAL_CSS;
+      style.setAttribute("data-cursor-smith", "studio");
+      style.textContent = STUDIO_CSS;
       this._panelStyle = style;
     }
     try {
@@ -317,21 +443,14 @@ class CursorSmithRuntime {
     if (typeof document === "undefined" || !document.body || !document.createElement) return;
     this._injectPanelStyle();
     const overlay = document.createElement("div");
-    overlay.className = "cs-panel-overlay";
+    overlay.className = "cs-studio-overlay";
     overlay.setAttribute("role", "dialog");
-    overlay.setAttribute("aria-label", "Cursor Smith settings");
+    overlay.setAttribute("aria-label", "Roam Caret studio");
     overlay.addEventListener("click", (ev) => {
       if (ev.target === overlay) this.closeSettings();
     });
     const panelRoot = document.createElement("div");
-    panelRoot.className = `cs-panel ${ROOT_CLASS}-panel`;
-    try {
-      const bodyBg = getComputedStyle(document.body).backgroundColor;
-      if (bodyBg && bodyBg !== "transparent" && !/,\s*0\)$/.test(bodyBg)) {
-        panelRoot.style.setProperty("--cs-panel-bg", bodyBg);
-      }
-    } catch {
-    }
+    panelRoot.className = "cs-studio";
     const toastEl = document.createElement("div");
     toastEl.className = "cs-toast";
     overlay.append(panelRoot, toastEl);
@@ -364,7 +483,7 @@ class CursorSmithRuntime {
     if (!this._panelEl) return;
     const plugin = this;
     try {
-      renderPanel(this._panelEl, {
+      renderStudio(this._panelEl, {
         version: VERSION,
         conf: {
           repository: "https://github.com/Svyk/roam-cursor-smith",
@@ -390,7 +509,7 @@ class CursorSmithRuntime {
         },
       });
     } catch (err) {
-      console.error("[cursor-smith] settings panel failed:", err);
+      console.error("[roam-caret] settings panel failed:", err);
     }
   }
 
@@ -410,7 +529,7 @@ class CursorSmithRuntime {
     const next = !this._settings.enabled;
     this._set({ enabled: next });
     this.renderPanel();
-    this.toast(next ? "Cursor Smith on." : "Cursor Smith off.");
+    this.toast(next ? "Roam Caret on." : "Roam Caret off.");
   }
 
   cyclePreset() {
@@ -427,7 +546,8 @@ class CursorSmithRuntime {
     this.toast(`Preset: ${next}`);
   }
 
-  diagnoseCaret() {
+  diagnoseCaret(ms = 5000) {
+    this._measureCount = 0;
     const describe = (el2) => {
       if (!el2 || typeof el2.getBoundingClientRect !== "function") return null;
       const r = el2.getBoundingClientRect();
@@ -462,8 +582,7 @@ class CursorSmithRuntime {
       log.push({
         reason,
         t: Math.round(performance.now()),
-        carets: [],
-        listviewCarets: [],
+        measureCount: this._measureCount,
         active: active ? describe(active) : null,
         textarea: textarea ? {
           id: textarea.id,
@@ -500,7 +619,7 @@ class CursorSmithRuntime {
       if (log.length < 60) sample("keydown");
     };
     window.addEventListener("keydown", onKey, true);
-    this.toast("Diagnosing for 5s — click into a block and type.");
+    this.toast(`Diagnosing for ${ms / 1000}s — click into a block and type.`);
     this.lifecycle.timeout(() => {
       try {
         mo?.disconnect();
@@ -509,10 +628,10 @@ class CursorSmithRuntime {
       window.removeEventListener("keydown", onKey, true);
       sample("end");
       const text = JSON.stringify(log, null, 2);
-      console.log("[cursor-smith] caret diagnostic\n" + text);
+      console.log("[roam-caret] caret diagnostic\n" + text);
       copyToClipboard(text);
       this.toast(`Caret diagnostic: ${log.length} samples, copied to clipboard.`);
-    }, 5000);
+    }, ms);
   }
 }
 
@@ -526,32 +645,43 @@ export async function onload({ extensionAPI, extension }) {
   try {
     globalThis[VERSION_FLAG] = VERSION;
     runtime = new CursorSmithRuntime({ extensionAPI, lifecycle, mobile });
+    await mirrorToDepot(extensionAPI, runtime._settings);
+    await lifecycle.settingsPanel(extensionAPI, runtime.depotPanelConfig());
+    runtime._depotPanelReady = true;
+
     const palette = extensionAPI.ui.commandPalette;
     await lifecycle.command(palette, {
-      label: "Cursor Smith: Settings",
+      label: "Roam Caret: Open settings",
+      callback: async () => {
+        const ok = await openRoamCaretSettings();
+        if (!ok) runtime.toast("Open Roam Depot, then choose Roam Caret under Extension Settings.");
+      },
+    });
+    await lifecycle.command(palette, {
+      label: "Roam Caret: Studio",
       callback: () => runtime.openSettings(),
     });
     await lifecycle.command(palette, {
-      label: "Cursor Smith: Toggle on/off",
+      label: "Roam Caret: Toggle on/off",
       callback: () => runtime.toggleEnabled(),
     });
     await lifecycle.command(palette, {
-      label: "Cursor Smith: Random look",
+      label: "Roam Caret: Random look",
       callback: () => runtime.randomize(),
     });
     await lifecycle.command(palette, {
-      label: "Cursor Smith: Cycle preset",
+      label: "Roam Caret: Cycle preset",
       callback: () => runtime.cyclePreset(),
     });
     await lifecycle.command(palette, {
-      label: "Cursor Smith: Diagnose caret (5s)",
+      label: "Roam Caret: Diagnose caret (5s)",
       callback: () => runtime.diagnoseCaret(),
     });
     if (typeof document !== "undefined") {
       lifecycle.event(document, "keydown", (ev) => runtime.onEscape(ev), true);
     }
     if (!mobile) runtime.applySettings();
-    console.info(`[cursor-smith] Loaded v${extension?.version || VERSION}`);
+    console.info(`[roam-caret] Loaded v${extension?.version || VERSION}`);
   } catch (error) {
     if (activeLifecycle === lifecycle) activeLifecycle = null;
     runtime = null;
@@ -579,7 +709,7 @@ export async function onunload() {
     document.body?.classList?.remove(BODY_ACTIVE_CLASS, BODY_HIDE_NATIVE_CLASS);
   } catch {
   }
-  console.info("[cursor-smith] Unloaded");
+  console.info("[roam-caret] Unloaded");
 }
 
 export function getRuntime() {
