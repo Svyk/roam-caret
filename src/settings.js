@@ -1,10 +1,14 @@
 import {
   DEFAULTS,
   BUILTIN_PRESETS,
-  hexToRgba,
 } from "./cursor-smith.js";
 
-export { hexToRgba };
+export function hexToRgba(hex, alpha) {
+  let h = (hex || "#39ff14").replace("#", "");
+  if (h.length === 3) h = h.split("").map((c) => c + c).join("");
+  const int = Number.parseInt(h, 16) || 0;
+  return `rgba(${int >> 16 & 255}, ${int >> 8 & 255}, ${int & 255}, ${alpha})`;
+}
 
 export const OPTIONS_KEY = "options";
 

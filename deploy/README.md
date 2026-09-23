@@ -8,7 +8,7 @@ Saved options use a JSON blob (`options`) as source of truth; selected fields mi
 
 Standing path is GitHub Pages. In Roam: **Settings → Roam Depot → Developer mode → Developer Extensions → URL**. Enter:
 
-`https://svyk.github.io/roam-cursor-smith`
+`https://svyk.github.io/roam-caret`
 
 Include `https://`. Do not append `/extension.js`. Confirm `/README.md` and `/extension.js` both resolve publicly.
 

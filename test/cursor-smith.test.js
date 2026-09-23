@@ -10,17 +10,19 @@ import {
   LOOK_KEYS,
   SCHEMA_VERSION,
   STRUCTURAL,
-  caretCoords,
   codeToPreset,
-  draw,
-  drawBeamCaret,
   needsCanvas,
-  nextSchedule,
   normalizePresetSnapshot,
   normalizeSettings,
   pickLook,
   presetToCode,
 } from "../src/cursor-smith.js";
+import {
+  caretCoords,
+  draw,
+  drawBeamCaret,
+  nextSchedule,
+} from "../src/cursor-engine.js";
 
 function makeRecordingCtx() {
   const ops = [];
@@ -369,8 +371,8 @@ test("draw routes Beam to roundRect and not Box fillRect path", () => {
   assert.equal(names.filter((name) => name === "fillRect").length, 0);
 });
 
-test("cursor-smith.js reads the measurer and parks idle (no 100ms heartbeat)", async () => {
-  const src = await readFile(new URL("../src/cursor-smith.js", import.meta.url), "utf8");
+test("cursor-engine.js reads the measurer and parks idle (no 100ms heartbeat)", async () => {
+  const src = await readFile(new URL("../src/cursor-engine.js", import.meta.url), "utf8");
   assert.doesNotMatch(src, /formFieldCaretCoords/);
   assert.doesNotMatch(src, /genericCaretCoords/);
   assert.doesNotMatch(src, /100ms heartbeat/);

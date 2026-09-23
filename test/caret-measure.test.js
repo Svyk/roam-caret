@@ -222,3 +222,43 @@ test("createCaretMeasurer reuses marker and glyph nodes after the first measure"
 
   measurer.dispose();
 });
+
+test("createCaretMeasurer invalidates style cache when documentElement class changes", () => {
+  const { doc } = createFakeDoc();
+  const documentElement = { className: "" };
+  doc.documentElement = documentElement;
+  let styleCalls = 0;
+  let observerCallback = null;
+  const OriginalObserver = globalThis.MutationObserver;
+  globalThis.MutationObserver = class {
+    constructor(callback) {
+      observerCallback = callback;
+    }
+    observe() {}
+    disconnect() {}
+  };
+  const win = {
+    getComputedStyle() {
+      styleCalls += 1;
+      return fakeComputed();
+    },
+    addEventListener() {},
+    removeEventListener() {},
+    matchMedia: () => ({ matches: false, addEventListener() {}, removeEventListener() {} }),
+    visualViewport: { addEventListener() {}, removeEventListener() {} },
+  };
+  try {
+    const measurer = createCaretMeasurer({ doc, win });
+    const el = fakeTextEl(doc);
+    measurer.measure(el);
+    assert.equal(styleCalls, 1);
+
+    observerCallback?.([{ type: "attributes", attributeName: "class" }]);
+    measurer.measure(el);
+    assert.equal(styleCalls, 2);
+
+    measurer.dispose();
+  } finally {
+    globalThis.MutationObserver = OriginalObserver;
+  }
+});

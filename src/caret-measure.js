@@ -133,6 +133,7 @@ export function createCaretMeasurer({ doc, win, lifecycle } = {}) {
   style.height = "auto";
   style.whiteSpace = "pre-wrap";
   style.overflowWrap = "break-word";
+  style.contain = "layout style";
   mirror.setAttribute("aria-hidden", "true");
 
   const prefixNode = documentRef.createElement("span");
@@ -155,8 +156,38 @@ export function createCaretMeasurer({ doc, win, lifecycle } = {}) {
     metrics = null;
   };
 
+  const themeListeners = [];
+  const bindThemeListener = (target, type, fn, options) => {
+    target?.addEventListener?.(type, fn, options);
+    themeListeners.push({ target, type, fn, options });
+  };
+
   if (windowRef?.addEventListener) {
-    windowRef.addEventListener("resize", invalidate);
+    bindThemeListener(windowRef, "resize", invalidate);
+  }
+
+  const colorSchemeMq = windowRef?.matchMedia?.("(prefers-color-scheme: dark)");
+  bindThemeListener(colorSchemeMq, "change", invalidate);
+
+  const visualViewport = windowRef.visualViewport;
+  bindThemeListener(visualViewport, "resize", invalidate);
+
+  let themeObserver = null;
+  if (typeof MutationObserver === "function") {
+    themeObserver = new MutationObserver((mutations) => {
+      for (const mutation of mutations) {
+        if (mutation.type === "attributes" && mutation.attributeName === "class") {
+          invalidate();
+          return;
+        }
+      }
+    });
+    const observeClass = (node) => {
+      if (!node) return;
+      themeObserver.observe(node, { attributes: true, attributeFilter: ["class"] });
+    };
+    observeClass(documentRef.documentElement);
+    observeClass(documentRef.body);
   }
 
   const notify = (rect) => {
@@ -233,9 +264,18 @@ export function createCaretMeasurer({ doc, win, lifecycle } = {}) {
       cachedEl = null;
       metrics = null;
       latestRect = null;
-      if (windowRef?.removeEventListener) {
-        windowRef.removeEventListener("resize", invalidate);
+      for (const { target, type, fn, options } of themeListeners) {
+        try {
+          target?.removeEventListener?.(type, fn, options);
+        } catch {
+        }
       }
+      themeListeners.length = 0;
+      try {
+        themeObserver?.disconnect();
+      } catch {
+      }
+      themeObserver = null;
       mirror.remove();
     },
   };

@@ -7,7 +7,7 @@ import { pathToFileURL, fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 import test from "node:test";
 
-import { bundleEntry, verifyGeneratedArtifacts } from "../build.mjs";
+import { bundleEntry, externalCursorEngine, verifyGeneratedArtifacts } from "../build.mjs";
 
 const run = promisify(execFile);
 const root = new URL("../", import.meta.url);
@@ -41,13 +41,26 @@ test("build emits deterministic, matching browser ESM artifacts with a default e
   const rebuilt = await bundleEntry({
     rootDirectory: rootPath,
     banner: `/* Roam Caret v${packageMetadata.version} | MIT | generated; edit src/ */`,
+    plugins: [externalCursorEngine],
   });
   assert.equal(rebuilt, rootJs);
 
   await run(process.execPath, ["--check", resolve(rootPath, "extension.js")]);
+  await run(process.execPath, ["--check", resolve(rootPath, "engine.js")]);
   const loaded = await import(`${pathToFileURL(resolve(rootPath, "extension.js")).href}?test=${Date.now()}`);
   assert.equal(typeof loaded.default.onload, "function");
   assert.equal(typeof loaded.default.onunload, "function");
+
+  assert.doesNotMatch(rootJs, /drawBeamCaret/);
+  assert.doesNotMatch(rootJs, /class CursorEngine/);
+
+  const [rootEngine, pagesEngine] = await Promise.all([
+    readFile(new URL("../engine.js", import.meta.url), "utf8"),
+    readFile(new URL("../deploy/engine.js", import.meta.url), "utf8"),
+  ]);
+  assert.equal(pagesEngine, rootEngine);
+  assert.match(rootEngine, /drawBeamCaret/);
+  assert.match(rootEngine, /CursorEngine/);
 
   const { size } = await stat(new URL("../extension.js", import.meta.url));
   assert.ok(size < 200_000, `extension.js is ${size} bytes (expected < 200000)`);
@@ -115,7 +128,7 @@ test("build.sh performs a clean locked install and builds from another working d
       cwd: elsewhere,
       timeout: 60_000,
     });
-    assert.match(stdout, /Built extension\.js/);
+    assert.match(stdout, /Built extension\.js, engine\.js/);
     await access(resolve(checkout, "node_modules/esbuild/package.json"));
     await verifyGeneratedArtifacts(checkout);
   } finally {

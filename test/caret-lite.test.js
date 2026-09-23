@@ -243,6 +243,24 @@ test("Beam geometry centers a pill on the caret x", () => {
   assert.equal(lite.overlay.style.borderRadius, "3px");
 });
 
+test("different element with same signature still measures", () => {
+  const { listeners, textarea, measurer, doc } = installHarness();
+  let measureCalls = 0;
+  const baseMeasure = measurer.measure.bind(measurer);
+  measurer.measure = (el) => {
+    measureCalls += 1;
+    return baseMeasure(el);
+  };
+
+  listeners.get("input")({ target: textarea });
+  assert.equal(measureCalls, 1);
+
+  const other = makeTextarea({ value: "hello", selectionStart: 0, selectionEnd: 0 });
+  doc.activeElement = other;
+  listeners.get("keyup")({ target: other });
+  assert.equal(measureCalls, 2);
+});
+
 test("onRefreshEvent skips measure when signature is unchanged after input", () => {
   const { listeners, textarea, measurer } = installHarness();
   let measureCalls = 0;

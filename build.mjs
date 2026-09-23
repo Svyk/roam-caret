@@ -15,17 +15,29 @@ const rejectRemoteImports = {
   },
 };
 
+export const externalCursorEngine = {
+  name: "external-cursor-engine",
+  setup(build) {
+    build.onResolve({ filter: /[/\\]cursor-engine\.js$/ }, () => ({
+      path: "./engine.js",
+      external: true,
+    }));
+  },
+};
+
 export async function bundleEntry({
   rootDirectory = defaultRoot,
   entryPoint = "src/extension.js",
   banner = "",
+  plugins = [],
 } = {}) {
+  const outfile = entryPoint.endsWith("cursor-engine.js") ? "engine.js" : "extension.js";
   const result = await esbuild({
     absWorkingDir: resolve(rootDirectory),
     entryPoints: [entryPoint],
     bundle: true,
     write: false,
-    outfile: "extension.js",
+    outfile,
     format: "esm",
     platform: "browser",
     target: ["es2020"],
@@ -35,49 +47,55 @@ export async function bundleEntry({
     sourcemap: false,
     treeShaking: true,
     logLevel: "silent",
-    plugins: [rejectRemoteImports],
+    plugins: [rejectRemoteImports, ...plugins],
     banner: banner ? { js: banner } : undefined,
   });
-  const output = result.outputFiles.find((file) => file.path.endsWith("extension.js"));
-  if (!output) throw new Error("esbuild did not emit extension.js");
+  const output = result.outputFiles.find((file) => file.path.endsWith(outfile));
+  if (!output) throw new Error(`esbuild did not emit ${outfile}`);
   return output.text;
 }
 
 export async function renderArtifacts(rootDirectory = defaultRoot) {
   const packageMetadata = JSON.parse(await readFile(resolve(rootDirectory, "package.json"), "utf8"));
   const banner = `/* Roam Caret v${packageMetadata.version} | MIT | generated; edit src/ */`;
-  return {
-    javascript: await bundleEntry({ rootDirectory, banner }),
-    css: await readFile(resolve(rootDirectory, "src/extension.css"), "utf8"),
-  };
+  const [javascript, engineJavascript, css] = await Promise.all([
+    bundleEntry({ rootDirectory, banner, plugins: [externalCursorEngine] }),
+    bundleEntry({ rootDirectory, entryPoint: "src/cursor-engine.js", banner }),
+    readFile(resolve(rootDirectory, "src/extension.css"), "utf8"),
+  ]);
+  return { javascript, engineJavascript, css };
 }
 
 export async function build(rootDirectory = defaultRoot) {
-  const { javascript, css } = await renderArtifacts(rootDirectory);
+  const { javascript, engineJavascript, css } = await renderArtifacts(rootDirectory);
   const deployDir = resolve(rootDirectory, "deploy");
   await Promise.all([
     writeFile(resolve(rootDirectory, "extension.js"), javascript, "utf8"),
+    writeFile(resolve(rootDirectory, "engine.js"), engineJavascript, "utf8"),
     writeFile(resolve(rootDirectory, "extension.css"), css, "utf8"),
   ]);
   await rm(deployDir, { recursive: true, force: true });
   await mkdir(deployDir, { recursive: true });
   await Promise.all([
     writeFile(resolve(deployDir, "extension.js"), javascript, "utf8"),
+    writeFile(resolve(deployDir, "engine.js"), engineJavascript, "utf8"),
     writeFile(resolve(deployDir, "extension.css"), css, "utf8"),
     ...["README.md", "CHANGELOG.md", "LICENSE"].map((name) => (
       copyFile(resolve(rootDirectory, name), resolve(deployDir, name))
     )),
     writeFile(resolve(deployDir, ".nojekyll"), "", "utf8"),
   ]);
-  process.stdout.write(`Built extension.js, extension.css, and ${deployDir}\n`);
+  process.stdout.write(`Built extension.js, engine.js, extension.css, and ${deployDir}\n`);
 }
 
 export async function verifyGeneratedArtifacts(rootDirectory = defaultRoot) {
   const expected = await renderArtifacts(rootDirectory);
   const comparisons = [
     ["extension.js", expected.javascript],
+    ["engine.js", expected.engineJavascript],
     ["extension.css", expected.css],
     ["deploy/extension.js", expected.javascript],
+    ["deploy/engine.js", expected.engineJavascript],
     ["deploy/extension.css", expected.css],
     ["deploy/README.md", await readFile(resolve(rootDirectory, "README.md"), "utf8")],
     ["deploy/CHANGELOG.md", await readFile(resolve(rootDirectory, "CHANGELOG.md"), "utf8")],

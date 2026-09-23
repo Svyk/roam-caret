@@ -13,7 +13,6 @@ import {
   BODY_ACTIVE_CLASS,
   BODY_HIDE_NATIVE_CLASS,
   BUILTIN_PRESETS,
-  CursorEngine,
   DEFAULTS,
   codeToPreset,
   needsCanvas,
@@ -25,12 +24,31 @@ import {
 } from "./cursor-smith.js";
 import { renderStudio, STUDIO_CSS } from "./studio.js";
 
-export const VERSION = "0.3.3";
+export const VERSION = "0.4.0";
 const CANVAS_Z_INDEX = 40; // PROVISIONAL
 const VERSION_FLAG = "__ROAM_CURSOR_SMITH_VERSION";
 
 let activeLifecycle = null;
 let runtime = null;
+let engineModule = null;
+let engineLoadPromise = null;
+
+async function loadCursorEngine() {
+  if (engineModule) return engineModule;
+  if (!engineLoadPromise) {
+    engineLoadPromise = import("./cursor-engine.js")
+      .then((mod) => {
+        engineModule = mod;
+        return mod;
+      })
+      .catch((err) => {
+        console.error("[roam-caret] failed to load canvas engine:", err);
+        engineLoadPromise = null;
+        return null;
+      });
+  }
+  return engineLoadPromise;
+}
 
 function isMobileHost(extensionAPI) {
   try {
@@ -249,12 +267,14 @@ class CursorSmithRuntime {
     this.applyBodyClasses();
   }
 
-  startEngine() {
-    if (this.mobile || !this._settings.enabled || this._engine || !canStartEngine()) return;
+  async startEngine() {
+    if (this.mobile || !this._settings.enabled || this._engine || !canStartEngine()) return true;
     this.ensureMeasurer();
     this.ensurePump();
     try {
-      this._engine = new CursorEngine({
+      const mod = await loadCursorEngine();
+      if (!mod?.CursorEngine) return false;
+      this._engine = new mod.CursorEngine({
         settings: this._settings,
         doc: document,
         zIndex: CANVAS_Z_INDEX,
@@ -263,9 +283,11 @@ class CursorSmithRuntime {
       });
       this._engine.start();
       this.applyBodyClasses();
+      return true;
     } catch (err) {
       console.error("[roam-caret] engine failed to start:", err);
       this.stopEngine();
+      return false;
     }
   }
 
@@ -310,8 +332,17 @@ class CursorSmithRuntime {
     this._mode = nextMode;
     if (nextMode === "canvas") {
       this.stopLite();
-      if (!this._engine) this.startEngine();
-      else this._engine.setSettings(this._settings);
+      if (!this._engine) {
+        void this.startEngine().then((ok) => {
+          if (!ok && needsCanvas(this._settings)) {
+            this._mode = "lite";
+            this.startLite();
+          }
+          this.applyBodyClasses();
+        });
+      } else {
+        this._engine.setSettings(this._settings);
+      }
     } else {
       this.stopEngine();
       if (!this._lite) this.startLite();
@@ -487,7 +518,7 @@ class CursorSmithRuntime {
       renderStudio(this._panelEl, {
         version: VERSION,
         conf: {
-          repository: "https://github.com/Svyk/roam-cursor-smith",
+          repository: "https://github.com/Svyk/roam-caret",
         },
         settings: this._settings,
         disabled: !this._settings.enabled,

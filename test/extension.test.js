@@ -315,6 +315,7 @@ test("default settings start lite and smear switches to canvas", async () => {
 
   runtime._set({ smear: true });
   assert.equal(runtime._mode, "canvas");
+  await new Promise((resolve) => setImmediate(resolve));
   assert.equal(runtime._lite, null);
   assert.ok(runtime._engine);
 
@@ -338,6 +339,7 @@ test("pump installs only on canvas and document input listeners stay singular", 
 
   runtime._set({ smear: true });
   assert.equal(runtime._mode, "canvas");
+  await new Promise((resolve) => setImmediate(resolve));
   assert.equal(docInputListenerCount(), 1);
   assert.equal(runtime._pumpInstalled, true);
 

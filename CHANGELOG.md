@@ -4,6 +4,12 @@ All notable changes to this project follow [Keep a Changelog](https://keepachang
 
 ## [Unreleased]
 
+## [0.4.0] - 2026-09-22
+
+### Changed
+- Speed tune: canvas engine split into lazy-loaded `engine.js`; lite caret dedupes by element identity; mirror style cache drops on theme or zoom change.
+- Install URL is `https://svyk.github.io/roam-caret` (repository rename to `roam-caret`). The old `roam-cursor-smith` Pages URL stops working after the GitHub repo rename.
+
 ## [0.3.3] - 2026-09-19
 
 ### Fixed

@@ -29,6 +29,7 @@ export function installLiteCaret({ doc, win, measurer, lifecycle, getSettings } 
   let settings = typeof getSettings === "function" ? getSettings() || {} : {};
   let active = null;
   let disposed = false;
+  let lastEl = null;
   let lastSig = "";
   let scrollRaf = 0;
 
@@ -58,7 +59,12 @@ export function installLiteCaret({ doc, win, measurer, lifecycle, getSettings } 
 
   const computeSig = (el) => {
     if (!el) return "";
-    return [el, el.value?.length, el.selectionStart, el.selectionEnd, el.scrollLeft, el.scrollTop].join("\0");
+    return [el.value?.length, el.selectionStart, el.selectionEnd, el.scrollLeft, el.scrollTop].join("\0");
+  };
+
+  const rememberTarget = (el) => {
+    lastEl = el;
+    lastSig = computeSig(el);
   };
 
   const readSettings = () => {
@@ -204,13 +210,15 @@ export function installLiteCaret({ doc, win, measurer, lifecycle, getSettings } 
     if (!target || isPasswordField(target) || !isTextTarget(target)) return;
     active = target;
     measureAndApply(target, { ping: true });
-    lastSig = computeSig(target);
+    rememberTarget(target);
   };
 
   const onFocusOut = (event) => {
     const next = event?.relatedTarget || documentRef.activeElement;
     if (next && isTextTarget(next) && !isPasswordField(next)) return;
     active = null;
+    lastEl = null;
+    lastSig = "";
     hide();
   };
 
@@ -220,7 +228,7 @@ export function installLiteCaret({ doc, win, measurer, lifecycle, getSettings } 
     if (composing) return; // never measure mid-composition
     const target = event?.target || documentRef.activeElement;
     measureAndApply(target, { ping: true });
-    lastSig = computeSig(target);
+    rememberTarget(target);
   };
 
   const onCompositionStart = (event) => {
@@ -235,22 +243,22 @@ export function installLiteCaret({ doc, win, measurer, lifecycle, getSettings } 
     composing = false;
     const target = event?.target || documentRef.activeElement;
     measureAndApply(target, { ping: true });
-    lastSig = computeSig(target);
+    rememberTarget(target);
   };
 
   const onRefreshEvent = () => {
     if (composing) return;
     const target = documentRef.activeElement;
     const sig = computeSig(target);
-    if (sig === lastSig) return;
-    lastSig = sig;
+    if (target === lastEl && sig === lastSig) return;
+    rememberTarget(target);
     measureAndApply(target);
   };
 
   const remeasureScroll = () => {
     const target = documentRef.activeElement;
     measureAndApply(target);
-    lastSig = computeSig(target);
+    rememberTarget(target);
   };
 
   const SCROLL_OPTS = { capture: true, passive: true };
