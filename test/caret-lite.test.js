@@ -92,6 +92,14 @@ function createFakeDoc() {
     documentElement,
     activeElement: null,
     createElement,
+    querySelector(sel) {
+      if (sel === ".rm-command-palette" && this._commandPalette) return this._commandPalette;
+      if (sel === ".bp3-overlay-open" && this._overlayOpen) return this._overlayOpen;
+      if (sel === ".rm-command-palette, .bp3-overlay-open") {
+        return this._commandPalette || this._overlayOpen || null;
+      }
+      return null;
+    },
   };
   const win = {
     matchMedia() {
@@ -108,12 +116,16 @@ function createFakeDoc() {
 }
 
 function makeTextarea(extras = {}) {
+  const box = { left: 0, top: 0, right: 600, bottom: 200, width: 600, height: 200 };
   return {
     tagName: "TEXTAREA",
+    id: "block-input-test",
+    className: "rm-block-input",
     value: "hello",
     selectionStart: 0,
     selectionEnd: 0,
     closest: () => null,
+    getBoundingClientRect: () => box,
     ...extras,
   };
 }
@@ -437,6 +449,54 @@ test("isDark caches prefers-color-scheme matchMedia at install time", () => {
   listeners.get("input")({ target: textarea });
   listeners.get("keyup")({ target: textarea });
   assert.equal(darkMqCalls, 1);
+});
+
+test("focus on a non-block input hides overlay and does not measure", () => {
+  const { lite, listeners, measurer } = installHarness();
+  let measureCalls = 0;
+  const baseMeasure = measurer.measure.bind(measurer);
+  measurer.measure = (el) => {
+    measureCalls += 1;
+    return baseMeasure(el);
+  };
+
+  const input = {
+    tagName: "INPUT",
+    type: "search",
+    getAttribute: () => "search",
+    closest: () => null,
+  };
+  listeners.get("focusin")({ target: input });
+  assert.equal(lite.overlay.style.display, "none");
+  assert.equal(measureCalls, 0);
+});
+
+test("command palette open hides overlay and skips measure", () => {
+  const { lite, doc, listeners, textarea, measurer } = installHarness();
+  listeners.get("focusin")({ target: textarea });
+  assert.notEqual(lite.overlay.style.display, "none");
+
+  let measureCalls = 0;
+  const baseMeasure = measurer.measure.bind(measurer);
+  measurer.measure = (el) => {
+    measureCalls += 1;
+    return baseMeasure(el);
+  };
+
+  doc._commandPalette = { className: "rm-command-palette" };
+  listeners.get("input")({ target: textarea });
+  assert.equal(lite.overlay.style.display, "none");
+  assert.equal(measureCalls, 0);
+
+  delete doc._commandPalette;
+  listeners.get("focusin")({ target: textarea });
+  assert.notEqual(lite.overlay.style.display, "none");
+});
+
+test("caret point outside textarea box hides overlay", () => {
+  const { lite, listeners, textarea } = installHarness({ x: 500, y: 500 });
+  listeners.get("focusin")({ target: textarea });
+  assert.equal(lite.overlay.style.display, "none");
 });
 
 test("glow uses two rgba layers from hexToRgba", () => {

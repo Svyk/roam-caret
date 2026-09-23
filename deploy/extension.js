@@ -1,4 +1,4 @@
-/* Roam Caret v0.4.0 | MIT | generated; edit src/ */
+/* Roam Caret v0.4.1 | MIT | generated; edit src/ */
 
 // src/lifecycle.js
 function isPromiseLike(value) {
@@ -1309,6 +1309,33 @@ function isPasswordField(el) {
   const type = String(el.type || el.getAttribute?.("type") || "").toLowerCase();
   return type === "password";
 }
+var MODAL_OVERLAY_SELECTORS = ".rm-command-palette, .bp3-overlay-open";
+var CARET_BOX_MARGIN_PX = 8;
+function isBlockTextarea(el) {
+  if (!el || el.tagName !== "TEXTAREA") return false;
+  if (isPasswordField(el)) return false;
+  if (el.id === "find-or-create-input") return false;
+  if (isSkippedHost(el)) return false;
+  const id = String(el.id || "");
+  const className = String(el.className || "");
+  const isRoamBlock = id.startsWith("block-input-") || className.includes("rm-block-input") || className.includes("rm-block__input");
+  if (!isRoamBlock) return false;
+  if (typeof el.getBoundingClientRect === "function") {
+    const box = el.getBoundingClientRect();
+    if (box.width <= 0 || box.height <= 0) return false;
+  }
+  return true;
+}
+function hasModalOverlay(doc) {
+  return !!doc?.querySelector?.(MODAL_OVERLAY_SELECTORS);
+}
+function caretOutsideTextarea(el, rect) {
+  if (!rect || typeof el?.getBoundingClientRect !== "function") return false;
+  const box = el.getBoundingClientRect();
+  const x = rect.x;
+  const y = rect.y;
+  return x < box.left - CARET_BOX_MARGIN_PX || x > box.right + CARET_BOX_MARGIN_PX || y < box.top - CARET_BOX_MARGIN_PX || y > box.bottom + CARET_BOX_MARGIN_PX;
+}
 function isDark(doc, prefersDarkMq) {
   const root = doc?.documentElement;
   const body = doc?.body;
@@ -1402,7 +1429,7 @@ function installLiteCaret({ doc, win, measurer, lifecycle, getSettings } = {}) {
     overlay.classList.add("cs-lite-blink");
   };
   const applyTransform = (rect, el) => {
-    if (!el || isPasswordField(el) || !isTextTarget(el) || isSkippedHost(el) || hasRangeSelection(el) || !rect || !rect.visible) {
+    if (!el || !isBlockTextarea(el) || hasModalOverlay(documentRef) || hasRangeSelection(el) || !rect || !rect.visible || caretOutsideTextarea(el, rect)) {
       hide();
       return;
     }
@@ -1464,7 +1491,7 @@ function installLiteCaret({ doc, win, measurer, lifecycle, getSettings } = {}) {
     if (disposed) return;
     readSettings();
     const target = el || documentRef.activeElement;
-    if (!target || isPasswordField(target) || !isTextTarget(target)) {
+    if (!target || !isBlockTextarea(target) || hasModalOverlay(documentRef)) {
       hide();
       return;
     }
@@ -1475,14 +1502,20 @@ function installLiteCaret({ doc, win, measurer, lifecycle, getSettings } = {}) {
   };
   const onFocusIn = (event) => {
     const target = event?.target;
-    if (!target || isPasswordField(target) || !isTextTarget(target)) return;
+    if (!target || !isBlockTextarea(target)) {
+      active = null;
+      lastEl = null;
+      lastSig = "";
+      hide();
+      return;
+    }
     active = target;
     measureAndApply(target, { ping: true });
     rememberTarget(target);
   };
   const onFocusOut = (event) => {
     const next = event?.relatedTarget || documentRef.activeElement;
-    if (next && isTextTarget(next) && !isPasswordField(next)) return;
+    if (next && isBlockTextarea(next)) return;
     active = null;
     lastEl = null;
     lastSig = "";
@@ -1497,7 +1530,7 @@ function installLiteCaret({ doc, win, measurer, lifecycle, getSettings } = {}) {
   };
   const onCompositionStart = (event) => {
     const target = event?.target || documentRef.activeElement;
-    if (!target || !isTextTarget(target) && target !== active) return;
+    if (!target || !isBlockTextarea(target) && target !== active) return;
     composing = true;
     hide();
   };
@@ -1526,7 +1559,7 @@ function installLiteCaret({ doc, win, measurer, lifecycle, getSettings } = {}) {
   const onScrollOrResize = (event) => {
     if (disposed) return;
     const target = documentRef.activeElement || active;
-    if (!target || isPasswordField(target) || !isTextTarget(target)) return;
+    if (!target || !isBlockTextarea(target) || hasModalOverlay(documentRef)) return;
     const source = event?.target;
     if (source && typeof source === "object" && typeof source.nodeType === "number" && source !== documentRef) {
       const contains = typeof source.contains === "function" ? source.contains(target) : source === target;
@@ -1558,7 +1591,7 @@ function installLiteCaret({ doc, win, measurer, lifecycle, getSettings } = {}) {
     if (disposed) return;
     readSettings();
     const target = documentRef.activeElement;
-    if (target && isTextTarget(target) && !isPasswordField(target)) {
+    if (target && isBlockTextarea(target) && !hasModalOverlay(documentRef)) {
       active = target;
       const rect = measurer.measure(target);
       applyTransform(rect, target);
@@ -1986,7 +2019,7 @@ function renderStudio(root, ctl) {
 }
 
 // src/extension.js
-var VERSION = "0.4.0";
+var VERSION = "0.4.1";
 var CANVAS_Z_INDEX = 40;
 var VERSION_FLAG = "__ROAM_CURSOR_SMITH_VERSION";
 var activeLifecycle = null;

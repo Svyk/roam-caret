@@ -4,6 +4,11 @@ All notable changes to this project follow [Keep a Changelog](https://keepachang
 
 ## [Unreleased]
 
+## [0.4.1] - 2026-09-22
+
+### Fixed
+- Lite overlay stays off the command palette and Find-or-Create; native caret remains there. No beam on the dimmed page behind modal overlays.
+
 ## [0.4.0] - 2026-09-22
 
 ### Changed
