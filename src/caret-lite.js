@@ -7,30 +7,33 @@ function isPasswordField(el) {
   return type === "password";
 }
 
-const MODAL_OVERLAY_SELECTORS = ".rm-command-palette, .bp3-overlay-open";
+const COMMAND_PALETTE_SELECTOR = ".rm-command-palette";
 const CARET_BOX_MARGIN_PX = 8;
 
-function isBlockTextarea(el) {
+function hasBox(el) {
+  if (typeof el.getBoundingClientRect !== "function") return true;
+  const box = el.getBoundingClientRect();
+  return box.width > 0 && box.height > 0;
+}
+
+function isCaretHost(el) {
   if (!el || el.tagName !== "TEXTAREA") return false;
   if (isPasswordField(el)) return false;
   if (el.id === "find-or-create-input") return false;
   if (isSkippedHost(el)) return false;
   const id = String(el.id || "");
   const className = String(el.className || "");
+  const isPreview = className.split(/\s+/).includes("cs-demo");
   const isRoamBlock =
     id.startsWith("block-input-") ||
     className.includes("rm-block-input") ||
     className.includes("rm-block__input");
-  if (!isRoamBlock) return false;
-  if (typeof el.getBoundingClientRect === "function") {
-    const box = el.getBoundingClientRect();
-    if (box.width <= 0 || box.height <= 0) return false;
-  }
-  return true;
+  if (!isPreview && !isRoamBlock) return false;
+  return hasBox(el);
 }
 
-function hasModalOverlay(doc) {
-  return !!doc?.querySelector?.(MODAL_OVERLAY_SELECTORS);
+function hasCommandPalette(doc) {
+  return !!doc?.querySelector?.(COMMAND_PALETTE_SELECTOR);
 }
 
 function caretOutsideTextarea(el, rect) {
@@ -157,8 +160,8 @@ export function installLiteCaret({ doc, win, measurer, lifecycle, getSettings } 
   const applyTransform = (rect, el) => {
     if (
       !el ||
-      !isBlockTextarea(el) ||
-      hasModalOverlay(documentRef) ||
+      !isCaretHost(el) ||
+      hasCommandPalette(documentRef) ||
       hasRangeSelection(el) ||
       !rect ||
       !rect.visible ||
@@ -234,7 +237,7 @@ export function installLiteCaret({ doc, win, measurer, lifecycle, getSettings } 
     if (disposed) return;
     readSettings();
     const target = el || documentRef.activeElement;
-    if (!target || !isBlockTextarea(target) || hasModalOverlay(documentRef)) {
+    if (!target || !isCaretHost(target) || hasCommandPalette(documentRef)) {
       hide();
       return;
     }
@@ -246,7 +249,7 @@ export function installLiteCaret({ doc, win, measurer, lifecycle, getSettings } 
 
   const onFocusIn = (event) => {
     const target = event?.target;
-    if (!target || !isBlockTextarea(target)) {
+    if (!target || !isCaretHost(target)) {
       active = null;
       lastEl = null;
       lastSig = "";
@@ -260,7 +263,7 @@ export function installLiteCaret({ doc, win, measurer, lifecycle, getSettings } 
 
   const onFocusOut = (event) => {
     const next = event?.relatedTarget || documentRef.activeElement;
-    if (next && isBlockTextarea(next)) return;
+    if (next && isCaretHost(next)) return;
     active = null;
     lastEl = null;
     lastSig = "";
@@ -278,7 +281,7 @@ export function installLiteCaret({ doc, win, measurer, lifecycle, getSettings } 
 
   const onCompositionStart = (event) => {
     const target = event?.target || documentRef.activeElement;
-    if (!target || (!isBlockTextarea(target) && target !== active)) return;
+    if (!target || (!isCaretHost(target) && target !== active)) return;
     composing = true;
     hide();
   };
@@ -312,7 +315,7 @@ export function installLiteCaret({ doc, win, measurer, lifecycle, getSettings } 
   const onScrollOrResize = (event) => {
     if (disposed) return;
     const target = documentRef.activeElement || active;
-    if (!target || !isBlockTextarea(target) || hasModalOverlay(documentRef)) return;
+    if (!target || !isCaretHost(target) || hasCommandPalette(documentRef)) return;
     // Only remeasure when the scrolled surface can move the caret: window,
     // document, visualViewport, or an ancestor of the active textarea.
     // Sidebar / autocomplete / unrelated overflow scrolls are ignored.
@@ -357,7 +360,7 @@ export function installLiteCaret({ doc, win, measurer, lifecycle, getSettings } 
     if (disposed) return;
     readSettings();
     const target = documentRef.activeElement;
-    if (target && isBlockTextarea(target) && !hasModalOverlay(documentRef)) {
+    if (target && isCaretHost(target) && !hasCommandPalette(documentRef)) {
       active = target;
       const rect = measurer.measure(target);
       applyTransform(rect, target);

@@ -4,6 +4,11 @@ All notable changes to this project follow [Keep a Changelog](https://keepachang
 
 ## [Unreleased]
 
+## [0.4.2] - 2026-09-22
+
+### Fixed
+- The settings preview and Studio demo show the caret again. Depot dialogs no longer hide the block caret. The command palette still uses the browser caret.
+
 ## [0.4.1] - 2026-09-22
 
 ### Fixed

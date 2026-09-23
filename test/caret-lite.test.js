@@ -94,10 +94,6 @@ function createFakeDoc() {
     createElement,
     querySelector(sel) {
       if (sel === ".rm-command-palette" && this._commandPalette) return this._commandPalette;
-      if (sel === ".bp3-overlay-open" && this._overlayOpen) return this._overlayOpen;
-      if (sel === ".rm-command-palette, .bp3-overlay-open") {
-        return this._commandPalette || this._overlayOpen || null;
-      }
       return null;
     },
   };
@@ -469,6 +465,22 @@ test("focus on a non-block input hides overlay and does not measure", () => {
   listeners.get("focusin")({ target: input });
   assert.equal(lite.overlay.style.display, "none");
   assert.equal(measureCalls, 0);
+});
+
+test("settings preview textarea shows the overlay", () => {
+  const { lite, listeners, textarea } = installHarness({}, {
+    id: "cs-preview",
+    className: "cs-demo",
+  });
+  listeners.get("focusin")({ target: textarea });
+  assert.notEqual(lite.overlay.style.display, "none");
+});
+
+test("a Blueprint dialog that is not the command palette keeps the block caret", () => {
+  const { lite, doc, listeners, textarea } = installHarness();
+  doc._overlayOpen = { className: "bp3-overlay-open" };
+  listeners.get("focusin")({ target: textarea });
+  assert.notEqual(lite.overlay.style.display, "none");
 });
 
 test("command palette open hides overlay and skips measure", () => {
