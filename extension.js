@@ -2207,11 +2207,14 @@ var CursorSmithRuntime = class {
     this.applyBodyClasses();
   }
   async startEngine() {
-    if (this.mobile || !this._settings.enabled || this._engine || !canStartEngine()) return true;
+    if (this.mobile || !this._settings.enabled || this._engine || !canStartEngine()) return !!this._engine;
+    if (!needsCanvas(this._settings)) return false;
+    const ticket = this._engineTicket = (this._engineTicket || 0) + 1;
     this.ensureMeasurer();
     this.ensurePump();
     try {
       const mod = await loadCursorEngine();
+      if (ticket !== this._engineTicket || !needsCanvas(this._settings) || this._engine) return false;
       if (!mod?.CursorEngine) return false;
       this._engine = new mod.CursorEngine({
         settings: this._settings,
@@ -2230,6 +2233,7 @@ var CursorSmithRuntime = class {
     }
   }
   stopEngine() {
+    this._engineTicket = (this._engineTicket || 0) + 1;
     if (this._engine) {
       try {
         this._engine.stop();
@@ -2269,12 +2273,13 @@ var CursorSmithRuntime = class {
     if (nextMode === "canvas") {
       this.stopLite();
       if (!this._engine) {
-        void this.startEngine().then((ok) => {
-          if (!ok && needsCanvas(this._settings)) {
+        this._engineStart = this.startEngine().then((ok) => {
+          if (!ok && needsCanvas(this._settings) && !this._engine) {
             this._mode = "lite";
             this.startLite();
           }
           this.applyBodyClasses();
+          return ok;
         });
       } else {
         this._engine.setSettings(this._settings);

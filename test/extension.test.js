@@ -315,7 +315,7 @@ test("default settings start lite and smear switches to canvas", async () => {
 
   runtime._set({ smear: true });
   assert.equal(runtime._mode, "canvas");
-  await new Promise((resolve) => setImmediate(resolve));
+  await runtime._engineStart;
   assert.equal(runtime._lite, null);
   assert.ok(runtime._engine);
 
