@@ -4,6 +4,19 @@ All notable changes to this project follow [Keep a Changelog](https://keepachang
 
 ## [Unreleased]
 
+## [0.5.1] - 2026-09-23
+
+### Changed
+- The caret now draws in Roam's own text fields: the command palette search, Find or Create Page, Roam Depot settings inputs and textareas, and any other visible text field in a dialog. Password fields, checkboxes, buttons, selects, Roam Grid and Plexus keep the browser caret.
+- The caret sits one layer above the field's highest positioned ancestor, read once when the field gets focus. In the command palette (portal at 1000) it is drawn at 1001, inside the field. A block caret stays at 40.
+- While the command palette is open, only its own search field gets a caret. A block still focused behind the dialog shows none.
+- The browser caret on a field is hidden only while the overlay shows, and its previous inline value comes back on blur, on unload and on the switch to plain Line. Turning off "Hide Roam's native caret" leaves it visible.
+- Plain Line colours the browser caret in the same fields, including the palette search and Depot settings.
+- Text inputs are measured as one line that scrolls sideways, centred in the field the way Chrome draws it. The caret in an input is at most 1.5 times the font size tall, so a Blueprint field whose line height equals its height does not stretch it to the full field.
+
+### Fixed
+- A dialog that unmounts its focused field no longer leaves a caret behind.
+
 ## [0.5.0] - 2026-09-23
 
 Roam Depot prep: speed first, then the fixes from the Opus review.

@@ -262,3 +262,42 @@ test("createCaretMeasurer invalidates style cache when documentElement class cha
     globalThis.MutationObserver = OriginalObserver;
   }
 });
+
+test("a text input measures as one centred line; a textarea still wraps", () => {
+  const { doc, body } = createFakeDoc();
+  const win = {
+    getComputedStyle: () => fakeComputed(),
+    addEventListener() {},
+    removeEventListener() {},
+  };
+  const measurer = createCaretMeasurer({ doc, win });
+  const mirror = body.children[0];
+
+  const input = fakeTextEl(doc, { tagName: "INPUT", getAttribute: () => "search" });
+  const rect = measurer.measure(input);
+  assert.equal(mirror.style.whiteSpace, "pre", "an input scrolls sideways, it never wraps");
+  assert.equal(rect.x, 110);
+  assert.equal(rect.y, 50 + 2 + (40 - 19) / 2, "the 19px line sits in the middle of the 40px box");
+
+  const textarea = fakeTextEl(doc);
+  const wrapped = measurer.measure(textarea);
+  assert.equal(mirror.style.whiteSpace, "pre-wrap");
+  assert.equal(wrapped.y, 52);
+  measurer.dispose();
+});
+
+test("a Blueprint input with line-height equal to its height gets a block-sized caret", () => {
+  const { doc } = createFakeDoc();
+  const win = {
+    getComputedStyle: () => ({ ...fakeComputed(), lineHeight: "40px" }),
+    addEventListener() {},
+    removeEventListener() {},
+  };
+  const measurer = createCaretMeasurer({ doc, win });
+  const input = fakeTextEl(doc, { tagName: "INPUT", getAttribute: () => null });
+  const rect = measurer.measure(input);
+  assert.equal(rect.height, 24, "1.5 x the 16px font, not the 40px field");
+  assert.equal(rect.lineHeight, "24px", "the Box letter uses the same line");
+  assert.equal(rect.y, 50 + 2 + (40 - 24) / 2, "centred in the field");
+  measurer.dispose();
+});

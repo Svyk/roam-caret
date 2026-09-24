@@ -483,11 +483,16 @@ test("plain Line runs native: no overlay, no measurer, a keystroke never measure
     runtime._set({ glow: true });
     assert.equal(runtime._mode, "lite");
     assert.ok(runtime._lite);
-    assert.equal(block.style.getPropertyValue("caret-color"), "", "caret-color removed when the look stops being a plain line");
+    assert.equal(
+      block.style.getPropertyValue("caret-color"),
+      "transparent",
+      "the Line colour gives way to a hidden browser caret under the overlay",
+    );
   } finally {
     document.activeElement = document.body;
     await cleanup();
   }
+  assert.equal(block.style.getPropertyValue("caret-color"), "", "unload restores the host caret");
 });
 
 test("native caret-color is removed on unload", async () => {

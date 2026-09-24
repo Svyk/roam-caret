@@ -189,6 +189,58 @@ function makeTextarea(extras = {}) {
   };
 }
 
+function makeStyle(initial = {}) {
+  const props = new Map(Object.entries(initial).map(([name, value]) => [name, { value, priority: "" }]));
+  return {
+    setProperty(name, value, priority = "") {
+      props.set(name, { value, priority });
+    },
+    removeProperty(name) {
+      props.delete(name);
+    },
+    getPropertyValue(name) {
+      return props.get(name)?.value ?? "";
+    },
+    getPropertyPriority(name) {
+      return props.get(name)?.priority ?? "";
+    },
+  };
+}
+
+// type: null means the attribute is missing, which the browser treats as text.
+function makeInput({ type = "text", palette = null, closest = null, ...extras } = {}) {
+  const box = { left: 0, top: 0, right: 400, bottom: 30, width: 400, height: 30 };
+  return {
+    tagName: "INPUT",
+    type: type || "text",
+    getAttribute: (name) => (name === "type" ? type : null),
+    value: "find",
+    selectionStart: 4,
+    selectionEnd: 4,
+    parentElement: palette,
+    closest: closest || ((sel) => (palette && sel.includes(".rm-command-palette") ? palette : null)),
+    getBoundingClientRect: () => box,
+    style: makeStyle(),
+    ...extras,
+  };
+}
+
+function makePalette(doc, portalZ = "1000") {
+  const portal = { className: "bp3-portal rm-modal-portal--command-palette", parentElement: doc.body };
+  const palette = {
+    nodeType: 1,
+    className: "rm-command-palette",
+    classList: { contains: (name) => name === "rm-command-palette" },
+    parentElement: portal,
+  };
+  const styles = new Map([
+    [portal, { position: "absolute", zIndex: portalZ, overflowX: "visible", overflowY: "visible" }],
+  ]);
+  const computed = (el) => styles.get(el)
+    || { position: "static", zIndex: "auto", overflowX: "visible", overflowY: "visible" };
+  return { portal, palette, computed };
+}
+
 function installHarness(rectOverrides = {}, textareaExtras = {}, settingsOverrides = {}, options = {}) {
   const { doc, win, body, listeners, observers } = createFakeDoc();
   if (options.prefersDark) win.prefersDark = true;
@@ -585,7 +637,7 @@ test("isRoamDark reads Roam's own classes only", () => {
   assert.equal(isRoamDark(doc), true);
 });
 
-test("focus on a non-block input hides overlay and does not measure", () => {
+test("focus on a checkbox, button or select hides overlay and does not measure", () => {
   const { lite, listeners, measurer } = installHarness();
   let measureCalls = 0;
   const baseMeasure = measurer.measure.bind(measurer);
@@ -594,14 +646,14 @@ test("focus on a non-block input hides overlay and does not measure", () => {
     return baseMeasure(el);
   };
 
-  const input = {
-    tagName: "INPUT",
-    type: "search",
-    getAttribute: () => "search",
-    closest: () => null,
-  };
-  listeners.get("focusin")({ target: input });
-  assert.equal(lite.overlay.style.display, "none");
+  for (const target of [
+    makeInput({ type: "checkbox" }),
+    { tagName: "BUTTON", closest: () => null },
+    { tagName: "SELECT", closest: () => null },
+  ]) {
+    listeners.get("focusin")({ target });
+    assert.equal(lite.overlay.style.display, "none", target.type || target.tagName);
+  }
   assert.equal(measureCalls, 0);
 });
 
@@ -917,10 +969,221 @@ test("native Line paints the Depot preview and applies opacity", () => {
   assert.equal(demo.style.getPropertyValue("caret-color"), "");
 });
 
-test("native Line leaves Roam Grid and search inputs alone", () => {
+test("native Line leaves Roam Grid and password fields alone", () => {
   const { doc, win, listeners } = createFakeDoc();
   const grid = makeStyledTextarea({ closest: () => ({ className: "rg-root" }) });
+  const password = makeInput({ type: "password" });
   installNativeCaret({ doc, win, getSettings: () => ({ colorLight: "#00695e" }) });
   listeners.get("focusin")({ target: grid });
+  listeners.get("focusin")({ target: password });
   assert.equal(grid.style.getPropertyValue("caret-color"), "");
+  assert.equal(password.style.getPropertyValue("caret-color"), "");
+});
+
+test("plain Line colours a search input and never measures", () => {
+  const { doc, win, listeners } = createFakeDoc();
+  let boxReads = 0;
+  const { palette } = makePalette(doc);
+  const search = makeInput({
+    type: "search",
+    palette,
+    getBoundingClientRect() {
+      boxReads += 1;
+      return { left: 0, top: 0, right: 400, bottom: 30, width: 400, height: 30 };
+    },
+  });
+  doc._commandPalette = palette;
+  const native = installNativeCaret({ doc, win, getSettings: () => ({ colorLight: "#00695e" }) });
+  assert.equal(listeners.has("input"), false);
+  assert.equal(doc.body.children.length, 0, "no overlay mounted");
+
+  doc.activeElement = search;
+  listeners.get("focusin")({ target: search });
+  assert.equal(search.style.getPropertyValue("caret-color"), "#00695e");
+  listeners.get("focusout")({ target: search });
+  assert.equal(search.style.getPropertyValue("caret-color"), "", "cleared when focus leaves");
+
+  listeners.get("focusin")({ target: search });
+  native.dispose();
+  assert.equal(search.style.getPropertyValue("caret-color"), "", "cleared on unload");
+  assert.equal(boxReads, 0, "the native path never reads layout");
+});
+
+test("command palette search shows the caret with no document query per key", () => {
+  const { lite, doc, listeners, observers, measurer } = installHarness();
+  const { palette } = makePalette(doc);
+  doc._commandPalette = palette;
+  paletteObserver(observers).callback([{ addedNodes: [palette], removedNodes: [] }]);
+
+  const search = makeInput({ type: "search", palette });
+  doc.activeElement = search;
+  listeners.get("focusin")({ target: search });
+  assert.notEqual(lite.overlay.style.display, "none");
+  assert.equal(measurer.lastEl, search);
+
+  doc.querySelectorCalls = 0;
+  for (let i = 0; i < 3; i += 1) {
+    search.value += "x";
+    search.selectionStart = search.value.length;
+    search.selectionEnd = search.value.length;
+    listeners.get("input")({ target: search });
+    assert.notEqual(lite.overlay.style.display, "none");
+  }
+  assert.equal(doc.querySelectorCalls, 0, "no document querySelector per input event");
+});
+
+test("the caret sits one above the palette portal z-index and drops back on a block", () => {
+  const { lite, doc, win, listeners, observers, textarea } = installHarness();
+  const { palette, computed } = makePalette(doc, "1000");
+  let computedCalls = 0;
+  const countComputed = (el) => {
+    computedCalls += 1;
+    return computed(el);
+  };
+  win.getComputedStyle = countComputed;
+  paletteObserver(observers).callback([{ addedNodes: [palette], removedNodes: [] }]);
+
+  const search = makeInput({ type: "search", palette });
+  doc.activeElement = search;
+  listeners.get("focusin")({ target: search });
+  assert.equal(lite.overlay.style.zIndex, "1001");
+
+  computedCalls = 0;
+  listeners.get("input")({ target: search });
+  listeners.get("input")({ target: search });
+  assert.equal(computedCalls, 0, "the ancestor walk runs on focus, not per key");
+
+  paletteObserver(observers).callback([{ addedNodes: [], removedNodes: [palette] }]);
+  doc.activeElement = textarea;
+  listeners.get("focusin")({ target: textarea });
+  assert.notEqual(lite.overlay.style.display, "none");
+  assert.equal(lite.overlay.style.zIndex, "40");
+});
+
+test("a block focused behind the open palette stays hidden", () => {
+  const { lite, doc, listeners, observers, textarea, measurer } = installHarness();
+  const { palette } = makePalette(doc);
+  paletteObserver(observers).callback([{ addedNodes: [palette], removedNodes: [] }]);
+
+  let measureCalls = 0;
+  const baseMeasure = measurer.measure.bind(measurer);
+  measurer.measure = (el) => {
+    measureCalls += 1;
+    return baseMeasure(el);
+  };
+  doc.activeElement = textarea;
+  listeners.get("focusin")({ target: textarea });
+  listeners.get("input")({ target: textarea });
+  assert.equal(lite.overlay.style.display, "none");
+  assert.equal(measureCalls, 0);
+});
+
+test("palette closing with focus lost hides the caret it drew on its field", () => {
+  const { lite, doc, listeners, observers } = installHarness();
+  const { palette } = makePalette(doc);
+  const observer = paletteObserver(observers);
+  observer.callback([{ addedNodes: [palette], removedNodes: [] }]);
+  const search = makeInput({ type: "search", palette });
+  doc.activeElement = search;
+  listeners.get("focusin")({ target: search });
+  assert.notEqual(lite.overlay.style.display, "none");
+
+  doc.activeElement = doc.body;
+  observer.callback([{ addedNodes: [], removedNodes: [palette] }]);
+  assert.equal(lite.overlay.style.display, "none");
+  assert.equal(search.style.getPropertyValue("caret-color"), "");
+});
+
+test("a dialog that unmounts its focused field hides the caret", () => {
+  const { lite, doc, listeners, observers } = installHarness();
+  const field = makeInput({ isConnected: true });
+  doc.activeElement = field;
+  listeners.get("focusin")({ target: field });
+  assert.notEqual(lite.overlay.style.display, "none");
+
+  field.isConnected = false;
+  doc.activeElement = doc.body;
+  paletteObserver(observers).callback([{ addedNodes: [], removedNodes: [{ nodeType: 1, classList: { contains: () => false } }] }]);
+  assert.equal(lite.overlay.style.display, "none");
+});
+
+test("Find or Create shows the overlay; a missing type counts as text", () => {
+  const { lite, doc, listeners } = installHarness();
+  const find = makeInput({ id: "find-or-create-input", type: null });
+  doc.activeElement = find;
+  listeners.get("focusin")({ target: find });
+  assert.notEqual(lite.overlay.style.display, "none");
+  assert.equal(lite.overlay.style.zIndex, "40");
+});
+
+test("password fields and Roam Grid inputs still hide", () => {
+  const { lite, doc, listeners, measurer } = installHarness();
+  let measureCalls = 0;
+  const baseMeasure = measurer.measure.bind(measurer);
+  measurer.measure = (el) => {
+    measureCalls += 1;
+    return baseMeasure(el);
+  };
+  const grid = makeInput({
+    closest: (sel) => (sel.includes(".rg-root") ? { className: "rg-root" } : null),
+  });
+  for (const target of [makeInput({ type: "password" }), grid]) {
+    doc.activeElement = target;
+    listeners.get("focusin")({ target });
+    listeners.get("input")({ target });
+    assert.equal(lite.overlay.style.display, "none");
+    assert.equal(target.style.getPropertyValue("caret-color"), "");
+  }
+  assert.equal(measureCalls, 0);
+});
+
+test("a zero-size field gets no overlay and keeps its browser caret", () => {
+  const { lite, doc, listeners } = installHarness();
+  const zero = makeInput({
+    getBoundingClientRect: () => ({ left: 0, top: 0, right: 0, bottom: 0, width: 0, height: 0 }),
+  });
+  doc.activeElement = zero;
+  listeners.get("focusin")({ target: zero });
+  assert.equal(lite.overlay.style.display, "none");
+  assert.equal(zero.style.getPropertyValue("caret-color"), "");
+});
+
+test("the browser caret on a dialog field is hidden only while the overlay shows", () => {
+  const { lite, doc, listeners } = installHarness();
+  const field = makeInput({ style: makeStyle({ "caret-color": "red" }) });
+  doc.activeElement = field;
+  listeners.get("focusin")({ target: field });
+  assert.notEqual(lite.overlay.style.display, "none");
+  assert.equal(field.style.getPropertyValue("caret-color"), "transparent");
+  assert.equal(field.style.getPropertyPriority("caret-color"), "important");
+
+  field.selectionEnd = 1;
+  field.selectionStart = 0;
+  listeners.get("selectionchange")({ target: field });
+  assert.equal(lite.overlay.style.display, "none");
+  assert.equal(field.style.getPropertyValue("caret-color"), "red", "no overlay, browser caret back");
+
+  field.selectionStart = 4;
+  field.selectionEnd = 4;
+  listeners.get("selectionchange")({ target: field });
+  assert.equal(field.style.getPropertyValue("caret-color"), "transparent");
+
+  doc.activeElement = doc.body;
+  listeners.get("focusout")({ target: field, relatedTarget: null });
+  assert.equal(field.style.getPropertyValue("caret-color"), "red", "blur restores the previous inline value");
+
+  doc.activeElement = field;
+  listeners.get("focusin")({ target: field });
+  assert.equal(field.style.getPropertyValue("caret-color"), "transparent");
+  lite.dispose();
+  assert.equal(field.style.getPropertyValue("caret-color"), "red", "dispose restores it too");
+});
+
+test("hide native caret off leaves the dialog field's browser caret alone", () => {
+  const { lite, doc, listeners } = installHarness({}, {}, { hideNativeCaret: false });
+  const field = makeInput();
+  doc.activeElement = field;
+  listeners.get("focusin")({ target: field });
+  assert.notEqual(lite.overlay.style.display, "none");
+  assert.equal(field.style.getPropertyValue("caret-color"), "");
 });

@@ -1,4 +1,5 @@
 const MARKER_CHAR = "\u200b";
+const INPUT_LINE_EM = 1.5;
 const SKIP_HOST_SELECTOR = ".rg-root, .pxd-root";
 
 export const MIRROR_PROPERTIES = Object.freeze([
@@ -95,6 +96,7 @@ function readMetrics(computed) {
   return {
     borderLeft: px(computed.borderLeftWidth),
     borderTop: px(computed.borderTopWidth),
+    borderBottom: px(computed.borderBottomWidth),
     padLeft: px(computed.paddingLeft),
     padTop: px(computed.paddingTop),
     padRight: px(computed.paddingRight),
@@ -204,6 +206,16 @@ export function createCaretMeasurer({ doc, win, lifecycle } = {}) {
       const computedStyle = windowRef.getComputedStyle(el);
       for (const name of MIRROR_PROPERTIES) style[name] = computedStyle[name];
       metrics = readMetrics(computedStyle);
+      // A text input is one line that scrolls sideways; a textarea wraps.
+      metrics.singleLine = el.tagName === "INPUT";
+      style.whiteSpace = metrics.singleLine ? "pre" : "pre-wrap";
+      if (metrics.singleLine) {
+        // Blueprint inputs set line-height to the field height. Draw a caret
+        // as tall as a block line, not as tall as the field.
+        const lineHeightPx = Math.min(metrics.lineHeightPx, metrics.fontSizePx * INPUT_LINE_EM);
+        metrics.lineHeightPx = lineHeightPx;
+        metrics.lineHeight = `${lineHeightPx}px`;
+      }
       cachedEl = el;
     }
 
@@ -223,13 +235,19 @@ export function createCaretMeasurer({ doc, win, lifecycle } = {}) {
     // against the layout this call produces, with no writes in between.
     const box = el.getBoundingClientRect();
     const glyphWidth = glyphEl.offsetWidth || metrics.fontSizePx * 0.6 || 8;
+    const offsetH = el.offsetHeight || 0;
+    // Chrome centres an input's one line inside its content box.
+    const lineTop = metrics.singleLine && offsetH
+      ? (offsetH - metrics.borderTop - metrics.borderBottom - metrics.padTop - metrics.padBottom
+        - metrics.lineHeightPx) / 2
+      : 0;
     const rect = {
       ...projectCaretRect({
         box,
         offsetW: el.offsetWidth || 0,
-        offsetH: el.offsetHeight || 0,
+        offsetH,
         markerLeft: marker.offsetLeft || 0,
-        markerTop: marker.offsetTop || 0,
+        markerTop: (marker.offsetTop || 0) + lineTop,
         scrollLeft: el.scrollLeft || 0,
         scrollTop: el.scrollTop || 0,
         borderLeft: metrics.borderLeft,

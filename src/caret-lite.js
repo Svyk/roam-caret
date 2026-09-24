@@ -1,4 +1,4 @@
-import { isSkippedHost } from "./caret-measure.js";
+import { isSkippedHost, isTextTarget } from "./caret-measure.js";
 import { DEMO_Z_INDEX, needsCanvas } from "./cursor-smith.js";
 import { hexToRgba } from "./settings.js";
 import { isRoamDark } from "./theme.js";
@@ -11,27 +11,43 @@ function isPasswordField(el) {
 
 const COMMAND_PALETTE_CLASS = "rm-command-palette";
 const COMMAND_PALETTE_SELECTOR = `.${COMMAND_PALETTE_CLASS}`;
+const IN_PALETTE_SELECTOR = `${COMMAND_PALETTE_SELECTOR}, .rm-modal-portal--command-palette`;
 const CARET_BOX_MARGIN_PX = 8;
-const BASE_Z_INDEX = "40";
+const BASE_Z_INDEX = 40;
 const DEMO_CLASS = "cs-lite-demo";
 
 function isDemo(el) {
   return String(el?.className || "").split(/\s+/).includes("cs-demo");
 }
 
+// Any text field: block textareas, the command palette, Find or Create, Depot
+// settings, the preview. No layout read here; paint() rejects a zero-size box
+// against the box the measure already read.
 export function isCaretHost(el) {
-  if (!el || el.tagName !== "TEXTAREA") return false;
-  if (isPasswordField(el)) return false;
-  if (el.id === "find-or-create-input") return false;
-  if (isSkippedHost(el)) return false;
-  if (isDemo(el)) return true;
-  const id = String(el.id || "");
-  const className = String(el.className || "");
-  return (
-    id.startsWith("block-input-") ||
-    className.includes("rm-block-input") ||
-    className.includes("rm-block__input")
-  );
+  if (!isTextTarget(el) || isPasswordField(el)) return false;
+  return !isSkippedHost(el);
+}
+
+// Highest numeric z-index on a positioned node from the host up to <body>.
+// The command-palette portal is 1000, so a caret left at 40 paints behind it.
+function stackingZIndex(el, doc, win) {
+  if (typeof win?.getComputedStyle !== "function") return 0;
+  let top = 0;
+  try {
+    let node = el;
+    let guard = 0;
+    while (node && node !== doc?.body && node !== doc?.documentElement && guard++ < 256) {
+      const st = win.getComputedStyle(node);
+      if (st.position && st.position !== "static") {
+        const z = Number.parseInt(st.zIndex, 10);
+        if (z > top) top = z;
+      }
+      node = node.parentElement;
+    }
+  } catch {
+    return 0;
+  }
+  return top;
 }
 
 // A plain Line is the browser's own caret, recoloured: no overlay, no mirror,
@@ -246,7 +262,7 @@ export function installLiteCaret({ doc, win, measurer, lifecycle, getSettings, r
   style.position = "fixed";
   style.top = "0";
   style.left = "0";
-  style.zIndex = BASE_Z_INDEX;
+  style.zIndex = String(BASE_Z_INDEX);
   style.willChange = "transform";
   style.transformOrigin = "0 0";
   style.display = "none";
@@ -290,7 +306,7 @@ export function installLiteCaret({ doc, win, measurer, lifecycle, getSettings, r
     borderRadius: "",
     boxShadow: "",
     opacity: "",
-    zIndex: BASE_Z_INDEX,
+    zIndex: String(BASE_Z_INDEX),
   };
   const writeStyle = (prop, value) => {
     if (styleCache[prop] === value) return;
@@ -316,16 +332,66 @@ export function installLiteCaret({ doc, win, measurer, lifecycle, getSettings, r
   let glyphColorKey = "";
   let glyphColor = "";
 
+  // The browser caret on the host is transparent only while the overlay shows.
+  let nativeHiddenEl = null;
+  let nativePrev = null;
+
+  const restoreNativeCaret = () => {
+    const el = nativeHiddenEl;
+    if (!el) return;
+    const prev = nativePrev;
+    nativeHiddenEl = null;
+    nativePrev = null;
+    try {
+      if (prev) el.style.setProperty("caret-color", prev.value, prev.priority);
+      else el.style.removeProperty("caret-color");
+    } catch {
+    }
+  };
+
+  const hideNativeCaret = (el) => {
+    const want = settings.hideNativeCaret !== false;
+    if (want && el === nativeHiddenEl) return;
+    restoreNativeCaret();
+    if (!want) return;
+    try {
+      const st = el.style;
+      const value = st.getPropertyValue("caret-color");
+      nativePrev = value ? { value, priority: st.getPropertyPriority("caret-color") } : null;
+      st.setProperty("caret-color", "transparent", "important");
+      nativeHiddenEl = el;
+    } catch {
+      nativePrev = null;
+    }
+  };
+
   const hide = () => {
     writeStyle("display", "none");
+    restoreNativeCaret();
+  };
+
+  // Stacking and palette membership, read once per focused host.
+  let layerFor = null;
+  let layerZ = String(BASE_Z_INDEX);
+  let layerInPalette = false;
+  const resolveLayer = (el) => {
+    if (el === layerFor) return;
+    layerFor = el;
+    layerInPalette = !!el.closest?.(IN_PALETTE_SELECTOR);
+    const top = stackingZIndex(el, documentRef, windowRef);
+    let z = top >= BASE_Z_INDEX ? top + 1 : BASE_Z_INDEX;
+    if (isDemo(el)) z = Math.max(z, DEMO_Z_INDEX);
+    layerZ = String(z);
   };
 
   let demoLayer = false;
-  const setDemoLayer = (demo) => {
-    if (demo === demoLayer) return;
-    demoLayer = demo;
-    overlay.classList.toggle(DEMO_CLASS, demo);
-    writeStyle("zIndex", demo ? String(DEMO_Z_INDEX) : BASE_Z_INDEX);
+  const setLayer = (el) => {
+    const demo = isDemo(el);
+    if (demo !== demoLayer) {
+      demoLayer = demo;
+      overlay.classList.toggle(DEMO_CLASS, demo);
+    }
+    writeStyle("zIndex", layerZ);
   };
 
   // One Animation handle for the blink. Restarting it is a currentTime write:
@@ -512,7 +578,7 @@ export function installLiteCaret({ doc, win, measurer, lifecycle, getSettings, r
         ? `0 0 0 1px ${hexToRgba(color, 0.18)}, 0 0 8px ${hexToRgba(color, 0.3)}`
         : "",
     );
-    setDemoLayer(isDemo(el));
+    setLayer(el);
     paintGlyph(rect, cursorStyle, color, height);
     return true;
   };
@@ -524,20 +590,32 @@ export function installLiteCaret({ doc, win, measurer, lifecycle, getSettings, r
     const t0 = recordTiming && now ? now() : null;
     readSettings();
     const target = el || documentRef.activeElement;
-    if (!target || !isCaretHost(target) || paletteOpen || hasRangeSelection(target)) {
+    if (!target || !isCaretHost(target) || hasRangeSelection(target)) {
+      hide();
+      rememberTarget(target);
+      return;
+    }
+    resolveLayer(target);
+    // With the palette open, only its own field gets a caret: nothing on the
+    // dimmed page behind it.
+    if (paletteOpen && !layerInPalette) {
       hide();
       rememberTarget(target);
       return;
     }
     active = target;
     const rect = measurer.measure(target);
-    if (paint(rect, target)) syncBlink(ping);
+    if (paint(rect, target)) {
+      syncBlink(ping);
+      hideNativeCaret(target);
+    }
     rememberTarget(target);
     if (t0 != null) recordTiming(now() - t0);
   };
 
   const onFocusIn = (event) => {
     const target = event?.target;
+    layerFor = null;
     if (!target || !isCaretHost(target)) {
       active = null;
       lastEl = null;
@@ -549,6 +627,7 @@ export function installLiteCaret({ doc, win, measurer, lifecycle, getSettings, r
   };
 
   const onFocusOut = (event) => {
+    if (event?.target && event.target === nativeHiddenEl) restoreNativeCaret();
     const next = event?.relatedTarget || documentRef.activeElement;
     if (next && isCaretHost(next)) return;
     active = null;
@@ -595,9 +674,10 @@ export function installLiteCaret({ doc, win, measurer, lifecycle, getSettings, r
   const PASSIVE_OPTS = { passive: true };
 
   const onScrollOrResize = (event) => {
-    if (disposed || paletteOpen) return;
+    if (disposed) return;
     const target = documentRef.activeElement || active;
     if (!target || !isCaretHost(target)) return;
+    if (paletteOpen && !(target === layerFor && layerInPalette)) return;
     // Only remeasure when the scrolled surface can move the caret: window,
     // document, visualViewport, or an ancestor of the active textarea.
     // Sidebar / autocomplete / unrelated overflow scrolls are ignored.
@@ -648,6 +728,7 @@ export function installLiteCaret({ doc, win, measurer, lifecycle, getSettings, r
   const MO = observerClass(windowRef);
   if (MO && documentRef.body) {
     paletteObserver = new MO((records) => {
+      if (disposed) return;
       let changed = false;
       for (const record of records) {
         for (const node of record.removedNodes || []) {
@@ -663,13 +744,19 @@ export function installLiteCaret({ doc, win, measurer, lifecycle, getSettings, r
           }
         }
       }
-      if (!changed || disposed) return;
-      if (paletteOpen) {
-        hide();
+      if (!changed) {
+        // A dialog that unmounts its focused field fires no focusout.
+        if (active && active.isConnected === false) {
+          active = null;
+          lastEl = null;
+          lastSig = "";
+          hide();
+        }
         return;
       }
       const target = documentRef.activeElement;
       if (!composing && target && isCaretHost(target)) measureAndApply(target, true);
+      else hide();
     });
     paletteObserver.observe(documentRef.body, { childList: true, subtree: true });
   }
@@ -724,8 +811,10 @@ export function installLiteCaret({ doc, win, measurer, lifecycle, getSettings, r
     visualViewport?.removeEventListener?.("scroll", onScrollOrResize, PASSIVE_OPTS);
     visualViewport?.removeEventListener?.("resize", onScrollOrResize, PASSIVE_OPTS);
     motionQuery?.removeEventListener?.("change", onMotionChange);
+    restoreNativeCaret();
     overlay.remove();
     active = null;
+    layerFor = null;
   };
 
   return {

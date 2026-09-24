@@ -82,7 +82,8 @@ body.cs-active .svy-caret-overlay-ui {
   pointer-events: none; box-sizing: border-box;
   transform-origin: 0 0; will-change: transform;
 }
-/* Above the Studio panel (10001) only while the caret is on a preview textarea;
-   everywhere else it stays under the command palette portal (1000). */
+/* The lite caret sets its z-index inline per focused field: one above the
+   highest positioned ancestor (the command palette portal is 1000), 40 for a
+   block, and at least this value on a Studio preview textarea. */
 .cs-lite-caret.cs-lite-demo { z-index: 10003; }
 .cs-lite-glyph { display: none; text-align: center; white-space: pre; pointer-events: none; }
