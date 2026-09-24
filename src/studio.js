@@ -1,7 +1,8 @@
 import { ENUMS } from "./cursor-smith.js";
 
-export const STUDIO_CSS = `.cs-studio-overlay{position:fixed;inset:0;z-index:10000;display:flex;align-items:flex-start;justify-content:center;padding:24px 16px;overflow:auto;background:rgba(16,22,26,.55)}
-.cs-studio{position:relative;z-index:10001;width:min(560px,100%);max-height:calc(100vh - 48px);overflow:auto;box-sizing:border-box;padding:12px 14px 20px;border:1px solid rgba(127,127,127,.22);border-radius:8px;background:Canvas;color:CanvasText;color-scheme:light dark;box-shadow:0 12px 40px rgba(0,0,0,.18)}
+export const STUDIO_CSS = `.cs-studio-overlay{position:fixed;inset:0;z-index:10000;display:flex;align-items:flex-start;justify-content:center;padding:24px 16px;overflow:auto;background:rgba(16,22,26,.55);color-scheme:light}
+.bp3-dark .cs-studio-overlay,.rm-dark-theme .cs-studio-overlay,.bt-theme-dark .cs-studio-overlay,.roam-body.dark .cs-studio-overlay{color-scheme:dark}
+.cs-studio{position:relative;z-index:10001;width:min(560px,100%);max-height:calc(100vh - 48px);overflow:auto;box-sizing:border-box;padding:12px 14px 20px;border:1px solid rgba(127,127,127,.22);border-radius:8px;background:Canvas;color:CanvasText;box-shadow:0 12px 40px rgba(0,0,0,.18)}
 .cs-studio-preview{position:sticky;top:0;z-index:1;background:Canvas;padding-bottom:8px}
 .cs-demo{display:block;width:100%;box-sizing:border-box;resize:vertical;min-height:68px;padding:8px 10px;border-radius:6px;border:1px solid rgba(127,127,127,.12);background:rgba(127,127,127,.06);color:inherit;font:inherit;line-height:1.5}
 .cs-toast{font-size:12px;color:rgba(127,127,127,.8)}
@@ -22,6 +23,7 @@ const RERENDER_KEYS = new Set([
 ]);
 
 const PROP_ATTRS = new Set(["value", "checked", "selected"]);
+const HEX6 = /^#[0-9a-fA-F]{6}$/;
 
 function h(tag, attrs, ...children) {
   const el = document.createElement(tag);
@@ -118,7 +120,10 @@ export function renderStudio(root, ctl) {
       type: "text",
       class: "bp3-input",
       value: s[key] || "",
-      onChange: (e) => ctl.set({ [key]: e.target.value }),
+      onChange: (e) => {
+        const value = String(e.target.value || "").trim();
+        if (HEX6.test(value)) ctl.set({ [key]: value });
+      },
     });
     const picker = h("input", {
       type: "color",

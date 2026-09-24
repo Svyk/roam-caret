@@ -1,4 +1,4 @@
-/* Roam Caret v0.4.2 | MIT | generated; edit src/ */
+/* Roam Caret v0.5.0 | MIT | generated; edit src/ */
 
 // src/cursor-smith.js
 var __defProp = Object.defineProperty;
@@ -212,14 +212,24 @@ var CANVAS_EFFECT_KEYS = Object.freeze([
   "speedDemon",
   "comboEnabled",
   "backspaceDisintegrate",
-  "thunderstrike"
+  "thunderstrike",
+  "gradientEnabled",
+  "lineSerifs",
+  "blinkBreathing",
+  "idleFadeEnabled",
+  "selectionColorEnabled",
+  "rowTypeTint",
+  "soundEnabled"
 ]);
 function needsCanvas(settings) {
   if (!settings) return false;
   for (const key of CANVAS_EFFECT_KEYS) {
-    if (settings[key] === true) return true;
+    if (settings[key] !== true) continue;
+    if (key === "lineSerifs" && settings.cursorStyle !== "Line") continue;
+    if (key === "blinkBreathing" && settings.blinkingEnabled === false) continue;
+    return true;
   }
-  return false;
+  return settings.moveDelayMs > 0;
 }
 __name(needsCanvas, "needsCanvas");
 var STRUCTURAL = /* @__PURE__ */ new Set(["enabled", "activePreset", "hideNativeCaret", "hideOnWindowBlur", "schemaVersion"]);
@@ -381,7 +391,8 @@ function normalizeSettings(raw) {
     if (named && needsCanvas({ ...DEFAULTS, ...named })) out.activePreset = "";
     out.schemaVersion = SCHEMA_VERSION;
   }
-  if (!Object.prototype.hasOwnProperty.call(out.presets, out.activePreset)) out.activePreset = "";
+  const known = Object.prototype.hasOwnProperty.call(out.presets, out.activePreset) || Object.prototype.hasOwnProperty.call(BUILTIN_PRESETS, out.activePreset);
+  if (!known) out.activePreset = "";
   return out;
 }
 __name(normalizeSettings, "normalizeSettings");
@@ -608,6 +619,7 @@ function buildFamilyPool() {
 __name(buildFamilyPool, "buildFamilyPool");
 var ROOT_CLASS = "plg-cursor-smith";
 var BODY_ACTIVE_CLASS = "cs-active";
+var DEMO_Z_INDEX = 10003;
 var WRAP_CLASS = "cs-cursor-wrap";
 var CANVAS_CLASS = "cs-cursor-canvas";
 var TORCH_CLASS = "cs-torch-overlay";
@@ -677,6 +689,14 @@ body.${BODY_ACTIVE_CLASS} .${ROOT_CLASS}-panel .cs-demo {
 	display: none !important;
 }
 `;
+
+// src/theme.js
+function isRoamDark(doc) {
+  if (doc?.documentElement?.classList?.contains("bp3-dark")) return true;
+  const body = doc?.body?.classList;
+  if (!body) return false;
+  return body.contains("rm-dark-theme") || body.contains("bt-theme-dark") || body.contains("roam-body") && body.contains("dark");
+}
 
 // src/cursor-engine.js
 var __defProp2 = Object.defineProperty;
@@ -763,6 +783,13 @@ function syncHostCaret(e, host) {
   }
 }
 __name2(syncHostCaret, "syncHostCaret");
+function syncDemoLayer(e, host) {
+  const demo = !!host?.classList?.contains("cs-demo");
+  if (!e.canvasWrapper || demo === !!e._demoLayer) return;
+  e._demoLayer = demo;
+  e.canvasWrapper.style.zIndex = String(demo ? DEMO_Z_INDEX : e.zIndex || 40);
+}
+__name2(syncDemoLayer, "syncDemoLayer");
 function hexToRgba(hex, alpha) {
   let h2 = (hex || "#39ff14").replace("#", "");
   if (h2.length === 3) h2 = h2.split("").map((c) => c + c).join("");
@@ -1915,6 +1942,7 @@ function ensureCanvas(e) {
   const wrap = doc.createElement("div");
   wrap.className = WRAP_CLASS;
   wrap.style.zIndex = String(e.zIndex || 40);
+  e._demoLayer = false;
   const host = doc.body;
   host.appendChild(wrap);
   const canvas = doc.createElement("canvas");
@@ -2487,18 +2515,7 @@ var CursorEngine = (_a = class {
     this.syncTorch();
   }
   isDarkTheme() {
-    const doc = this.canvas ? this.canvas.ownerDocument : this._doc || document;
-    const root = doc.documentElement;
-    const body = doc.body;
-    if (root.classList.contains("bp3-dark")) return true;
-    if (body.classList.contains("bt-theme-dark")) return true;
-    try {
-      const win = doc.defaultView || window;
-      const prefersDark = !!(win.matchMedia && win.matchMedia("(prefers-color-scheme: dark)").matches);
-      if (prefersDark && !root.classList.contains("bp3-light")) return true;
-    } catch {
-    }
-    return false;
+    return isRoamDark(this.canvas ? this.canvas.ownerDocument : this._doc || document);
   }
   /** @param {number} heat @param {string} baseHex */
   heatColorFor(heat, baseHex) {
@@ -3208,7 +3225,9 @@ var CursorEngine = (_a = class {
     }
     this.refreshSelectionState();
     this.updateActivePoint();
-    syncHostCaret(this, (this.canvas && this.canvas.ownerDocument || this._doc || document).activeElement);
+    const host = (this.canvas && this.canvas.ownerDocument || this._doc || document).activeElement;
+    syncHostCaret(this, host);
+    syncDemoLayer(this, host);
     this._rowType = this.lastActive && this.lastActive.rowType || "text";
     this.updateSmoothCursor();
     this.updateGhost();

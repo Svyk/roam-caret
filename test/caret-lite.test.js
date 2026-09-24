@@ -1,7 +1,14 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { installLiteCaret } from "../src/caret-lite.js";
+import { createCaretMeasurer } from "../src/caret-measure.js";
+import {
+  glyphColorOn,
+  installLiteCaret,
+  installNativeCaret,
+  isPlainLine,
+} from "../src/caret-lite.js";
+import { isRoamDark } from "../src/theme.js";
 
 function makeClassList() {
   const names = new Set();
@@ -56,6 +63,33 @@ function createFakeDoc() {
       textContent: "",
       classList,
       _className: "",
+      _animations: [],
+      attributes: {},
+      setAttribute(name, value) {
+        this.attributes[name] = value;
+      },
+      animate(keyframes, options) {
+        const anim = {
+          keyframes,
+          options,
+          currentTime: 0,
+          cancelled: 0,
+          played: 0,
+          cancel() {
+            this.cancelled += 1;
+            this.currentTime = null;
+          },
+          play() {
+            this.played += 1;
+            this.currentTime = 0;
+          },
+        };
+        this._animations.push(anim);
+        return anim;
+      },
+      getAnimations() {
+        throw new Error("getAnimations() forces a style flush; keep the handle instead");
+      },
       appendChild(child) {
         this.children.push(child);
         child.parentNode = this;
@@ -92,23 +126,52 @@ function createFakeDoc() {
     documentElement,
     activeElement: null,
     createElement,
+    querySelectorCalls: 0,
     querySelector(sel) {
+      this.querySelectorCalls += 1;
       if (sel === ".rm-command-palette" && this._commandPalette) return this._commandPalette;
       return null;
     },
   };
+  const observers = [];
   const win = {
-    matchMedia() {
+    prefersDark: false,
+    matchMedia(query) {
       return {
-        matches: false,
+        matches: query === "(prefers-color-scheme: dark)" ? win.prefersDark : false,
         addEventListener() {},
         removeEventListener() {},
       };
     },
+    MutationObserver: class {
+      constructor(callback) {
+        this.callback = callback;
+        this.targets = [];
+        this.disconnected = false;
+        observers.push(this);
+      }
+      observe(target, options) {
+        this.targets.push({ target, options });
+      }
+      disconnect() {
+        this.disconnected = true;
+      }
+    },
   };
   attach(doc);
   attach(win);
-  return { doc, win, body, listeners };
+  return { doc, win, body, listeners, observers };
+}
+
+function paletteObserver(observers) {
+  return observers.find((o) => o.targets.some(({ options }) => options?.childList && options?.subtree));
+}
+
+function paletteNode() {
+  return {
+    nodeType: 1,
+    classList: { contains: (name) => name === "rm-command-palette" },
+  };
 }
 
 function makeTextarea(extras = {}) {
@@ -126,8 +189,9 @@ function makeTextarea(extras = {}) {
   };
 }
 
-function installHarness(rectOverrides = {}, textareaExtras = {}, settingsOverrides = {}) {
-  const { doc, win, body, listeners } = createFakeDoc();
+function installHarness(rectOverrides = {}, textareaExtras = {}, settingsOverrides = {}, options = {}) {
+  const { doc, win, body, listeners, observers } = createFakeDoc();
+  if (options.prefersDark) win.prefersDark = true;
   const rect = {
     x: 10,
     y: 20,
@@ -142,7 +206,7 @@ function installHarness(rectOverrides = {}, textareaExtras = {}, settingsOverrid
   const measurer = {
     measure(el) {
       this.lastEl = el;
-      return rect;
+      return { ...rect, box: el.getBoundingClientRect() };
     },
   };
   const getSettings = () => ({
@@ -164,8 +228,16 @@ function installHarness(rectOverrides = {}, textareaExtras = {}, settingsOverrid
       return node;
     },
   };
-  const lite = installLiteCaret({ doc, win, measurer, lifecycle, getSettings });
-  return { lite, doc, win, body, listeners, textarea, measurer, rect };
+  const timings = [];
+  const lite = installLiteCaret({
+    doc,
+    win,
+    measurer,
+    lifecycle,
+    getSettings,
+    recordTiming: (ms) => timings.push(ms),
+  });
+  return { lite, doc, win, body, listeners, observers, textarea, measurer, rect, timings };
 }
 
 test("focusin on a TEXTAREA shows overlay and sets translate from measurer", () => {
@@ -288,6 +360,7 @@ test("onRefreshEvent skips measure when signature is unchanged after input", () 
   assert.equal(measureCalls, 1);
 
   textarea.selectionStart = 3;
+  textarea.selectionEnd = 3;
   listeners.get("selectionchange")({ target: textarea });
   assert.equal(measureCalls, 2);
 });
@@ -356,7 +429,73 @@ test("input ping restarts blink without reading overlay offsetWidth", () => {
   listeners.get("input")({ target: textarea });
 
   assert.equal(offsetReads, 0, "input path must not force layout via offsetWidth");
-  assert.equal(lite.overlay.classList.contains("cs-lite-blink"), true);
+  assert.equal(lite.overlay._animations.length, 1);
+});
+
+test("blink keeps one Animation and restarts it on input, arrow move, and click", () => {
+  const { lite, listeners, textarea } = installHarness({}, {}, { blinkingEnabled: true });
+  listeners.get("focusin")({ target: textarea });
+  const [anim] = lite.overlay._animations;
+  assert.ok(anim);
+
+  anim.currentTime = 700;
+  listeners.get("input")({ target: textarea });
+  assert.equal(anim.currentTime, 0, "input restarts the blink");
+
+  anim.currentTime = 700;
+  textarea.selectionStart = 3;
+  textarea.selectionEnd = 3;
+  listeners.get("selectionchange")({ target: textarea });
+  assert.equal(anim.currentTime, 0, "arrow-key move restarts the blink");
+
+  anim.currentTime = 700;
+  listeners.get("mouseup")({ type: "mouseup", target: textarea });
+  assert.equal(anim.currentTime, 0, "click restarts the blink even without a move");
+
+  assert.equal(lite.overlay._animations.length, 1, "one Animation handle, reused");
+});
+
+test("blink speed, balance and opacity drive the lite caret", () => {
+  const { lite, listeners, textarea } = installHarness({}, {}, {
+    blinkingEnabled: true,
+    blinkSpeed: 2,
+    blinkOnOffBalance: 0.6,
+    blinkDelayMs: 300,
+    cursorOpacity: 0.5,
+  });
+  listeners.get("focusin")({ target: textarea });
+  const [anim] = lite.overlay._animations;
+  assert.equal(anim.options.duration, 1250);
+  assert.equal(anim.options.delay, 300);
+  assert.equal(anim.options.iterations, Infinity);
+  assert.equal(anim.keyframes[0].opacity, 0.5);
+  assert.equal(anim.keyframes[1].offset, 0.6);
+  assert.equal(anim.keyframes[2].opacity, 0);
+  assert.equal(lite.overlay.style.opacity, "0.5");
+});
+
+test("blink off cancels the one animation instead of creating another", () => {
+  let blinking = true;
+  const { doc, win, body, listeners } = createFakeDoc();
+  const textarea = makeTextarea();
+  doc.activeElement = textarea;
+  const measurer = { measure: (el) => ({ x: 1, y: 1, width: 8, height: 19, visible: true, glyph: "", box: el.getBoundingClientRect() }) };
+  const lite = installLiteCaret({
+    doc,
+    win,
+    measurer,
+    lifecycle: { node(node, parent = body) { parent.append(node); } },
+    getSettings: () => ({ cursorStyle: "Box", colorLight: "#333333", blinkingEnabled: blinking }),
+  });
+  listeners.get("focusin")({ target: textarea });
+  const [anim] = lite.overlay._animations;
+  blinking = false;
+  listeners.get("input")({ target: textarea });
+  assert.equal(anim.cancelled, 1);
+  blinking = true;
+  listeners.get("input")({ target: textarea });
+  assert.equal(anim.played, 1);
+  assert.equal(lite.overlay._animations.length, 1);
 });
 
 test("unchanged overlay style values are not rewritten", () => {
@@ -418,33 +557,32 @@ test("window blur hides the caret and focus restores it", () => {
   assert.notEqual(lite.overlay.style.display, "none");
 });
 
-test("isDark caches prefers-color-scheme matchMedia at install time", () => {
-  const { doc, win, body, listeners } = createFakeDoc();
-  let darkMqCalls = 0;
-  const baseMatchMedia = win.matchMedia.bind(win);
-  win.matchMedia = (query) => {
-    if (query === "(prefers-color-scheme: dark)") darkMqCalls += 1;
-    return baseMatchMedia(query);
-  };
+test("dark OS with Roam in its light theme keeps colorLight", () => {
+  const { lite, doc, listeners, textarea } = installHarness({}, {}, {
+    colorLight: "#00695e",
+    colorDark: "#48d0c0",
+  }, { prefersDark: true });
+  listeners.get("focusin")({ target: textarea });
+  assert.equal(lite.overlay.style.background, "#00695e");
 
-  const textarea = makeTextarea();
-  doc.activeElement = textarea;
-  const measurer = { measure: () => ({ x: 0, y: 0, width: 2, height: 19, visible: true, glyph: "" }) };
-  const lifecycle = { node(node, parent = body) { parent.append(node); } };
-  installLiteCaret({
-    doc,
-    win,
-    measurer,
-    lifecycle,
-    getSettings: () => ({ cursorStyle: "Box", colorLight: "#333", colorDark: "#fff", glow: false, showChar: false, blinkingEnabled: false }),
-  });
-
-  assert.equal(darkMqCalls, 1);
-
+  doc.documentElement.classList.add("bp3-dark");
   listeners.get("input")({ target: textarea });
-  listeners.get("input")({ target: textarea });
-  listeners.get("keyup")({ target: textarea });
-  assert.equal(darkMqCalls, 1);
+  assert.equal(lite.overlay.style.background, "#48d0c0");
+});
+
+test("isRoamDark reads Roam's own classes only", () => {
+  const { doc } = createFakeDoc();
+  assert.equal(isRoamDark(doc), false);
+  doc.body.classList.add("roam-body");
+  assert.equal(isRoamDark(doc), false);
+  doc.body.classList.add("dark");
+  assert.equal(isRoamDark(doc), true);
+  doc.body.classList.remove("roam-body", "dark");
+  doc.body.classList.add("rm-dark-theme");
+  assert.equal(isRoamDark(doc), true);
+  doc.body.classList.remove("rm-dark-theme");
+  doc.body.classList.add("bt-theme-dark");
+  assert.equal(isRoamDark(doc), true);
 });
 
 test("focus on a non-block input hides overlay and does not measure", () => {
@@ -484,7 +622,7 @@ test("a Blueprint dialog that is not the command palette keeps the block caret",
 });
 
 test("command palette open hides overlay and skips measure", () => {
-  const { lite, doc, listeners, textarea, measurer } = installHarness();
+  const { lite, listeners, observers, textarea, measurer } = installHarness();
   listeners.get("focusin")({ target: textarea });
   assert.notEqual(lite.overlay.style.display, "none");
 
@@ -495,14 +633,204 @@ test("command palette open hides overlay and skips measure", () => {
     return baseMeasure(el);
   };
 
-  doc._commandPalette = { className: "rm-command-palette" };
+  const palette = paletteNode();
+  paletteObserver(observers).callback([{ addedNodes: [palette], removedNodes: [] }]);
+  assert.equal(lite.overlay.style.display, "none");
   listeners.get("input")({ target: textarea });
   assert.equal(lite.overlay.style.display, "none");
   assert.equal(measureCalls, 0);
+});
 
-  delete doc._commandPalette;
+test("palette closing remeasures the focused block once", () => {
+  const { lite, listeners, observers, textarea, measurer } = installHarness();
   listeners.get("focusin")({ target: textarea });
+  const observer = paletteObserver(observers);
+  const portal = {
+    nodeType: 1,
+    classList: { contains: () => false },
+    firstElementChild: {},
+    querySelector: (sel) => (sel === ".rm-command-palette" ? paletteNode() : null),
+  };
+  observer.callback([{ addedNodes: [portal], removedNodes: [] }]);
+  assert.equal(lite.overlay.style.display, "none", "a palette nested in a portal still counts");
+
+  let measureCalls = 0;
+  const baseMeasure = measurer.measure.bind(measurer);
+  measurer.measure = (el) => {
+    measureCalls += 1;
+    return baseMeasure(el);
+  };
+  observer.callback([{ addedNodes: [], removedNodes: [portal] }]);
+  assert.equal(measureCalls, 1);
+  assert.notEqual(lite.overlay.style.display, "none", "caret is back without another key");
+});
+
+test("unrelated DOM churn does not flip the palette flag", () => {
+  const { lite, listeners, observers, textarea } = installHarness();
+  listeners.get("focusin")({ target: textarea });
+  const text = { nodeType: 3 };
+  const div = { nodeType: 1, classList: { contains: () => false }, firstElementChild: null };
+  paletteObserver(observers).callback([{ addedNodes: [text, div], removedNodes: [text] }]);
+  listeners.get("input")({ target: textarea });
   assert.notEqual(lite.overlay.style.display, "none");
+});
+
+test("keystroke path: one textarea box read, no scroll read after paint, no DOM query", () => {
+  const { doc, win, body, listeners } = createFakeDoc();
+  win.getComputedStyle = () => ({
+    boxSizing: "border-box",
+    width: "600px",
+    fontFamily: "sans-serif",
+    fontSize: "16px",
+    lineHeight: "19px",
+    color: "rgb(51, 51, 51)",
+    position: "static",
+    overflowX: "visible",
+    overflowY: "visible",
+  });
+  let boxReads = 0;
+  let scrollReads = 0;
+  let lateScrollReads = 0;
+  let painted = false;
+  const textarea = makeTextarea({
+    offsetWidth: 600,
+    offsetHeight: 200,
+    getBoundingClientRect() {
+      boxReads += 1;
+      return { left: 0, top: 0, right: 600, bottom: 200, width: 600, height: 200 };
+    },
+  });
+  for (const prop of ["scrollTop", "scrollLeft"]) {
+    Object.defineProperty(textarea, prop, {
+      get() {
+        scrollReads += 1;
+        if (painted) lateScrollReads += 1;
+        return 0;
+      },
+    });
+  }
+  doc.activeElement = textarea;
+  const lifecycle = { node(node, parent = body) { parent.append(node); } };
+  const measurer = createCaretMeasurer({ doc, win, lifecycle });
+  const lite = installLiteCaret({
+    doc,
+    win,
+    measurer,
+    lifecycle,
+    getSettings: () => ({ cursorStyle: "Box", colorLight: "#333333", blinkingEnabled: true, showChar: true }),
+  });
+  let stored = "";
+  Object.defineProperty(lite.overlay.style, "transform", {
+    configurable: true,
+    get: () => stored,
+    set(value) {
+      stored = value;
+      painted = true;
+    },
+  });
+  listeners.get("focusin")({ target: textarea });
+
+  for (let i = 0; i < 3; i += 1) {
+    boxReads = 0;
+    scrollReads = 0;
+    painted = false;
+    doc.querySelectorCalls = 0;
+    textarea.value += "x";
+    textarea.selectionStart = textarea.value.length;
+    textarea.selectionEnd = textarea.value.length;
+    listeners.get("input")({ target: textarea });
+    listeners.get("keyup")({ target: textarea });
+    listeners.get("selectionchange")({ target: textarea });
+    assert.equal(boxReads, 1, "one getBoundingClientRect on the textarea per key");
+    assert.equal(scrollReads, 2, "scrollTop/scrollLeft read once, inside the measure");
+    assert.equal(doc.querySelectorCalls, 0, "no palette querySelector per key");
+  }
+  assert.equal(lateScrollReads, 0, "no scroll read after the overlay write");
+  lite.dispose();
+  measurer.dispose();
+});
+
+test("diag timing covers the whole apply, not just the measure", () => {
+  const { listeners, textarea, timings } = installHarness();
+  listeners.get("focusin")({ target: textarea });
+  listeners.get("input")({ target: textarea });
+  assert.equal(timings.length, 2);
+  assert.ok(timings.every((ms) => typeof ms === "number" && ms >= 0));
+});
+
+test("caret above the clipping scrollport is hidden (top bar case)", () => {
+  const clipper = {
+    getBoundingClientRect: () => ({ left: 0, top: 100, right: 600, bottom: 500, width: 600, height: 400 }),
+  };
+  const { lite, doc, win, listeners, textarea, rect } = installHarness({ x: 10, y: 20 }, {
+    getBoundingClientRect: () => ({ left: 0, top: 0, right: 600, bottom: 200, width: 600, height: 200 }),
+  });
+  textarea.parentElement = clipper;
+  clipper.parentElement = doc.body;
+  win.getComputedStyle = (el) => (el === clipper
+    ? { position: "relative", overflowX: "hidden", overflowY: "auto" }
+    : { position: "static", overflowX: "visible", overflowY: "visible" });
+
+  listeners.get("focusin")({ target: textarea });
+  assert.equal(lite.overlay.style.display, "none", "caret scrolled under the top bar must not paint");
+
+  rect.y = 150;
+  listeners.get("input")({ target: textarea });
+  assert.notEqual(lite.overlay.style.display, "none");
+});
+
+test("Studio demo raises only its own caret above the panel", () => {
+  const { lite, doc, listeners, textarea } = installHarness({}, { id: "", className: "cs-demo" });
+  listeners.get("focusin")({ target: textarea });
+  assert.equal(lite.overlay.style.zIndex, "10003");
+  assert.equal(lite.overlay.classList.contains("cs-lite-demo"), true);
+
+  const block = makeTextarea();
+  doc.activeElement = block;
+  listeners.get("focusin")({ target: block });
+  assert.equal(lite.overlay.style.zIndex, "40");
+  assert.equal(lite.overlay.classList.contains("cs-lite-demo"), false);
+});
+
+test("showChar paints no glyph on Line or Beam", () => {
+  for (const cursorStyle of ["Line", "Beam"]) {
+    const { lite, listeners, textarea } = installHarness({}, {}, { cursorStyle, showChar: true });
+    listeners.get("focusin")({ target: textarea });
+    const glyph = lite.overlay.children[0];
+    assert.equal(glyph.style.display, "none", cursorStyle);
+    assert.equal(glyph.textContent, "", cursorStyle);
+  }
+});
+
+test("Box letter copies the block font and reads on the caret colour", () => {
+  const { lite, listeners, textarea } = installHarness({
+    fontFamily: "Inter",
+    fontSize: "15px",
+    fontWeight: "400",
+    fontStyle: "normal",
+    lineHeight: "22px",
+    color: "rgb(51, 51, 51)",
+  }, {}, { cursorStyle: "Box", showChar: true, colorLight: "#00695e" });
+  listeners.get("focusin")({ target: textarea });
+  const glyph = lite.overlay.children[0];
+  assert.equal(glyph.style.display, "block");
+  assert.equal(glyph.textContent, "h");
+  assert.equal(glyph.style.fontFamily, "Inter");
+  assert.equal(glyph.style.fontSize, "15px");
+  assert.equal(glyph.style.lineHeight, "22px");
+  assert.equal(glyph.style.color, "rgb(204, 204, 204)", "dark text inverts on the teal box");
+});
+
+test("Box letter stays off when showChar is off", () => {
+  const { lite, listeners, textarea } = installHarness({}, {}, { cursorStyle: "Box", showChar: false });
+  listeners.get("focusin")({ target: textarea });
+  assert.equal(lite.overlay.children[0].style.display, "none");
+});
+
+test("glyphColorOn picks the readable one of text colour and its inverse", () => {
+  assert.equal(glyphColorOn("#00695e", "rgb(51, 51, 51)"), "rgb(204, 204, 204)");
+  assert.equal(glyphColorOn("#39ff14", "rgb(245, 248, 250)"), "rgb(10, 7, 5)");
+  assert.equal(glyphColorOn("#333333", "rgb(51, 51, 51)"), "rgb(204, 204, 204)");
 });
 
 test("caret point outside textarea box hides overlay", () => {
@@ -521,4 +849,78 @@ test("glow uses two rgba layers from hexToRgba", () => {
   const shadow = String(lite.overlay.style.boxShadow);
   assert.match(shadow, /rgba\(0, 105, 94/);
   assert.equal(shadow.split(",").length >= 2, true);
+});
+
+test("isPlainLine: Line with glow, letter, gradient and effects off", () => {
+  const base = { cursorStyle: "Line", glow: false, showChar: false, gradientEnabled: false };
+  assert.equal(isPlainLine(base), true);
+  assert.equal(isPlainLine({ ...base, glow: true }), false);
+  assert.equal(isPlainLine({ ...base, showChar: true }), false);
+  assert.equal(isPlainLine({ ...base, gradientEnabled: true }), false);
+  assert.equal(isPlainLine({ ...base, smear: true }), false);
+  assert.equal(isPlainLine({ ...base, cursorStyle: "Beam" }), false);
+});
+
+function makeStyledTextarea(extras = {}) {
+  const props = new Map();
+  return makeTextarea({
+    style: {
+      setProperty(name, value, priority) {
+        props.set(name, { value, priority });
+      },
+      removeProperty(name) {
+        props.delete(name);
+      },
+      getPropertyValue(name) {
+        return props.get(name)?.value ?? "";
+      },
+      getPropertyPriority(name) {
+        return props.get(name)?.priority ?? "";
+      },
+    },
+    ...extras,
+  });
+}
+
+test("native Line colours the browser caret and never measures", () => {
+  const { doc, win, listeners } = createFakeDoc();
+  win.prefersDark = true;
+  const textarea = makeStyledTextarea();
+  const settings = { cursorStyle: "Line", colorLight: "#00695e", colorDark: "#48d0c0" };
+  const native = installNativeCaret({ doc, win, getSettings: () => settings });
+
+  assert.equal(listeners.has("input"), false, "no input listener on the native path");
+  assert.equal(listeners.has("selectionchange"), false);
+  assert.equal(listeners.has("scroll"), false);
+  assert.equal(doc.body.children.length, 0, "no overlay mounted");
+
+  doc.activeElement = textarea;
+  listeners.get("focusin")({ target: textarea });
+  assert.equal(textarea.style.getPropertyValue("caret-color"), "#00695e");
+  assert.equal(textarea.style.getPropertyPriority("caret-color"), "important");
+
+  doc.body.classList.add("rm-dark-theme");
+  native.refresh();
+  assert.equal(textarea.style.getPropertyValue("caret-color"), "#48d0c0");
+
+  native.dispose();
+  assert.equal(textarea.style.getPropertyValue("caret-color"), "");
+});
+
+test("native Line paints the Depot preview and applies opacity", () => {
+  const { doc, win, listeners } = createFakeDoc();
+  const demo = makeStyledTextarea({ id: "", className: "cs-demo" });
+  installNativeCaret({ doc, win, getSettings: () => ({ colorLight: "#00695e", cursorOpacity: 0.5 }) });
+  listeners.get("focusin")({ target: demo });
+  assert.equal(demo.style.getPropertyValue("caret-color"), "rgba(0, 105, 94, 0.5)");
+  listeners.get("focusout")({ target: demo });
+  assert.equal(demo.style.getPropertyValue("caret-color"), "");
+});
+
+test("native Line leaves Roam Grid and search inputs alone", () => {
+  const { doc, win, listeners } = createFakeDoc();
+  const grid = makeStyledTextarea({ closest: () => ({ className: "rg-root" }) });
+  installNativeCaret({ doc, win, getSettings: () => ({ colorLight: "#00695e" }) });
+  listeners.get("focusin")({ target: grid });
+  assert.equal(grid.style.getPropertyValue("caret-color"), "");
 });

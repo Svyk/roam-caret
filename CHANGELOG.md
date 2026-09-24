@@ -4,6 +4,27 @@ All notable changes to this project follow [Keep a Changelog](https://keepachang
 
 ## [Unreleased]
 
+## [0.5.0] - 2026-09-23
+
+Roam Depot prep: speed first, then the fixes from the Opus review.
+
+### Changed
+- A plain Line (Line shape, glow off, letter off, no gradient, no canvas effect) now colours the browser's own caret with `caret-color`. No overlay, no mirror, no work per keystroke. The browser draws it about 1px wide.
+- The overlay path does one forced layout per keystroke. The textarea box is read once, inside the measure. Scroll offsets are never read after the overlay write. The command-palette check is a flag kept by a MutationObserver, not a `querySelector` per key.
+- Blink runs on one Web Animations handle, restarted on input, arrow-key moves and clicks. Blink speed, balance, delay and opacity now work in lite mode. The blink period matches canvas mode (2.5 s divided by speed), so the default lite blink is slower than the old fixed 1.06 s.
+- `window.__ROAM_CARET_DIAG.measures` now times the whole caret update, style writes included.
+- Gradient, Line serifs, breathing blink, idle fade, selection colour, row tint, typewriter sound and movement delay switch to canvas mode, which draws them. In lite mode they did nothing.
+
+### Fixed
+- Show letter no longer draws a second letter on Line or Beam. On Box it uses the block's font and line height. The letter is drawn in the block's text colour or its inverse, whichever is easier to read on the caret colour.
+- Light Roam on a dark OS now uses the light caret colour. Lite and canvas mode read the theme from Roam's own classes only (`bp3-dark`, `rm-dark-theme`, `roam-body.dark`, `bt-theme-dark`). The Studio panel follows the same theme.
+- The Studio preview shows the caret. Only a caret in a preview textarea is raised above the panel. Block carets stay under the command palette.
+- A caret scrolled out of its scroll container, for example under the top bar, is hidden.
+- The caret comes back as soon as the command palette closes.
+- The Depot Look menu stays on the chosen built-in or imported look. Editing the look by hand switches the menu to Custom.
+- A share code is named after the active look, or after the shape for a custom look. If an imported name already belongs to a different look, the import is saved as "Name 2". Importing the same look twice does not duplicate it, and built-in names are never shadowed.
+- Colour fields ignore a partial hex while you type instead of resetting to the default green.
+
 ## [0.4.2] - 2026-09-22
 
 ### Fixed

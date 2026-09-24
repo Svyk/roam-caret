@@ -1,5 +1,7 @@
 import { isSkippedHost } from "./caret-measure.js";
+import { DEMO_Z_INDEX, needsCanvas } from "./cursor-smith.js";
 import { hexToRgba } from "./settings.js";
+import { isRoamDark } from "./theme.js";
 
 function isPasswordField(el) {
   if (!el) return false;
@@ -7,57 +9,128 @@ function isPasswordField(el) {
   return type === "password";
 }
 
-const COMMAND_PALETTE_SELECTOR = ".rm-command-palette";
+const COMMAND_PALETTE_CLASS = "rm-command-palette";
+const COMMAND_PALETTE_SELECTOR = `.${COMMAND_PALETTE_CLASS}`;
 const CARET_BOX_MARGIN_PX = 8;
+const BASE_Z_INDEX = "40";
+const DEMO_CLASS = "cs-lite-demo";
 
-function hasBox(el) {
-  if (typeof el.getBoundingClientRect !== "function") return true;
-  const box = el.getBoundingClientRect();
-  return box.width > 0 && box.height > 0;
+function isDemo(el) {
+  return String(el?.className || "").split(/\s+/).includes("cs-demo");
 }
 
-function isCaretHost(el) {
+export function isCaretHost(el) {
   if (!el || el.tagName !== "TEXTAREA") return false;
   if (isPasswordField(el)) return false;
   if (el.id === "find-or-create-input") return false;
   if (isSkippedHost(el)) return false;
+  if (isDemo(el)) return true;
   const id = String(el.id || "");
   const className = String(el.className || "");
-  const isPreview = className.split(/\s+/).includes("cs-demo");
-  const isRoamBlock =
+  return (
     id.startsWith("block-input-") ||
     className.includes("rm-block-input") ||
-    className.includes("rm-block__input");
-  if (!isPreview && !isRoamBlock) return false;
-  return hasBox(el);
-}
-
-function hasCommandPalette(doc) {
-  return !!doc?.querySelector?.(COMMAND_PALETTE_SELECTOR);
-}
-
-function caretOutsideTextarea(el, rect) {
-  if (!rect || typeof el?.getBoundingClientRect !== "function") return false;
-  const box = el.getBoundingClientRect();
-  const x = rect.x;
-  const y = rect.y;
-  return (
-    x < box.left - CARET_BOX_MARGIN_PX ||
-    x > box.right + CARET_BOX_MARGIN_PX ||
-    y < box.top - CARET_BOX_MARGIN_PX ||
-    y > box.bottom + CARET_BOX_MARGIN_PX
+    className.includes("rm-block__input")
   );
 }
 
-function isDark(doc, prefersDarkMq) {
-  const root = doc?.documentElement;
-  const body = doc?.body;
-  if (root?.classList?.contains("bp3-dark")) return true;
-  if (body?.classList?.contains("bt-theme-dark")) return true;
-  if (body?.classList?.contains("rm-dark-theme")) return true;
-  if (body?.classList?.contains("roam-body") && body?.classList?.contains("dark")) return true;
-  const prefersDark = !!prefersDarkMq?.matches;
-  return prefersDark && !root?.classList?.contains("bp3-light");
+// A plain Line is the browser's own caret, recoloured: no overlay, no mirror,
+// no JS on the keystroke path.
+export function isPlainLine(settings) {
+  return !!settings
+    && settings.cursorStyle === "Line"
+    && !settings.glow
+    && !settings.showChar
+    && !settings.gradientEnabled
+    && !needsCanvas(settings);
+}
+
+function opacityOf(settings) {
+  const value = Number(settings?.cursorOpacity);
+  return Number.isFinite(value) ? Math.min(1, Math.max(0, value)) : 1;
+}
+
+function containsPalette(node) {
+  if (!node || node.nodeType !== 1) return false;
+  if (node.classList?.contains(COMMAND_PALETTE_CLASS)) return true;
+  return !!(node.firstElementChild && node.querySelector?.(COMMAND_PALETTE_SELECTOR));
+}
+
+function caretOutsideTextarea(rect) {
+  const box = rect.box;
+  if (!box) return false;
+  const right = box.right ?? box.left + box.width;
+  const bottom = box.bottom ?? box.top + box.height;
+  return (
+    rect.x < box.left - CARET_BOX_MARGIN_PX ||
+    rect.x > right + CARET_BOX_MARGIN_PX ||
+    rect.y < box.top - CARET_BOX_MARGIN_PX ||
+    rect.y > bottom + CARET_BOX_MARGIN_PX
+  );
+}
+
+// Same walk as the canvas engine's resolveClipChain: every overflow ancestor
+// that can clip the textarea, stopping at a fixed-position container.
+function resolveClipChain(el, doc, win) {
+  const chain = [];
+  if (typeof win?.getComputedStyle !== "function") return chain;
+  try {
+    let curPos = win.getComputedStyle(el).position;
+    if (curPos === "fixed") return chain;
+    let node = el.parentElement;
+    let guard = 0;
+    while (node && node !== doc?.body && node !== doc?.documentElement && guard++ < 24) {
+      const st = win.getComputedStyle(node);
+      const positioned = st.position !== "static";
+      const clips = st.overflowX !== "visible" || st.overflowY !== "visible";
+      if (clips && (curPos !== "absolute" || positioned)) chain.push(node);
+      if (positioned) {
+        if (st.position === "fixed") break;
+        curPos = st.position;
+      }
+      node = node.parentElement;
+    }
+  } catch {
+    return [];
+  }
+  return chain;
+}
+
+function parseRgb(value) {
+  const text = String(value || "").trim();
+  const hex = /^#([0-9a-f]{6})$/i.exec(text);
+  if (hex) {
+    const int = Number.parseInt(hex[1], 16);
+    return [int >> 16 & 255, int >> 8 & 255, int & 255];
+  }
+  const nums = text.match(/[\d.]+/g);
+  if (!/^rgba?\(/i.test(text) || !nums || nums.length < 3) return null;
+  return nums.slice(0, 3).map(Number);
+}
+
+function luminance([r, g, b]) {
+  const lin = (c) => {
+    const v = c / 255;
+    return v <= 0.03928 ? v / 12.92 : ((v + 0.055) / 1.055) ** 2.4;
+  };
+  return 0.2126 * lin(r) + 0.7152 * lin(g) + 0.0722 * lin(b);
+}
+
+function contrast(a, b) {
+  const la = luminance(a);
+  const lb = luminance(b);
+  return (Math.max(la, lb) + 0.05) / (Math.min(la, lb) + 0.05);
+}
+
+// The block's text colour or its inverse, whichever reads better on the box.
+export function glyphColorOn(boxColor, textColor) {
+  const box = parseRgb(boxColor);
+  const text = parseRgb(textColor);
+  if (!box) return textColor || "";
+  if (!text) return luminance(box) > 0.179 ? "rgb(0, 0, 0)" : "rgb(255, 255, 255)";
+  const inverted = text.map((c) => 255 - c);
+  const pick = contrast(text, box) >= contrast(inverted, box) ? text : inverted;
+  return `rgb(${pick.map((c) => Math.round(c)).join(", ")})`;
 }
 
 function hasRangeSelection(el) {
@@ -65,7 +138,94 @@ function hasRangeSelection(el) {
   return el.selectionStart !== el.selectionEnd;
 }
 
-export function installLiteCaret({ doc, win, measurer, lifecycle, getSettings } = {}) {
+function observerClass(win) {
+  const MO = win?.MutationObserver || globalThis.MutationObserver;
+  return typeof MO === "function" ? MO : null;
+}
+
+export function installNativeCaret({ doc, win, getSettings } = {}) {
+  const documentRef = doc || globalThis.document;
+  const windowRef = win || documentRef?.defaultView || globalThis;
+  const painted = new Set();
+  let disposed = false;
+
+  const colorFor = () => {
+    const settings = (typeof getSettings === "function" && getSettings()) || {};
+    const hex = isRoamDark(documentRef) ? settings.colorDark : settings.colorLight;
+    if (!hex) return "";
+    const opacity = opacityOf(settings);
+    return opacity < 1 ? hexToRgba(hex, opacity) : hex;
+  };
+
+  const clear = (el) => {
+    painted.delete(el);
+    try {
+      el.style.removeProperty("caret-color");
+    } catch {
+    }
+  };
+
+  const paint = (el) => {
+    const color = colorFor();
+    if (!color) {
+      clear(el);
+      return;
+    }
+    try {
+      el.style.setProperty("caret-color", color, "important");
+      painted.add(el);
+    } catch {
+    }
+  };
+
+  const refresh = () => {
+    if (disposed) return;
+    const target = documentRef.activeElement;
+    for (const el of [...painted]) if (el !== target) clear(el);
+    if (target && isCaretHost(target)) paint(target);
+  };
+
+  const onFocusIn = (event) => {
+    const target = event?.target;
+    if (target && isCaretHost(target)) paint(target);
+  };
+
+  const onFocusOut = (event) => {
+    const target = event?.target;
+    if (target && painted.has(target)) clear(target);
+  };
+
+  documentRef.addEventListener("focusin", onFocusIn, false);
+  documentRef.addEventListener("focusout", onFocusOut, false);
+
+  let themeObserver = null;
+  const MO = observerClass(windowRef);
+  if (MO) {
+    themeObserver = new MO(() => refresh());
+    for (const node of [documentRef.documentElement, documentRef.body]) {
+      if (node) themeObserver.observe(node, { attributes: true, attributeFilter: ["class"] });
+    }
+  }
+
+  refresh();
+
+  const dispose = () => {
+    if (disposed) return;
+    disposed = true;
+    documentRef.removeEventListener("focusin", onFocusIn, false);
+    documentRef.removeEventListener("focusout", onFocusOut, false);
+    try {
+      themeObserver?.disconnect();
+    } catch {
+    }
+    themeObserver = null;
+    for (const el of [...painted]) clear(el);
+  };
+
+  return { refresh, dispose };
+}
+
+export function installLiteCaret({ doc, win, measurer, lifecycle, getSettings, recordTiming } = {}) {
   const documentRef = doc || globalThis.document;
   const windowRef = win || documentRef?.defaultView || globalThis;
   let settings = typeof getSettings === "function" ? getSettings() || {} : {};
@@ -74,6 +234,10 @@ export function installLiteCaret({ doc, win, measurer, lifecycle, getSettings } 
   let lastEl = null;
   let lastSig = "";
   let scrollRaf = 0;
+  let paletteOpen = !!documentRef.querySelector?.(COMMAND_PALETTE_SELECTOR);
+
+  const perf = windowRef?.performance || globalThis.performance;
+  const now = typeof perf?.now === "function" ? () => perf.now() : null;
 
   const overlay = documentRef.createElement("div");
   overlay.className = "cs-lite-caret";
@@ -82,13 +246,16 @@ export function installLiteCaret({ doc, win, measurer, lifecycle, getSettings } 
   style.position = "fixed";
   style.top = "0";
   style.left = "0";
-  style.zIndex = "40";
+  style.zIndex = BASE_Z_INDEX;
   style.willChange = "transform";
   style.transformOrigin = "0 0";
   style.display = "none";
 
   const glyph = documentRef.createElement("span");
   glyph.className = "cs-lite-glyph";
+  glyph.style.display = "none";
+  glyph.style.textAlign = "center";
+  glyph.style.whiteSpace = "pre";
   overlay.appendChild(glyph);
 
   const parent = documentRef.body || documentRef.documentElement;
@@ -96,12 +263,11 @@ export function installLiteCaret({ doc, win, measurer, lifecycle, getSettings } 
   else parent.append(overlay);
 
   const motionQuery = windowRef?.matchMedia?.("(prefers-reduced-motion: reduce)");
-  const prefersDarkMq = windowRef?.matchMedia?.("(prefers-color-scheme: dark)");
   let reducedMotion = !!motionQuery?.matches;
 
   const computeSig = (el) => {
     if (!el) return "";
-    return [el.value?.length, el.selectionStart, el.selectionEnd, el.scrollLeft, el.scrollTop].join("\0");
+    return [el.value?.length, el.selectionStart, el.selectionEnd].join("\0");
   };
 
   const rememberTarget = (el) => {
@@ -123,6 +289,8 @@ export function installLiteCaret({ doc, win, measurer, lifecycle, getSettings } 
     border: "",
     borderRadius: "",
     boxShadow: "",
+    opacity: "",
+    zIndex: BASE_Z_INDEX,
   };
   const writeStyle = (prop, value) => {
     if (styleCache[prop] === value) return;
@@ -130,50 +298,169 @@ export function installLiteCaret({ doc, win, measurer, lifecycle, getSettings } 
     style[prop] = value;
   };
 
+  const glyphCache = {
+    display: "none",
+    color: "",
+    fontFamily: "",
+    fontSize: "",
+    fontWeight: "",
+    fontStyle: "",
+    lineHeight: "",
+  };
+  const writeGlyph = (prop, value) => {
+    if (glyphCache[prop] === value) return;
+    glyphCache[prop] = value;
+    glyph.style[prop] = value;
+  };
+  let glyphText = "";
+  let glyphColorKey = "";
+  let glyphColor = "";
+
   const hide = () => {
     writeStyle("display", "none");
   };
 
-  const syncBlink = ({ ping } = {}) => {
-    const shouldBlink = !!settings.blinkingEnabled && !reducedMotion;
-    if (!shouldBlink) {
-      overlay.classList.remove("cs-lite-blink");
-      return;
-    }
-    if (ping && overlay.classList.contains("cs-lite-blink")) {
-      // Restart the blink without a forced reflow: reset the running CSS
-      // animation through WAAPI instead of reading overlay.offsetWidth.
-      const animations =
-        typeof overlay.getAnimations === "function" ? overlay.getAnimations() : null;
-      if (animations) {
-        for (const animation of animations) {
-          try {
-            animation.currentTime = 0;
-          } catch {
-          }
-        }
-      }
-    }
-    overlay.classList.add("cs-lite-blink");
+  let demoLayer = false;
+  const setDemoLayer = (demo) => {
+    if (demo === demoLayer) return;
+    demoLayer = demo;
+    overlay.classList.toggle(DEMO_CLASS, demo);
+    writeStyle("zIndex", demo ? String(DEMO_Z_INDEX) : BASE_Z_INDEX);
   };
 
-  const applyTransform = (rect, el) => {
-    if (
-      !el ||
-      !isCaretHost(el) ||
-      hasCommandPalette(documentRef) ||
-      hasRangeSelection(el) ||
-      !rect ||
-      !rect.visible ||
-      caretOutsideTextarea(el, rect)
-    ) {
-      hide();
+  // One Animation handle for the blink. Restarting it is a currentTime write:
+  // no getAnimations() style flush, no offsetWidth reflow.
+  const canAnimate = typeof overlay.animate === "function";
+  let blinkAnim = null;
+  let blinkOn = false;
+  let blinkKey = "";
+  let blinkSettings = null;
+
+  const stopBlink = () => {
+    if (!blinkOn) return;
+    blinkOn = false;
+    try {
+      blinkAnim?.cancel();
+    } catch {
+    }
+  };
+
+  const syncBlink = (ping) => {
+    if (!canAnimate || !settings.blinkingEnabled || reducedMotion) {
+      stopBlink();
       return;
     }
+    if (settings !== blinkSettings || !blinkAnim) {
+      blinkSettings = settings;
+      const speed = Math.max(0.1, Number(settings.blinkSpeed) || 1.2);
+      const duration = Math.round(2500 / speed);
+      const lit = Math.min(0.9, Math.max(0.1, Number(settings.blinkOnOffBalance) || 0.5));
+      const delay = Math.max(0, Number(settings.blinkDelayMs) || 0);
+      const opacity = opacityOf(settings);
+      const key = `${duration}|${lit}|${delay}|${opacity}`;
+      if (key !== blinkKey || !blinkAnim) {
+        try {
+          blinkAnim?.cancel();
+        } catch {
+        }
+        blinkKey = key;
+        blinkAnim = overlay.animate(
+          [
+            { opacity },
+            { opacity, offset: lit },
+            { opacity: 0, offset: lit },
+            { opacity: 0 },
+          ],
+          { duration, delay, iterations: Infinity },
+        );
+        blinkOn = true;
+        return;
+      }
+    }
+    if (!blinkOn) {
+      blinkOn = true;
+      blinkAnim.play();
+      return;
+    }
+    if (ping) blinkAnim.currentTime = 0;
+  };
 
-    const color = isDark(documentRef, prefersDarkMq)
-      ? settings.colorDark || ""
-      : settings.colorLight || "";
+  const restartBlink = () => {
+    if (blinkOn && blinkAnim) blinkAnim.currentTime = 0;
+  };
+
+  let clipFor = null;
+  let clipChain = [];
+  const outsideClip = (el, rect) => {
+    if (el !== clipFor) {
+      clipFor = el;
+      clipChain = resolveClipChain(el, documentRef, windowRef);
+    }
+    for (const node of clipChain) {
+      if (node.isConnected === false) {
+        clipFor = null;
+        return false;
+      }
+      const b = node.getBoundingClientRect();
+      if (
+        rect.x < b.left - 1 ||
+        rect.x > b.right + 1 ||
+        rect.y < b.top - 1 ||
+        rect.y + rect.height > b.bottom + 1
+      ) {
+        return true;
+      }
+    }
+    return false;
+  };
+
+  const paintGlyph = (rect, cursorStyle, color, height) => {
+    const show = cursorStyle === "Box" && !settings.boxHollow && !!settings.showChar && !!rect.glyph;
+    if (!show) {
+      writeGlyph("display", "none");
+      if (glyphText) {
+        glyphText = "";
+        glyph.textContent = "";
+      }
+      return;
+    }
+    if (rect.glyph !== glyphText) {
+      glyphText = rect.glyph;
+      glyph.textContent = rect.glyph;
+    }
+    const colorKey = `${color}|${rect.color || ""}`;
+    if (colorKey !== glyphColorKey) {
+      glyphColorKey = colorKey;
+      glyphColor = glyphColorOn(color, rect.color);
+    }
+    writeGlyph("display", "block");
+    writeGlyph("color", glyphColor);
+    writeGlyph("fontFamily", rect.fontFamily || "");
+    writeGlyph("fontSize", rect.fontSize || "");
+    writeGlyph("fontWeight", rect.fontWeight || "");
+    writeGlyph("fontStyle", rect.fontStyle || "");
+    writeGlyph(
+      "lineHeight",
+      rect.lineHeight && rect.lineHeight !== "normal" ? rect.lineHeight : `${height}px`,
+    );
+  };
+
+  // Reads nothing from layout: the measurer already produced the one layout
+  // (box included) and the clip rects read against it before any write here.
+  const paint = (rect, el) => {
+    const box = rect?.box;
+    if (
+      !rect ||
+      !rect.visible ||
+      (box && !(box.width > 0 && box.height > 0)) ||
+      caretOutsideTextarea(rect) ||
+      outsideClip(el, rect)
+    ) {
+      hide();
+      return false;
+    }
+
+    const color = isRoamDark(documentRef) ? settings.colorDark || "" : settings.colorLight || "";
     const cursorStyle = settings.cursorStyle || "Box";
     let x = rect.x;
     let y = rect.y;
@@ -213,38 +500,40 @@ export function installLiteCaret({ doc, win, measurer, lifecycle, getSettings } 
       }
     }
 
+    const opacity = opacityOf(settings);
     writeStyle("display", "");
     writeStyle("transform", `translate(${x}px, ${y}px)`);
     writeStyle("width", `${width}px`);
     writeStyle("height", `${height}px`);
+    writeStyle("opacity", opacity < 1 ? String(opacity) : "");
     writeStyle(
       "boxShadow",
       settings.glow
         ? `0 0 0 1px ${hexToRgba(color, 0.18)}, 0 0 8px ${hexToRgba(color, 0.3)}`
         : "",
     );
-
-    if (settings.showChar) {
-      glyph.textContent = rect.glyph || "";
-      glyph.style.display = "block";
-    } else {
-      glyph.textContent = "";
-      glyph.style.display = "none";
-    }
+    setDemoLayer(isDemo(el));
+    paintGlyph(rect, cursorStyle, color, height);
+    return true;
   };
 
-  const measureAndApply = (el, { ping } = {}) => {
+  let composing = false;
+
+  const measureAndApply = (el, ping) => {
     if (disposed) return;
+    const t0 = recordTiming && now ? now() : null;
     readSettings();
     const target = el || documentRef.activeElement;
-    if (!target || !isCaretHost(target) || hasCommandPalette(documentRef)) {
+    if (!target || !isCaretHost(target) || paletteOpen || hasRangeSelection(target)) {
       hide();
+      rememberTarget(target);
       return;
     }
     active = target;
     const rect = measurer.measure(target);
-    applyTransform(rect, target);
-    syncBlink({ ping });
+    if (paint(rect, target)) syncBlink(ping);
+    rememberTarget(target);
+    if (t0 != null) recordTiming(now() - t0);
   };
 
   const onFocusIn = (event) => {
@@ -256,9 +545,7 @@ export function installLiteCaret({ doc, win, measurer, lifecycle, getSettings } 
       hide();
       return;
     }
-    active = target;
-    measureAndApply(target, { ping: true });
-    rememberTarget(target);
+    measureAndApply(target, true);
   };
 
   const onFocusOut = (event) => {
@@ -270,13 +557,9 @@ export function installLiteCaret({ doc, win, measurer, lifecycle, getSettings } 
     hide();
   };
 
-  let composing = false;
-
   const onInput = (event) => {
     if (composing) return; // never measure mid-composition
-    const target = event?.target || documentRef.activeElement;
-    measureAndApply(target, { ping: true });
-    rememberTarget(target);
+    measureAndApply(event?.target || documentRef.activeElement, true);
   };
 
   const onCompositionStart = (event) => {
@@ -289,33 +572,32 @@ export function installLiteCaret({ doc, win, measurer, lifecycle, getSettings } 
   const onCompositionEnd = (event) => {
     if (!composing) return;
     composing = false;
-    const target = event?.target || documentRef.activeElement;
-    measureAndApply(target, { ping: true });
-    rememberTarget(target);
+    measureAndApply(event?.target || documentRef.activeElement, true);
   };
 
-  const onRefreshEvent = () => {
+  // selectionchange / keyup / mouseup. A moved caret (arrow keys, click)
+  // remeasures and restarts the blink; an unmoved click only restarts it.
+  const onRefreshEvent = (event) => {
     if (composing) return;
     const target = documentRef.activeElement;
-    const sig = computeSig(target);
-    if (target === lastEl && sig === lastSig) return;
-    rememberTarget(target);
-    measureAndApply(target);
+    if (target === lastEl && computeSig(target) === lastSig) {
+      if (event?.type === "mouseup" && target === active) restartBlink();
+      return;
+    }
+    measureAndApply(target, true);
   };
 
   const remeasureScroll = () => {
-    const target = documentRef.activeElement;
-    measureAndApply(target);
-    rememberTarget(target);
+    measureAndApply(documentRef.activeElement, false);
   };
 
   const SCROLL_OPTS = { capture: true, passive: true };
   const PASSIVE_OPTS = { passive: true };
 
   const onScrollOrResize = (event) => {
-    if (disposed) return;
+    if (disposed || paletteOpen) return;
     const target = documentRef.activeElement || active;
-    if (!target || !isCaretHost(target) || hasCommandPalette(documentRef)) return;
+    if (!target || !isCaretHost(target)) return;
     // Only remeasure when the scrolled surface can move the caret: window,
     // document, visualViewport, or an ancestor of the active textarea.
     // Sidebar / autocomplete / unrelated overflow scrolls are ignored.
@@ -353,22 +635,44 @@ export function installLiteCaret({ doc, win, measurer, lifecycle, getSettings } 
 
   const onMotionChange = () => {
     reducedMotion = !!motionQuery?.matches;
-    syncBlink();
+    syncBlink(true);
   };
 
   const refresh = () => {
-    if (disposed) return;
-    readSettings();
-    const target = documentRef.activeElement;
-    if (target && isCaretHost(target) && !hasCommandPalette(documentRef)) {
-      active = target;
-      const rect = measurer.measure(target);
-      applyTransform(rect, target);
-      syncBlink({ ping: true });
-      return;
-    }
-    hide();
+    measureAndApply(documentRef.activeElement, true);
   };
+
+  // The palette flag flips only when a node carrying the palette class is
+  // added or removed, so the keystroke path reads a boolean, not the DOM.
+  let paletteObserver = null;
+  const MO = observerClass(windowRef);
+  if (MO && documentRef.body) {
+    paletteObserver = new MO((records) => {
+      let changed = false;
+      for (const record of records) {
+        for (const node of record.removedNodes || []) {
+          if (containsPalette(node)) {
+            paletteOpen = false;
+            changed = true;
+          }
+        }
+        for (const node of record.addedNodes || []) {
+          if (containsPalette(node)) {
+            paletteOpen = true;
+            changed = true;
+          }
+        }
+      }
+      if (!changed || disposed) return;
+      if (paletteOpen) {
+        hide();
+        return;
+      }
+      const target = documentRef.activeElement;
+      if (!composing && target && isCaretHost(target)) measureAndApply(target, true);
+    });
+    paletteObserver.observe(documentRef.body, { childList: true, subtree: true });
+  }
 
   const docListeners = [
     ["focusin", onFocusIn, false],
@@ -400,6 +704,16 @@ export function installLiteCaret({ doc, win, measurer, lifecycle, getSettings } 
       windowRef.cancelAnimationFrame?.(scrollRaf);
       scrollRaf = 0;
     }
+    try {
+      paletteObserver?.disconnect();
+    } catch {
+    }
+    paletteObserver = null;
+    try {
+      blinkAnim?.cancel();
+    } catch {
+    }
+    blinkAnim = null;
     for (const [type, fn, capture] of docListeners) {
       documentRef.removeEventListener(type, fn, capture);
     }

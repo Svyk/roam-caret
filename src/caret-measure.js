@@ -104,6 +104,7 @@ function readMetrics(computed) {
     fontSize: computed.fontSize || "",
     fontWeight: computed.fontWeight || "",
     fontStyle: computed.fontStyle || "",
+    lineHeight: computed.lineHeight || "",
     color: computed.color || "",
     fontSizePx,
   };
@@ -122,6 +123,7 @@ export function createCaretMeasurer({ doc, win, lifecycle } = {}) {
   let cachedEl = null;
   let metrics = null;
   let latestRect = null;
+  let markerHeight = "";
   let disposed = false;
 
   const mirror = documentRef.createElement("div");
@@ -210,9 +212,15 @@ export function createCaretMeasurer({ doc, win, lifecycle } = {}) {
     const { underCaret, hasGlyph } = glyphAt(value, start);
 
     prefixNode.textContent = value.slice(0, start);
-    marker.style.height = `${metrics.lineHeightPx}px`;
+    const nextMarkerHeight = `${metrics.lineHeightPx}px`;
+    if (nextMarkerHeight !== markerHeight) {
+      markerHeight = nextMarkerHeight;
+      marker.style.height = nextMarkerHeight;
+    }
     glyphEl.textContent = underCaret;
 
+    // The one forced layout per measure: every geometry read below runs
+    // against the layout this call produces, with no writes in between.
     const box = el.getBoundingClientRect();
     const glyphWidth = glyphEl.offsetWidth || metrics.fontSizePx * 0.6 || 8;
     const rect = {
@@ -239,7 +247,9 @@ export function createCaretMeasurer({ doc, win, lifecycle } = {}) {
       fontSize: metrics.fontSize,
       fontWeight: metrics.fontWeight,
       fontStyle: metrics.fontStyle,
+      lineHeight: metrics.lineHeight,
       color: metrics.color,
+      box,
       el,
     };
     latestRect = rect;

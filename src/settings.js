@@ -147,6 +147,7 @@ export function buildDepotPanel({
     {
       id: "cs-width",
       name: "Width (px)",
+      description: "Line and Beam. A Line with Glow and Show letter off uses the browser's own 1px caret.",
       action: {
         type: "input",
         placeholder: "3",

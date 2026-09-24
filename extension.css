@@ -82,9 +82,7 @@ body.cs-active .svy-caret-overlay-ui {
   pointer-events: none; box-sizing: border-box;
   transform-origin: 0 0; will-change: transform;
 }
+/* Above the Studio panel (10001) only while the caret is on a preview textarea;
+   everywhere else it stays under the command palette portal (1000). */
+.cs-lite-caret.cs-lite-demo { z-index: 10003; }
 .cs-lite-glyph { display: none; text-align: center; white-space: pre; pointer-events: none; }
-.cs-lite-caret.cs-lite-blink { animation: cs-lite-blink 1.06s step-end infinite; }
-@keyframes cs-lite-blink { 50% { opacity: 0; } }
-@media (prefers-reduced-motion: reduce) {
-  .cs-lite-caret.cs-lite-blink { animation: none; }
-}

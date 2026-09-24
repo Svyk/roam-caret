@@ -144,6 +144,7 @@ test("every CANVAS_EFFECT_KEY has a switch that calls ctl.set", () => {
   for (const key of CANVAS_EFFECT_KEYS) {
     const settings = { ...DEFAULTS, [key]: false };
     if (key === "backspaceDisintegrate" || key === "thunderstrike") settings.flameTrail = true;
+    if (key === "lineSerifs") settings.cursorStyle = "Line";
     const ctl = makeCtl(settings);
     const root = doc.createElement("div");
     renderStudio(root, ctl);
@@ -186,4 +187,31 @@ test("extension.css has no panel chrome or color-mix", async () => {
   assert.doesNotMatch(css, /color-mix/);
   assert.doesNotMatch(css, /\.tps-/);
   assert.doesNotMatch(css, /\.cs-panel-overlay/);
+});
+
+test("a colour text field ignores a partial hex", () => {
+  withFakeDoc((doc) => {
+    const settings = { ...DEFAULTS };
+    const ctl = makeCtl(settings);
+    const root = doc.createElement("div");
+    renderStudio(root, ctl);
+    const texts = [];
+    walk(root, (node) => {
+      if (node.tagName === "INPUT" && node.attributes.type === "text") texts.push(node);
+    });
+    assert.ok(texts.length >= 2);
+    const field = texts[0];
+    field.value = "#3";
+    field._fire("change", field);
+    assert.equal(ctl._calls.length, 0, "partial hex is not written");
+    field.value = "#3a3b3c";
+    field._fire("change", field);
+    assert.equal(ctl._calls.length, 1);
+    assert.equal(Object.values(ctl._calls[0])[0], "#3a3b3c");
+  });
+});
+
+test("Studio CSS follows Roam's theme, not the OS", () => {
+  assert.doesNotMatch(STUDIO_CSS, /color-scheme:light dark/);
+  assert.match(STUDIO_CSS, /\.bp3-dark \.cs-studio-overlay/);
 });

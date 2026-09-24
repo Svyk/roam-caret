@@ -217,14 +217,24 @@ var CANVAS_EFFECT_KEYS = Object.freeze([
   "speedDemon",
   "comboEnabled",
   "backspaceDisintegrate",
-  "thunderstrike"
+  "thunderstrike",
+  "gradientEnabled",
+  "lineSerifs",
+  "blinkBreathing",
+  "idleFadeEnabled",
+  "selectionColorEnabled",
+  "rowTypeTint",
+  "soundEnabled"
 ]);
 function needsCanvas(settings) {
   if (!settings) return false;
   for (const key of CANVAS_EFFECT_KEYS) {
-    if (settings[key] === true) return true;
+    if (settings[key] !== true) continue;
+    if (key === "lineSerifs" && settings.cursorStyle !== "Line") continue;
+    if (key === "blinkBreathing" && settings.blinkingEnabled === false) continue;
+    return true;
   }
-  return false;
+  return settings.moveDelayMs > 0;
 }
 __name(needsCanvas, "needsCanvas");
 var STRUCTURAL = /* @__PURE__ */ new Set(["enabled", "activePreset", "hideNativeCaret", "hideOnWindowBlur", "schemaVersion"]);
@@ -386,7 +396,8 @@ function normalizeSettings(raw) {
     if (named && needsCanvas({ ...DEFAULTS, ...named })) out.activePreset = "";
     out.schemaVersion = SCHEMA_VERSION;
   }
-  if (!Object.prototype.hasOwnProperty.call(out.presets, out.activePreset)) out.activePreset = "";
+  const known = Object.prototype.hasOwnProperty.call(out.presets, out.activePreset) || Object.prototype.hasOwnProperty.call(BUILTIN_PRESETS, out.activePreset);
+  if (!known) out.activePreset = "";
   return out;
 }
 __name(normalizeSettings, "normalizeSettings");
@@ -616,6 +627,7 @@ __name(buildFamilyPool, "buildFamilyPool");
 var ROOT_CLASS = "plg-cursor-smith";
 var BODY_ACTIVE_CLASS = "cs-active";
 var BODY_HIDE_NATIVE_CLASS = "cs-hide-native";
+var DEMO_Z_INDEX = 10003;
 var WRAP_CLASS = "cs-cursor-wrap";
 var CANVAS_CLASS = "cs-cursor-canvas";
 var TORCH_CLASS = "cs-torch-overlay";
@@ -709,6 +721,7 @@ export {
   ROOT_CLASS,
   BODY_ACTIVE_CLASS,
   BODY_HIDE_NATIVE_CLASS,
+  DEMO_Z_INDEX,
   WRAP_CLASS,
   CANVAS_CLASS,
   TORCH_CLASS,

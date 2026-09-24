@@ -5,7 +5,9 @@ import {
   WRAP_CLASS,
   CANVAS_CLASS,
   TORCH_CLASS,
+  DEMO_Z_INDEX,
 } from "./cursor-smith.js";
+import { isRoamDark } from "./theme.js";
 
 function isTextCaretHost(el2) {
   if (!el2) return false;
@@ -97,6 +99,13 @@ function syncHostCaret(e, host) {
   }
 }
 __name(syncHostCaret, "syncHostCaret");
+function syncDemoLayer(e, host) {
+  const demo = !!host?.classList?.contains("cs-demo");
+  if (!e.canvasWrapper || demo === !!e._demoLayer) return;
+  e._demoLayer = demo;
+  e.canvasWrapper.style.zIndex = String(demo ? DEMO_Z_INDEX : e.zIndex || 40);
+}
+__name(syncDemoLayer, "syncDemoLayer");
 
 // colors.js
 function hexToRgba(hex, alpha) {
@@ -1257,6 +1266,7 @@ function ensureCanvas(e) {
   const wrap = doc.createElement("div");
   wrap.className = WRAP_CLASS;
   wrap.style.zIndex = String(e.zIndex || 40);
+  e._demoLayer = false;
   const host = doc.body;
   host.appendChild(wrap);
   const canvas = doc.createElement("canvas");
@@ -1835,18 +1845,7 @@ var CursorEngine = class {
     this.syncTorch();
   }
   isDarkTheme() {
-    const doc = this.canvas ? this.canvas.ownerDocument : this._doc || document;
-    const root = doc.documentElement;
-    const body = doc.body;
-    if (root.classList.contains("bp3-dark")) return true;
-    if (body.classList.contains("bt-theme-dark")) return true;
-    try {
-      const win = doc.defaultView || window;
-      const prefersDark = !!(win.matchMedia && win.matchMedia("(prefers-color-scheme: dark)").matches);
-      if (prefersDark && !root.classList.contains("bp3-light")) return true;
-    } catch {
-    }
-    return false;
+    return isRoamDark(this.canvas ? this.canvas.ownerDocument : this._doc || document);
   }
   /** @param {number} heat @param {string} baseHex */
   heatColorFor(heat, baseHex) {
@@ -2561,7 +2560,9 @@ var CursorEngine = class {
     }
     this.refreshSelectionState();
     this.updateActivePoint();
-    syncHostCaret(this, (this.canvas && this.canvas.ownerDocument || this._doc || document).activeElement);
+    const host = (this.canvas && this.canvas.ownerDocument || this._doc || document).activeElement;
+    syncHostCaret(this, host);
+    syncDemoLayer(this, host);
     this._rowType = this.lastActive && this.lastActive.rowType || "text";
     this.updateSmoothCursor();
     this.updateGhost();

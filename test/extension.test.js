@@ -4,11 +4,13 @@ import test from "node:test";
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
 
-import extension, { getRuntime, VERSION } from "../src/extension.js";
+import extension, { getRuntime, uniquePresetName, VERSION } from "../src/extension.js";
 import {
   BODY_ACTIVE_CLASS,
   BODY_HIDE_NATIVE_CLASS,
+  BUILTIN_PRESETS,
   DEFAULTS,
+  codeToPreset,
   pickLook,
   presetToCode,
 } from "../src/cursor-smith.js";
@@ -424,3 +426,245 @@ test("depot import merges preset and clears cs-import-code", async () => {
   await cleanup();
 });
 
+
+function settle() {
+  return new Promise((resolve) => setImmediate(resolve));
+}
+
+function depotRow(api, id) {
+  return lastPanelConfig(api).settings.find((row) => row.id === id);
+}
+
+function styledBlock() {
+  const props = new Map();
+  return {
+    tagName: "TEXTAREA",
+    id: "block-input-native",
+    className: "rm-block-input",
+    value: "",
+    selectionStart: 0,
+    selectionEnd: 0,
+    closest: () => null,
+    getBoundingClientRect: () => ({ left: 0, top: 0, right: 400, bottom: 40, width: 400, height: 40 }),
+    style: {
+      setProperty(name, value, priority) { props.set(name, { value, priority }); },
+      removeProperty(name) { props.delete(name); },
+      getPropertyValue(name) { return props.get(name)?.value ?? ""; },
+    },
+  };
+}
+
+test("plain Line runs native: no overlay, no measurer, a keystroke never measures", async () => {
+  installMinimalDom();
+  const api = fakeExtensionApi();
+  const cleanup = await extension.onload({ extensionAPI: api, extension: { version: VERSION } });
+  const runtime = getRuntime();
+  const block = styledBlock();
+  document.activeElement = block;
+  try {
+    runtime._set({ cursorStyle: "Line", glow: false, showChar: false });
+    assert.equal(runtime._mode, "native");
+    assert.equal(runtime._lite, null);
+    assert.equal(runtime._measurer, null);
+    assert.equal(
+      document.body.children.filter((el) => el.className === "cs-lite-caret").length,
+      0,
+    );
+    assert.equal(block.style.getPropertyValue("caret-color"), DEFAULTS.colorLight);
+    assert.equal(document.body.classList.contains(BODY_ACTIVE_CLASS), true);
+    assert.equal(document.body.classList.contains(BODY_HIDE_NATIVE_CLASS), false);
+
+    const before = runtime._measureCount;
+    for (const { type, fn } of [...document._docListeners]) {
+      if (type === "input" || type === "keyup" || type === "selectionchange") fn({ target: block, type });
+    }
+    assert.equal(runtime._measureCount, before, "one keystroke must not call measure");
+
+    runtime._set({ glow: true });
+    assert.equal(runtime._mode, "lite");
+    assert.ok(runtime._lite);
+    assert.equal(block.style.getPropertyValue("caret-color"), "", "caret-color removed when the look stops being a plain line");
+  } finally {
+    document.activeElement = document.body;
+    await cleanup();
+  }
+});
+
+test("native caret-color is removed on unload", async () => {
+  installMinimalDom();
+  const api = fakeExtensionApi();
+  const cleanup = await extension.onload({ extensionAPI: api, extension: { version: VERSION } });
+  const block = styledBlock();
+  document.activeElement = block;
+  try {
+    getRuntime()._set({ cursorStyle: "Line", glow: false, showChar: false });
+    assert.notEqual(block.style.getPropertyValue("caret-color"), "");
+  } finally {
+    await cleanup();
+    document.activeElement = document.body;
+  }
+  assert.equal(block.style.getPropertyValue("caret-color"), "");
+});
+
+test("__ROAM_CARET_DIAG exists on the lite path and is removed on unload", async () => {
+  installMinimalDom();
+  const api = fakeExtensionApi();
+  const cleanup = await extension.onload({ extensionAPI: api, extension: { version: VERSION } });
+  const diag = globalThis.window.__ROAM_CARET_DIAG;
+  assert.ok(diag);
+  assert.deepEqual(diag.measures, []);
+  await cleanup();
+  assert.equal(globalThis.window.__ROAM_CARET_DIAG, undefined);
+});
+
+test("Depot Look menu keeps a built-in preset after rebuildPanel", async () => {
+  installMinimalDom();
+  const api = fakeExtensionApi();
+  const cleanup = await extension.onload({ extensionAPI: api, extension: { version: VERSION } });
+  const runtime = getRuntime();
+  try {
+    for (const name of ["Fast", "mr.Blue"]) {
+      const creates = panelCreates(api).length;
+      await depotRow(api, "cs-preset").action.onChange({ target: { value: name } });
+      await settle();
+      await settle();
+      assert.equal(runtime._settings.activePreset, name);
+      assert.equal(api.settings.get("cs-preset"), name, `${name} must not snap back to Custom`);
+      assert.ok(panelCreates(api).length > creates, "panel was rebuilt");
+      assert.ok(depotRow(api, "cs-preset").action.items.includes(name));
+    }
+  } finally {
+    await cleanup();
+  }
+});
+
+test("Depot Look menu keeps an imported preset after rebuildPanel", async () => {
+  installMinimalDom();
+  const api = fakeExtensionApi();
+  const cleanup = await extension.onload({ extensionAPI: api, extension: { version: VERSION } });
+  const runtime = getRuntime();
+  try {
+    await api.settings.set("cs-import-code", presetToCode("Teal", pickLook({ ...DEFAULTS, colorLight: "#00695e" })));
+    await runtime.importShareCode();
+    await settle();
+    await depotRow(api, "cs-preset").action.onChange({ target: { value: "Custom" } });
+    await settle();
+    assert.equal(api.settings.get("cs-preset"), "Custom");
+
+    await depotRow(api, "cs-preset").action.onChange({ target: { value: "Teal" } });
+    await settle();
+    await settle();
+    assert.equal(runtime._settings.activePreset, "Teal");
+    assert.equal(api.settings.get("cs-preset"), "Teal");
+    assert.ok(depotRow(api, "cs-preset").action.items.includes("Teal"));
+  } finally {
+    await cleanup();
+  }
+});
+
+test("editing the look after picking a preset turns the menu to Custom", async () => {
+  installMinimalDom();
+  const api = fakeExtensionApi();
+  const cleanup = await extension.onload({ extensionAPI: api, extension: { version: VERSION } });
+  const runtime = getRuntime();
+  try {
+    await depotRow(api, "cs-preset").action.onChange({ target: { value: "Fast" } });
+    await settle();
+    await depotRow(api, "cs-shape").action.onChange({ target: { value: "Beam" } });
+    await settle();
+    await settle();
+    assert.equal(runtime._settings.activePreset, "");
+    assert.equal(api.settings.get("cs-preset"), "Custom");
+
+    runtime._set({ enabled: true });
+    await depotRow(api, "cs-preset").action.onChange({ target: { value: "Fast" } });
+    await settle();
+    runtime._set({ enabled: true });
+    assert.equal(runtime._settings.activePreset, "Fast", "structural changes keep the preset");
+  } finally {
+    await cleanup();
+  }
+});
+
+test("share code names: the active preset, else the shape", async () => {
+  installMinimalDom();
+  const api = fakeExtensionApi();
+  const cleanup = await extension.onload({ extensionAPI: api, extension: { version: VERSION } });
+  const runtime = getRuntime();
+  try {
+    runtime._set({ cursorStyle: "Beam" });
+    assert.equal(codeToPreset(runtime.copyShareCode()).name, "Beam");
+    runtime._set({ cursorStyle: "Underline" });
+    assert.equal(codeToPreset(runtime.copyShareCode()).name, "Underline");
+
+    await depotRow(api, "cs-preset").action.onChange({ target: { value: "Fast" } });
+    await settle();
+    const decoded = codeToPreset(runtime.copyShareCode());
+    assert.equal(decoded.name, "Fast");
+    assert.notEqual(decoded.name, "Current");
+  } finally {
+    await cleanup();
+  }
+});
+
+test("importing two different custom looks keeps both", async () => {
+  installMinimalDom();
+  const api = fakeExtensionApi();
+  const cleanup = await extension.onload({ extensionAPI: api, extension: { version: VERSION } });
+  const runtime = getRuntime();
+  const lookA = pickLook({ ...DEFAULTS, cursorStyle: "Box", colorDark: "#112233" });
+  const lookB = pickLook({ ...DEFAULTS, cursorStyle: "Box", colorDark: "#445566" });
+  try {
+    await api.settings.set("cs-import-code", presetToCode("Box", lookA));
+    await runtime.importShareCode();
+    await api.settings.set("cs-import-code", presetToCode("Box", lookB));
+    await runtime.importShareCode();
+    const presets = runtime._settings.presets;
+    assert.equal(presets.Box.colorDark, "#112233");
+    assert.equal(presets["Box 2"].colorDark, "#445566");
+    assert.equal(runtime._settings.activePreset, "Box 2");
+
+    await api.settings.set("cs-import-code", presetToCode("Box", lookA));
+    await runtime.importShareCode();
+    assert.equal(runtime._settings.activePreset, "Box", "same look reuses its name");
+    assert.equal(Object.keys(runtime._settings.presets).length, 2);
+
+    await api.settings.set("cs-import-code", presetToCode("Fast", pickLook(BUILTIN_PRESETS.Fast)));
+    await runtime.importShareCode();
+    assert.equal(runtime._settings.activePreset, "Fast");
+    assert.equal(Object.prototype.hasOwnProperty.call(runtime._settings.presets, "Fast"), false);
+
+    await api.settings.set("cs-import-code", presetToCode("Fast", lookB));
+    await runtime.importShareCode();
+    assert.equal(runtime._settings.activePreset, "Fast 2", "a built-in name never gets shadowed");
+  } finally {
+    await cleanup();
+  }
+});
+
+test("uniquePresetName never collides with Custom or a built-in", () => {
+  const look = pickLook({ ...DEFAULTS, colorDark: "#010203" });
+  assert.equal(uniquePresetName("Custom", look, {}), "Custom 2");
+  assert.equal(uniquePresetName("Jell-O", look, {}), "Jell-O 2");
+  assert.equal(uniquePresetName("x".repeat(60), look, { ["x".repeat(48)]: pickLook(DEFAULTS) }).length, 48);
+});
+
+test("Depot colour field ignores a partial hex", async () => {
+  installMinimalDom();
+  const api = fakeExtensionApi();
+  const cleanup = await extension.onload({ extensionAPI: api, extension: { version: VERSION } });
+  const runtime = getRuntime();
+  try {
+    const row = depotRow(api, "cs-color-dark");
+    await row.action.onChange({ target: { value: "#123456" } });
+    assert.equal(runtime._settings.colorDark, "#123456");
+    for (const partial of ["#", "#3", "#3a", "#3a3", "#3a3b3"]) {
+      await row.action.onChange({ target: { value: partial } });
+      assert.equal(runtime._settings.colorDark, "#123456", `${partial} must not be written`);
+    }
+    await row.action.onChange({ target: { value: "#3a3b3c" } });
+    assert.equal(runtime._settings.colorDark, "#3a3b3c");
+  } finally {
+    await cleanup();
+  }
+});

@@ -215,8 +215,27 @@ test("needsCanvas is false for Fast defaults and true for each canvas effect", (
   assert.equal(needsCanvas({ ...DEFAULTS, ...BUILTIN_PRESETS.Fast }), false);
   assert.equal(needsCanvas({ ...DEFAULTS, ...BUILTIN_PRESETS["Jell-O"] }), true);
   for (const key of CANVAS_EFFECT_KEYS) {
-    assert.equal(needsCanvas({ [key]: true }), true, key);
+    assert.equal(needsCanvas({ cursorStyle: "Line", [key]: true }), true, key);
   }
+});
+
+test("canvas-only Studio controls load the engine; lite-only looks do not", () => {
+  for (const key of ["gradientEnabled", "lineSerifs", "idleFadeEnabled", "soundEnabled", "blinkBreathing", "selectionColorEnabled", "rowTypeTint"]) {
+    assert.ok(CANVAS_EFFECT_KEYS.includes(key), key);
+  }
+  assert.equal(needsCanvas({ ...DEFAULTS, cursorStyle: "Line", lineSerifs: true }), true);
+  assert.equal(needsCanvas({ ...DEFAULTS, cursorStyle: "Box", lineSerifs: true }), false, "serifs only draw on Line");
+  assert.equal(needsCanvas({ ...DEFAULTS, blinkingEnabled: false, blinkBreathing: true }), false);
+  assert.equal(needsCanvas({ ...DEFAULTS, moveDelayMs: 120 }), true);
+  assert.equal(needsCanvas({ ...DEFAULTS, cursorOpacity: 0.5, blinkSpeed: 3 }), false, "lite handles opacity and blink speed");
+});
+
+test("normalizeSettings keeps a built-in preset name as activePreset", () => {
+  for (const name of Object.keys(BUILTIN_PRESETS)) {
+    const s = normalizeSettings({ ...pickLook(BUILTIN_PRESETS[name]), activePreset: name, schemaVersion: 2 });
+    assert.equal(s.activePreset, name);
+  }
+  assert.equal(normalizeSettings({ activePreset: "Nope", schemaVersion: 2 }).activePreset, "");
 });
 
 test("normalizeSettings migrates unversioned 0.1.x blobs once", () => {

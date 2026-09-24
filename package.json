@@ -1,6 +1,6 @@
 {
   "name": "roam-caret",
-  "version": "0.4.2",
+  "version": "0.5.0",
   "private": true,
   "description": "Custom text caret for Roam Research: lite CSS overlay by default, canvas effects on demand.",
   "type": "module",

@@ -8,7 +8,7 @@ import {
   persistOptions,
 } from "./settings.js";
 import { createCaretMeasurer } from "./caret-measure.js";
-import { installLiteCaret } from "./caret-lite.js";
+import { installLiteCaret, installNativeCaret, isPlainLine } from "./caret-lite.js";
 import {
   BODY_ACTIVE_CLASS,
   BODY_HIDE_NATIVE_CLASS,
@@ -24,9 +24,13 @@ import {
 } from "./cursor-smith.js";
 import { renderStudio, STUDIO_CSS } from "./studio.js";
 
-export const VERSION = "0.4.2";
+export const VERSION = "0.5.0";
 const CANVAS_Z_INDEX = 40; // PROVISIONAL
 const VERSION_FLAG = "__ROAM_CURSOR_SMITH_VERSION";
+const DIAG_FLAG = "__ROAM_CARET_DIAG";
+const DIAG_RING = 20;
+const HEX6 = /^#[0-9a-fA-F]{6}$/;
+const MAX_PRESET_NAME = 48;
 
 let activeLifecycle = null;
 let runtime = null;
@@ -73,6 +77,32 @@ function canStartEngine() {
     && typeof requestAnimationFrame === "function";
 }
 
+function lookKey(snap) {
+  return JSON.stringify(pickLook(snap));
+}
+
+function hasOwn(obj, key) {
+  return !!obj && Object.prototype.hasOwnProperty.call(obj, key);
+}
+
+// A share code keeps its name unless that name already means a different
+// look here; then it gets the first free "Name 2", "Name 3", ...
+export function uniquePresetName(name, snap, presets = {}) {
+  const key = lookKey(snap);
+  const free = (candidate) => {
+    if (candidate === "Custom" || hasOwn(BUILTIN_PRESETS, candidate)) return false;
+    return !hasOwn(presets, candidate) || lookKey(presets[candidate]) === key;
+  };
+  const base = String(name || "").trim().slice(0, MAX_PRESET_NAME) || "Imported preset";
+  if (free(base)) return base;
+  for (let i = 2; i < 1000; i += 1) {
+    const suffix = ` ${i}`;
+    const candidate = `${base.slice(0, MAX_PRESET_NAME - suffix.length).trimEnd()}${suffix}`;
+    if (free(candidate)) return candidate;
+  }
+  return base;
+}
+
 function copyToClipboard(text) {
   try {
     const clip = globalThis.navigator?.clipboard;
@@ -101,7 +131,9 @@ class CursorSmithRuntime {
     this._settings = normalizeSettings(loadOptions(extensionAPI) ?? {});
     this._engine = null;
     this._lite = null;
+    this._native = null;
     this._measurer = null;
+    this._diag = null;
     this._mode = null;
     this._pumpInstalled = false;
     this._pumpListeners = [];
@@ -120,8 +152,10 @@ class CursorSmithRuntime {
     this.closeSettings();
     this._removePanelStyle();
     this.stopLite();
+    this.stopNative();
     this.stopEngine();
     this.stopMeasurer();
+    this.clearDiag();
     this.clearBodyClasses();
     try {
       delete globalThis[VERSION_FLAG];
@@ -141,13 +175,40 @@ class CursorSmithRuntime {
   }
 
   applyBodyClasses() {
-    const live = (!!this._engine || !!this._lite) && !!this._settings.enabled && !this.mobile;
+    const live = (!!this._engine || !!this._lite || !!this._native)
+      && !!this._settings.enabled && !this.mobile;
     try {
       document.body?.classList?.toggle(BODY_ACTIVE_CLASS, live);
       document.body?.classList?.toggle(
         BODY_HIDE_NATIVE_CLASS,
-        live && !!this._settings.hideNativeCaret,
+        live && !!this._settings.hideNativeCaret && !this._native,
       );
+    } catch {
+    }
+  }
+
+  ensureDiag() {
+    if (this._diag) return this._diag;
+    this._diag = { measureCount: 0, measures: [] };
+    try {
+      ((typeof document !== "undefined" && document.defaultView) || globalThis)[DIAG_FLAG] = this._diag;
+    } catch {
+    }
+    return this._diag;
+  }
+
+  // Milliseconds for one whole caret update: measure plus every style write.
+  recordTiming(ms) {
+    const diag = this.ensureDiag();
+    diag.measures.push(ms);
+    if (diag.measures.length > DIAG_RING) diag.measures.shift();
+  }
+
+  clearDiag() {
+    this._diag = null;
+    try {
+      const win = (typeof document !== "undefined" && document.defaultView) || globalThis;
+      delete win[DIAG_FLAG];
     } catch {
     }
   }
@@ -161,21 +222,11 @@ class CursorSmithRuntime {
         lifecycle: this.lifecycle,
       });
       const inner = this._measurer.measure.bind(this._measurer);
-      const now = globalThis.performance?.now?.bind(globalThis.performance);
-      const diag = { measureCount: 0, measures: [] };
-      try {
-        (document.defaultView || globalThis).__ROAM_CARET_DIAG = diag;
-      } catch {
-      }
+      const diag = this.ensureDiag();
       this._measurer.measure = (el) => {
         this._measureCount += 1;
-        if (!now) return inner(el);
-        const start = now();
-        const out = inner(el);
         diag.measureCount += 1;
-        diag.measures.push(now() - start);
-        if (diag.measures.length > 20) diag.measures.shift();
-        return out;
+        return inner(el);
       };
     } catch (err) {
       console.error("[roam-caret] measurer failed to start:", err);
@@ -189,11 +240,6 @@ class CursorSmithRuntime {
     } catch {
     }
     this._measurer = null;
-    try {
-      const win = (typeof document !== "undefined" && document.defaultView) || globalThis;
-      delete win.__ROAM_CARET_DIAG;
-    } catch {
-    }
   }
 
   _bindPumpListener(target, type, fn, capture) {
@@ -203,10 +249,14 @@ class CursorSmithRuntime {
 
   ensurePump() {
     if (this._pumpInstalled || typeof document === "undefined") return;
+    const now = globalThis.performance?.now?.bind(globalThis.performance);
     const pump = () => {
       try {
         const el = document.activeElement;
-        if (this._measurer && el) this._measurer.measure(el);
+        if (!this._measurer || !el) return;
+        const start = now ? now() : null;
+        this._measurer.measure(el);
+        if (start != null) this.recordTiming(now() - start);
       } catch {
       }
     };
@@ -245,6 +295,7 @@ class CursorSmithRuntime {
         measurer: this._measurer,
         lifecycle: this.lifecycle,
         getSettings: () => this._settings,
+        recordTiming: (ms) => this.recordTiming(ms),
       });
       this._lite.refresh();
       this.applyBodyClasses();
@@ -264,6 +315,32 @@ class CursorSmithRuntime {
     } catch {
     }
     this._lite = null;
+    this.applyBodyClasses();
+  }
+
+  startNative() {
+    if (this.mobile || !this._settings.enabled || this._native || !canStartLite()) return;
+    try {
+      this._native = installNativeCaret({
+        doc: document,
+        win: document.defaultView || globalThis,
+        getSettings: () => this._settings,
+      });
+    } catch (err) {
+      console.error("[roam-caret] native caret failed to start:", err);
+      this._native = null;
+    }
+    this.applyBodyClasses();
+  }
+
+  stopNative() {
+    if (this._native) {
+      try {
+        this._native.dispose();
+      } catch {
+      }
+      this._native = null;
+    }
     this.applyBodyClasses();
   }
 
@@ -325,17 +402,22 @@ class CursorSmithRuntime {
   applySettings() {
     if (this.mobile || !this._settings.enabled) {
       this.stopLite();
+      this.stopNative();
       this.stopEngine();
       this._mode = "off";
       return;
     }
-    const nextMode = needsCanvas(this._settings) ? "canvas" : "lite";
-    if (this._mode && this._mode !== nextMode && this._mode !== "off") {
+    let nextMode = "lite";
+    if (needsCanvas(this._settings)) nextMode = "canvas";
+    else if (isPlainLine(this._settings)) nextMode = "native";
+    const wasCanvas = this._mode === "canvas";
+    if (this._mode && this._mode !== "off" && wasCanvas !== (nextMode === "canvas")) {
       this.toast(nextMode === "canvas" ? "Canvas mode: effects on" : "Lite mode");
     }
     this._mode = nextMode;
     if (nextMode === "canvas") {
       this.stopLite();
+      this.stopNative();
       if (!this._engine) {
         this._engineStart = this.startEngine().then((ok) => {
           if (!ok && needsCanvas(this._settings) && !this._engine) {
@@ -348,8 +430,15 @@ class CursorSmithRuntime {
       } else {
         this._engine.setSettings(this._settings);
       }
+    } else if (nextMode === "native") {
+      this.stopEngine();
+      this.stopLite();
+      this.stopMeasurer();
+      if (!this._native) this.startNative();
+      else this._native.refresh();
     } else {
       this.stopEngine();
+      this.stopNative();
       if (!this._lite) this.startLite();
       else this._lite.refresh();
     }
@@ -399,12 +488,14 @@ class CursorSmithRuntime {
         this._set({ activePreset: "" });
       } else {
         const snap = BUILTIN_PRESETS[raw] ?? this._settings.presets?.[raw];
-        if (snap) {
-          this._set({ ...pickLook(snap), activePreset: raw });
-          await this.rebuildPanel();
-        }
+        if (snap) this._set({ ...pickLook(snap), activePreset: raw });
       }
       return;
+    }
+
+    if (id === "cs-color-light" || id === "cs-color-dark") {
+      raw = String(raw ?? "").trim();
+      if (!HEX6.test(raw)) return;
     }
 
     const patch = id === "cs-width" ? { [blobKey]: Number(raw) } : { [blobKey]: raw };
@@ -412,10 +503,15 @@ class CursorSmithRuntime {
     await mirrorToDepot(this.extensionAPI, this._settings, [id]);
   }
 
+  shareName() {
+    return this._settings.activePreset || this._settings.cursorStyle || "Box";
+  }
+
   copyShareCode() {
-    const code = presetToCode(this._settings.activePreset || "Current", pickLook(this._settings));
+    const code = presetToCode(this.shareName(), pickLook(this._settings));
     copyToClipboard(code);
     this.toast("Share code copied.");
+    return code;
   }
 
   async importShareCode() {
@@ -425,17 +521,37 @@ class CursorSmithRuntime {
       this.toast("Could not import that code");
       return;
     }
-    const { name, snap } = decoded;
-    const presets = { ...(this._settings.presets || {}), [name]: snap };
-    this._set({ ...snap, activePreset: name, presets });
+    const { snap } = decoded;
+    const builtin = BUILTIN_PRESETS[decoded.name];
+    if (builtin && lookKey(builtin) === lookKey(snap)) {
+      this._set({ ...snap, activePreset: decoded.name });
+    } else {
+      const name = uniquePresetName(decoded.name, snap, this._settings.presets);
+      const presets = { ...(this._settings.presets || {}), [name]: snap };
+      this._set({ ...snap, activePreset: name, presets });
+    }
     await this.extensionAPI.settings.set("cs-import-code", "");
-    await this.rebuildPanel();
-    this.toast(`Imported "${name}".`);
+    this.toast(`Imported "${this._settings.activePreset}".`);
+  }
+
+  _matchesActivePreset(settings) {
+    const name = settings.activePreset;
+    const snap = BUILTIN_PRESETS[name] ?? settings.presets?.[name];
+    return !!snap && lookKey(snap) === lookKey(settings);
   }
 
   _set(patch) {
     this._settings = normalizeSettings({ ...this._settings, ...patch });
     const depotIds = this._depotIdsForPatch(patch);
+    // Editing the look by hand turns a named preset into Custom.
+    if (
+      this._settings.activePreset
+      && !hasOwn(patch, "activePreset")
+      && !this._matchesActivePreset(this._settings)
+    ) {
+      this._settings.activePreset = "";
+      if (!depotIds.includes("cs-preset")) depotIds.push("cs-preset");
+    }
     void persistOptions(this.extensionAPI, this._settings);
     this.applySettings();
     if (depotIds.length) void mirrorToDepot(this.extensionAPI, this._settings, depotIds);
