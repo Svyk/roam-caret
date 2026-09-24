@@ -288,8 +288,8 @@ test("codeToPreset rejects junk and oversize payloads", () => {
   assert.equal(codeToPreset("a".repeat(20001)), null);
 });
 
-test("built extension.css hides Roam block carets and not Thymer listview", async () => {
-  const css = await readFile(new URL("../extension.css", import.meta.url), "utf8");
+test("extension.css hides Roam block carets and not Thymer listview", async () => {
+  const css = await readFile(new URL("../src/extension.css", import.meta.url), "utf8");
   assert.match(css, /rm-block__input/);
   assert.match(css, /block-input-/);
   assert.doesNotMatch(css, /listview-caret/);
