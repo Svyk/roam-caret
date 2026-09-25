@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { readFile } from "node:fs/promises";
 import test from "node:test";
 
 import { createCaretMeasurer } from "../src/caret-measure.js";
@@ -163,8 +164,34 @@ function createFakeDoc() {
   return { doc, win, body, listeners, observers };
 }
 
+// The only childList observer: <body>'s own children, never a subtree.
 function paletteObserver(observers) {
-  return observers.find((o) => o.targets.some(({ options }) => options?.childList && options?.subtree));
+  return observers.find((o) => o.targets.some(({ options }) => options?.childList));
+}
+
+// A frame queue on the fake window. flush() runs every callback queued so far.
+function rafQueue(win) {
+  const frames = [];
+  let cancelled = 0;
+  win.requestAnimationFrame = (fn) => {
+    frames.push(fn);
+    return frames.length;
+  };
+  win.cancelAnimationFrame = () => {
+    cancelled += 1;
+    frames.length = 0;
+  };
+  return {
+    frames,
+    get cancelled() {
+      return cancelled;
+    },
+    flush() {
+      const run = frames.splice(0);
+      for (const fn of run) fn();
+      return run.length;
+    },
+  };
 }
 
 function paletteNode() {
@@ -299,36 +326,28 @@ test("focusin on a TEXTAREA shows overlay and sets translate from measurer", () 
   assert.match(String(lite.overlay.style.transform), /translate\(10px, 20px\)/);
 });
 
-test("input handler updates transform synchronously without rAF or setInterval", () => {
-  const { lite, listeners, textarea, rect } = installHarness();
+test("input marks the frame dirty; one rAF paints the new caret", () => {
+  const { lite, win, listeners, textarea, rect, measurer } = installHarness();
+  const raf = rafQueue(win);
   listeners.get("focusin")({ target: textarea });
+  raf.flush();
 
-  let rafCalls = 0;
-  let intervalCalls = 0;
-  const origRaf = globalThis.requestAnimationFrame;
-  const origInterval = globalThis.setInterval;
-  globalThis.requestAnimationFrame = () => {
-    rafCalls += 1;
-    return 0;
+  let measureCalls = 0;
+  const baseMeasure = measurer.measure.bind(measurer);
+  measurer.measure = (el) => {
+    measureCalls += 1;
+    return baseMeasure(el);
   };
-  globalThis.setInterval = () => {
-    intervalCalls += 1;
-    return 0;
-  };
+  rect.x = 30;
+  rect.y = 40;
+  listeners.get("input")({ target: textarea });
+  assert.equal(measureCalls, 0, "nothing measured inside the input dispatch");
+  assert.match(String(lite.overlay.style.transform), /translate\(10px, 20px\)/);
+  assert.equal(raf.frames.length, 1);
 
-  try {
-    rect.x = 30;
-    rect.y = 40;
-    let appliedInThisTurn = false;
-    listeners.get("input")({ target: textarea });
-    appliedInThisTurn = String(lite.overlay.style.transform).includes("translate(30px, 40px)");
-    assert.equal(appliedInThisTurn, true);
-    assert.equal(rafCalls, 0);
-    assert.equal(intervalCalls, 0);
-  } finally {
-    globalThis.requestAnimationFrame = origRaf;
-    globalThis.setInterval = origInterval;
-  }
+  raf.flush();
+  assert.equal(measureCalls, 1);
+  assert.match(String(lite.overlay.style.transform), /translate\(30px, 40px\)/);
 });
 
 test("range selection hides overlay", () => {
@@ -1041,6 +1060,7 @@ test("the caret sits one above the palette portal z-index and drops back on a bl
     return computed(el);
   };
   win.getComputedStyle = countComputed;
+  doc._commandPalette = palette;
   paletteObserver(observers).callback([{ addedNodes: [palette], removedNodes: [] }]);
 
   const search = makeInput({ type: "search", palette });
@@ -1053,6 +1073,7 @@ test("the caret sits one above the palette portal z-index and drops back on a bl
   listeners.get("input")({ target: search });
   assert.equal(computedCalls, 0, "the ancestor walk runs on focus, not per key");
 
+  doc._commandPalette = null;
   paletteObserver(observers).callback([{ addedNodes: [], removedNodes: [palette] }]);
   doc.activeElement = textarea;
   listeners.get("focusin")({ target: textarea });
@@ -1063,6 +1084,7 @@ test("the caret sits one above the palette portal z-index and drops back on a bl
 test("a block focused behind the open palette stays hidden", () => {
   const { lite, doc, listeners, observers, textarea, measurer } = installHarness();
   const { palette } = makePalette(doc);
+  doc._commandPalette = palette;
   paletteObserver(observers).callback([{ addedNodes: [palette], removedNodes: [] }]);
 
   let measureCalls = 0;
@@ -1231,7 +1253,8 @@ function installMeasured(host, computed, settings = {}, { perLine = Infinity, ch
   const lifecycle = { node(node, parent = body) { parent.append(node); } };
   const measurer = createCaretMeasurer({ doc, win, lifecycle });
   const mirror = body.children[0];
-  const [prefix, marker] = mirror.children;
+  const line = mirror.children[1] || mirror;
+  const [prefix, marker] = line.children;
   const at = (value) => Number.parseFloat(value) || 0;
   Object.defineProperty(marker, "offsetLeft", {
     get: () => at(mirror.style.paddingLeft) + (prefix.textContent.length % perLine) * charWidth,
@@ -1351,7 +1374,7 @@ test("a Chief of Staff composer that grows after the input handler is measured a
       return { ...box, right: box.left + box.width, bottom: box.top + box.height };
     },
   }), box);
-  const { lite, listeners, styleCalls } = installMeasured(composer, {
+  const { lite, win, listeners, styleCalls } = installMeasured(composer, {
     boxSizing: "border-box",
     width: "160px",
     paddingTop: "8px",
@@ -1364,18 +1387,22 @@ test("a Chief of Staff composer that grows after the input handler is measured a
     color: "rgb(206, 217, 224)",
   }, {}, { perLine: 20, win: { ResizeObserver: RO.Class } });
   const observer = RO.instances[0];
+  const raf = rafQueue(win);
 
   listeners.get("focusin")({ target: composer });
+  raf.flush();
   assert.deepEqual(translateOf(lite.overlay), { x: 580 + 8 + 19 * 7, y: 360 + 8 });
   const focusStyleCalls = styleCalls();
 
-  // Capture-phase input sees the wrapped text before autosize grows the box:
-  // the second line lies under the old box, so the caret drops out.
+  // The frame sees the wrapped text before autosize grows the box: the second
+  // line lies under the old box, so the caret drops out.
   composer.value += "fx";
   composer.selectionStart = composer.selectionEnd = composer.value.length;
   boxReads = 0;
   listeners.get("input")({ target: composer });
-  assert.equal(boxReads, 1, "the keystroke still paints synchronously with one box read");
+  assert.equal(boxReads, 0, "no box read inside the input dispatch");
+  raf.flush();
+  assert.equal(boxReads, 1, "one box read in the frame");
   assert.equal(lite.overlay.style.display, "none");
 
   // autosizeChatInput: height auto, then scrollHeight px. The panel is pinned
@@ -1383,6 +1410,7 @@ test("a Chief of Staff composer that grows after the input handler is measured a
   box.top = 339;
   box.height = 58;
   observer.fire(composer, 160, 58);
+  assert.equal(raf.frames.length, 0, "the resize callback measures in place, no extra frame");
   assert.equal(boxReads, 2, "one more measure for the new box");
   assert.equal(styleCalls(), focusStyleCalls, "same width: no style copy");
   assert.notEqual(lite.overlay.style.display, "none");
@@ -1427,14 +1455,14 @@ test("the ResizeObserver watches only the focused host and stops on blur and unl
   assert.equal(observer.disconnected, true);
 });
 
-test("without ResizeObserver one frame after input remeasures; the key still paints first", () => {
-  const frames = [];
+test("a burst of input events is measured once, in the frame, after the host's handlers", () => {
   const box = { left: 0, top: 100, width: 600, height: 40 };
   const composer = trackBox(makeTextarea({
     scrollTop: 0,
     scrollLeft: 0,
     getBoundingClientRect: () => ({ ...box, right: box.left + box.width, bottom: box.top + box.height }),
   }), box);
+  const frames = [];
   const { lite, listeners } = installMeasured(composer, {
     boxSizing: "border-box",
     width: "600px",
@@ -1452,17 +1480,302 @@ test("without ResizeObserver one frame after input remeasures; the key still pai
     },
   });
   listeners.get("focusin")({ target: composer });
-  assert.equal(frames.length, 0, "focus does not schedule a frame");
+  assert.equal(frames.length, 1, "focus schedules the first measure");
+  frames.shift()();
+  assert.equal(translateOf(lite.overlay).y, 100);
 
-  composer.value += "x";
-  composer.selectionStart = composer.selectionEnd = composer.value.length;
-  listeners.get("input")({ target: composer });
-  assert.equal(translateOf(lite.overlay).y, 100, "painted in the key's own turn");
-  listeners.get("input")({ target: composer });
+  for (let i = 0; i < 3; i += 1) {
+    composer.value += "x";
+    composer.selectionStart = composer.selectionEnd = composer.value.length;
+    listeners.get("input")({ target: composer });
+  }
   assert.equal(frames.length, 1, "one frame per burst, not per key");
+  assert.equal(translateOf(lite.overlay).y, 100, "nothing painted inside the dispatch");
 
   box.top = 80;
   frames.shift()();
   assert.equal(translateOf(lite.overlay).y, 80, "the frame reads the box after the host's handlers");
   lite.dispose();
+});
+
+test("no observer the lite caret installs ever watches a subtree", () => {
+  const { lite, observers } = installHarness();
+  const options = observers.flatMap((o) => o.targets.map(({ options: opts }) => opts || {}));
+  assert.ok(options.length > 0);
+  assert.equal(options.some((opts) => opts.subtree), false, "no subtree: Roam's block churn must not reach us");
+  for (const opts of options) {
+    assert.ok(opts.childList || (opts.attributes && opts.attributeFilter?.join() === "class"));
+  }
+  lite.dispose();
+  assert.ok(observers.every((o) => o.disconnected));
+});
+
+test("input, keyup and selectionchange read no geometry; five events and one frame give one measure", () => {
+  const { doc, win, body, listeners } = createFakeDoc();
+  const raf = rafQueue(win);
+  const reads = { box: 0, offset: 0, computed: 0 };
+  let counting = false;
+  win.getComputedStyle = () => {
+    if (counting) reads.computed += 1;
+    return {
+      boxSizing: "border-box",
+      width: "600px",
+      fontFamily: "sans-serif",
+      fontSize: "16px",
+      lineHeight: "19px",
+      color: "rgb(51, 51, 51)",
+      position: "static",
+      overflowX: "visible",
+      overflowY: "visible",
+    };
+  };
+  const textarea = makeTextarea({
+    scrollTop: 0,
+    scrollLeft: 0,
+    getBoundingClientRect() {
+      if (counting) reads.box += 1;
+      return { left: 0, top: 0, right: 600, bottom: 200, width: 600, height: 200 };
+    },
+  });
+  const spyOffsets = (node) => {
+    for (const prop of ["offsetTop", "offsetLeft", "offsetWidth", "offsetHeight"]) {
+      Object.defineProperty(node, prop, {
+        configurable: true,
+        get() {
+          if (counting) reads.offset += 1;
+          return prop === "offsetWidth" ? 600 : prop === "offsetHeight" ? 200 : 0;
+        },
+      });
+    }
+  };
+  spyOffsets(textarea);
+  doc.activeElement = textarea;
+  const lifecycle = { node(node, parent = body) { parent.append(node); } };
+  const measurer = createCaretMeasurer({ doc, win, lifecycle });
+  const [prefix, marker, glyphEl] = body.children[0].children[1].children;
+  void prefix;
+  spyOffsets(marker);
+  spyOffsets(glyphEl);
+  let measures = 0;
+  const baseMeasure = measurer.measure;
+  measurer.measure = (el) => {
+    measures += 1;
+    return baseMeasure(el);
+  };
+  const lite = installLiteCaret({
+    doc,
+    win,
+    measurer,
+    lifecycle,
+    getSettings: () => ({ cursorStyle: "Beam", colorLight: "#00695e", blinkingEnabled: true }),
+  });
+  listeners.get("focusin")({ target: textarea });
+  raf.flush();
+  assert.equal(measures, 1);
+
+  counting = true;
+  for (const type of ["input", "keyup", "selectionchange", "input", "keyup"]) {
+    textarea.value += type === "input" ? "x" : "";
+    textarea.selectionStart = textarea.selectionEnd = textarea.value.length;
+    listeners.get(type)({ type, target: textarea });
+  }
+  assert.deepEqual(reads, { box: 0, offset: 0, computed: 0 }, "zero geometry or style reads during dispatch");
+  assert.equal(measures, 1, "nothing measured yet");
+  assert.equal(raf.frames.length, 1, "one frame requested for five events");
+
+  raf.flush();
+  assert.equal(measures, 2, "exactly one measure for the burst");
+  assert.equal(reads.box, 1, "one host box read in the frame");
+  assert.equal(reads.computed, 0, "the style copy is cached per focused host");
+  assert.notEqual(lite.overlay.style.display, "none");
+
+  listeners.get("keyup")({ type: "keyup", target: textarea });
+  assert.equal(raf.frames.length, 0, "an unchanged caret asks for no frame at all");
+  lite.dispose();
+  measurer.dispose();
+});
+
+test("a host detached without focusout hides on the next measure, no observer involved", () => {
+  const { lite, doc, listeners, observers } = installHarness();
+  const field = makeInput({ isConnected: true });
+  doc.activeElement = field;
+  listeners.get("focusin")({ target: field });
+  assert.notEqual(lite.overlay.style.display, "none");
+  assert.equal(field.style.getPropertyValue("caret-color"), "transparent");
+
+  const callbacks = observers.map((o) => o.callback);
+  for (const o of observers) {
+    o.callback = () => {
+      throw new Error("no observer may run in this test");
+    };
+  }
+  field.isConnected = false;
+  listeners.get("focus")();
+  assert.equal(lite.overlay.style.display, "none");
+  assert.equal(lite.active, null);
+  assert.equal(field.style.getPropertyValue("caret-color"), "", "browser caret restored");
+  observers.forEach((o, i) => {
+    o.callback = callbacks[i];
+  });
+});
+
+test("palette open and close through focus alone: a caret only in the palette field", () => {
+  const { lite, doc, win, listeners, observers, textarea, measurer } = installHarness();
+  const raf = rafQueue(win);
+  for (const o of observers) {
+    o.callback = () => {
+      throw new Error("focus changes alone must drive the palette state");
+    };
+  }
+  listeners.get("focusin")({ target: textarea });
+  raf.flush();
+  assert.notEqual(lite.overlay.style.display, "none");
+
+  const { palette } = makePalette(doc);
+  doc._commandPalette = palette;
+  const search = makeInput({ type: "search", palette });
+  doc.activeElement = search;
+  listeners.get("focusout")({ target: textarea, relatedTarget: search });
+  listeners.get("focusin")({ target: search });
+  raf.flush();
+  assert.notEqual(lite.overlay.style.display, "none");
+  assert.equal(measurer.lastEl, search);
+
+  let blockMeasures = 0;
+  const baseMeasure = measurer.measure.bind(measurer);
+  measurer.measure = (el) => {
+    if (el === textarea) blockMeasures += 1;
+    return baseMeasure(el);
+  };
+  doc.activeElement = textarea;
+  listeners.get("focusout")({ target: search, relatedTarget: textarea });
+  listeners.get("focusin")({ target: textarea });
+  raf.flush();
+  assert.equal(lite.overlay.style.display, "none", "a block behind the open palette shows none");
+  assert.equal(blockMeasures, 0);
+
+  doc._commandPalette = null;
+  listeners.get("focusout")({ target: textarea, relatedTarget: null });
+  listeners.get("focusin")({ target: textarea });
+  raf.flush();
+  assert.notEqual(lite.overlay.style.display, "none", "palette gone: the block caret is back");
+  assert.equal(blockMeasures, 1);
+});
+
+test("the stylesheet passes the bucket check in strict mode", async () => {
+  const { execFile } = await import("node:child_process");
+  const { promisify } = await import("node:util");
+  const run = promisify(execFile);
+  const script = new URL("../scripts/bucket_check.mjs", import.meta.url);
+  const sheet = new URL("../src/extension.css", import.meta.url);
+  const { stdout } = await run(process.execPath, [script.pathname, sheet.pathname, "--strict"]);
+  assert.match(stdout, /problems: 0/);
+  assert.match(stdout, /"universal":0/);
+});
+
+test("selection: the focused host gets the caret colour once per focus, none per key", () => {
+  const { doc, win, listeners } = createFakeDoc();
+  const raf = rafQueue(win);
+  const field = makeTextarea({ style: makeStyle(), classList: makeClassList() });
+  let writes = 0;
+  const setProperty = field.style.setProperty;
+  field.style.setProperty = (...args) => {
+    if (String(args[0]).startsWith("--cs-")) writes += 1;
+    return setProperty(...args);
+  };
+  doc.activeElement = field;
+  const measurer = {
+    measure: (el) => ({ x: 1, y: 1, width: 8, height: 19, visible: true, glyph: "", color: "rgb(51, 51, 51)", box: el.getBoundingClientRect() }),
+  };
+  const lite = installLiteCaret({
+    doc,
+    win,
+    measurer,
+    lifecycle: { node(node, parent = doc.body) { parent.append(node); } },
+    getSettings: () => ({ cursorStyle: "Beam", colorLight: "#00695e", colorDark: "#5eead4" }),
+  });
+  listeners.get("focusin")({ target: field });
+  assert.equal(field.classList.contains("cs-sel"), false, "nothing written inside focusin");
+  raf.flush();
+  assert.equal(field.classList.contains("cs-sel"), true);
+  assert.equal(field.style.getPropertyValue("--cs-selection"), "#00695e");
+  assert.equal(field.style.getPropertyValue("--cs-selection-text"), glyphColorOn("#00695e", "rgb(51, 51, 51)"));
+  assert.equal(writes, 2);
+
+  for (let i = 0; i < 4; i += 1) {
+    field.value += "x";
+    field.selectionStart = field.selectionEnd = field.value.length;
+    listeners.get("input")({ target: field });
+    raf.flush();
+  }
+  assert.equal(writes, 2, "no selection write on input");
+
+  field.selectionStart = 0;
+  listeners.get("selectionchange")({ target: field });
+  raf.flush();
+  assert.equal(lite.overlay.style.display, "none", "a range hides the overlay");
+  assert.equal(field.classList.contains("cs-sel"), true, "and keeps the selection colour");
+
+  doc.body.classList.add("rm-dark-theme");
+  field.selectionStart = field.selectionEnd;
+  listeners.get("selectionchange")({ target: field });
+  raf.flush();
+  assert.equal(field.style.getPropertyValue("--cs-selection"), "#5eead4", "theme switch repaints");
+
+  doc.activeElement = doc.body;
+  listeners.get("focusout")({ target: field, relatedTarget: null });
+  assert.equal(field.classList.contains("cs-sel"), false, "cleared on blur");
+  assert.equal(field.style.getPropertyValue("--cs-selection"), "");
+  assert.equal(field.style.getPropertyValue("--cs-selection-text"), "");
+
+  doc.activeElement = field;
+  listeners.get("focusin")({ target: field });
+  raf.flush();
+  assert.equal(field.classList.contains("cs-sel"), true);
+  lite.dispose();
+  assert.equal(field.classList.contains("cs-sel"), false, "cleared on unload");
+  assert.equal(field.style.getPropertyValue("--cs-selection"), "");
+});
+
+test("selection: plain Line sets the same properties on focus with no read", () => {
+  const { doc, win, listeners } = createFakeDoc();
+  let boxReads = 0;
+  const field = makeTextarea({
+    style: makeStyle(),
+    classList: makeClassList(),
+    getBoundingClientRect() {
+      boxReads += 1;
+      return { left: 0, top: 0, right: 600, bottom: 200, width: 600, height: 200 };
+    },
+  });
+  win.getComputedStyle = () => {
+    throw new Error("the native path reads no style");
+  };
+  const native = installNativeCaret({ doc, win, getSettings: () => ({ colorLight: "#00695e" }) });
+  doc.activeElement = field;
+  listeners.get("focusin")({ target: field });
+  assert.equal(field.classList.contains("cs-sel"), true);
+  assert.equal(field.style.getPropertyValue("--cs-selection"), "#00695e");
+  assert.equal(field.style.getPropertyValue("--cs-selection-text"), "rgb(255, 255, 255)");
+  assert.equal(listeners.has("input"), false, "still no key listener");
+
+  listeners.get("focusout")({ target: field });
+  assert.equal(field.classList.contains("cs-sel"), false);
+  assert.equal(field.style.getPropertyValue("--cs-selection"), "");
+
+  listeners.get("focusin")({ target: field });
+  native.dispose();
+  assert.equal(field.classList.contains("cs-sel"), false);
+  assert.equal(field.style.getPropertyValue("--cs-selection-text"), "");
+  assert.equal(boxReads, 0);
+});
+
+test("selection CSS: one class-keyed rule, no descendant or universal selector", async () => {
+  const css = await readFile(new URL("../src/extension.css", import.meta.url), "utf8");
+  const rules = css.replace(/\/\*[\s\S]*?\*\//g, "").match(/[^{}]*::selection[^{]*\{[^}]*\}/g) || [];
+  assert.equal(rules.length, 1);
+  const selector = rules[0].slice(0, rules[0].indexOf("{")).trim();
+  assert.equal(selector, ".cs-sel::selection");
+  assert.match(rules[0], /background:\s*var\(--cs-selection\)/);
+  assert.match(rules[0], /color:\s*var\(--cs-selection-text\)/);
 });

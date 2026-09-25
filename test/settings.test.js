@@ -5,6 +5,8 @@ import test from "node:test";
 import { DEFAULTS } from "../src/cursor-smith.js";
 import {
   MIRROR,
+  SAVED_STYLES_ID,
+  SAVED_STYLES_PROMPT,
   buildDepotPanel,
   createPreviewComponent,
   mirrorToDepot,
@@ -14,6 +16,7 @@ import {
 const DEPOT_IDS = [
   "cs-enabled",
   "cs-preset",
+  "cs-saved-styles",
   "cs-shape",
   "cs-color-light",
   "cs-color-dark",
@@ -23,6 +26,8 @@ const DEPOT_IDS = [
   "cs-show-char",
   "cs-hide-native",
   "cs-hide-blur",
+  "cs-style-name",
+  "cs-save-style",
   "cs-copy-code",
   "cs-import-code",
   "cs-import",
@@ -48,10 +53,10 @@ test("every MIRROR value is a DEFAULTS key", () => {
 test("buildDepotPanel tab title and row count", () => {
   const withReact = buildDepotPanel({ React: fakeReact });
   assert.equal(withReact.tabTitle, "Roam Caret");
-  assert.equal(withReact.settings.length, 16);
+  assert.equal(withReact.settings.length, 19);
 
   const withoutReact = buildDepotPanel({ React: null });
-  assert.equal(withoutReact.settings.length, 15);
+  assert.equal(withoutReact.settings.length, 18);
 });
 
 test("buildDepotPanel row ids and action types", () => {
@@ -106,7 +111,32 @@ test("depot buttons set action.content labels", () => {
   const copy = panel.settings.find((row) => row.id === "cs-copy-code");
   const importBtn = panel.settings.find((row) => row.id === "cs-import");
   const studio = panel.settings.find((row) => row.id === "cs-studio");
+  const save = panel.settings.find((row) => row.id === "cs-save-style");
+  assert.equal(save.name, "Save style");
+  assert.equal(save.action.content, "Save");
   assert.equal(copy.action.content, "Copy");
   assert.equal(importBtn.action.content, "Import");
   assert.equal(studio.action.content, "Open");
+});
+
+test("Custom reveals the Saved styles select, listing every saved style", () => {
+  const presets = { Teal: {}, Night: {} };
+  const panel = buildDepotPanel({ settings: { activePreset: "", presets }, React: null });
+  const ids = panel.settings.map((row) => row.id);
+  assert.equal(ids.indexOf(SAVED_STYLES_ID), ids.indexOf("cs-preset") + 1, "right under Look");
+  const row = panel.settings.find((r) => r.id === SAVED_STYLES_ID);
+  assert.equal(row.name, "Saved styles");
+  assert.equal(row.action.type, "select");
+  assert.deepEqual(row.action.items, [SAVED_STYLES_PROMPT, "Teal", "Night"]);
+  const name = panel.settings.find((r) => r.id === "cs-style-name");
+  assert.equal(name.name, "Style name");
+  assert.equal(name.action.type, "input");
+});
+
+test("a named Look omits the Saved styles row", () => {
+  for (const activePreset of ["Fast", "Teal"]) {
+    const panel = buildDepotPanel({ settings: { activePreset, presets: { Teal: {} } }, React: null });
+    assert.equal(panel.settings.some((row) => row.id === SAVED_STYLES_ID), false, activePreset);
+    assert.ok(panel.settings.some((row) => row.id === "cs-style-name"), "Style name stays");
+  }
 });

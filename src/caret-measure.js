@@ -136,6 +136,33 @@ function glyphAt(value, start) {
   return { underCaret, hasGlyph };
 }
 
+// One Text node per mirror block, edited in place: only the changed tail is
+// replaced, so Blink keeps the shaping in front of it.
+function editableText(documentRef, element) {
+  const node = typeof documentRef.createTextNode === "function" ? documentRef.createTextNode("") : null;
+  const canEdit = typeof node?.replaceData === "function";
+  if (canEdit) element.appendChild(node);
+  let current = "";
+  return (next) => {
+    const prev = current;
+    if (next === prev) return;
+    current = next;
+    if (!canEdit) {
+      element.textContent = next;
+      return;
+    }
+    let same;
+    if (next.length >= prev.length && next.startsWith(prev)) same = prev.length;
+    else if (prev.startsWith(next)) same = next.length;
+    else {
+      same = 0;
+      const limit = Math.min(prev.length, next.length);
+      while (same < limit && prev.charCodeAt(same) === next.charCodeAt(same)) same += 1;
+    }
+    node.replaceData(same, prev.length - same, next.slice(same));
+  };
+}
+
 export function createCaretMeasurer({ doc, win, lifecycle } = {}) {
   const documentRef = doc || globalThis.document;
   const windowRef = win || documentRef?.defaultView || globalThis;
@@ -158,6 +185,12 @@ export function createCaretMeasurer({ doc, win, lifecycle } = {}) {
   style.contain = "layout style";
   mirror.setAttribute("aria-hidden", "true");
 
+  // Only the caret's own paragraph is laid out per key. The text before it
+  // sits in a block of its own, and Blink reuses that block's last layout
+  // while its text and width are unchanged. A 10k-character block cost
+  // 1.2 ms per measure when the whole prefix was rewritten.
+  const beforeBlock = documentRef.createElement("div");
+  const lineBlock = documentRef.createElement("div");
   const prefixNode = documentRef.createElement("span");
   const marker = documentRef.createElement("span");
   marker.style.display = "inline-block";
@@ -165,9 +198,14 @@ export function createCaretMeasurer({ doc, win, lifecycle } = {}) {
   marker.style.verticalAlign = "top";
   marker.textContent = MARKER_CHAR;
   const glyphEl = documentRef.createElement("span");
-  mirror.appendChild(prefixNode);
-  mirror.appendChild(marker);
-  mirror.appendChild(glyphEl);
+  lineBlock.appendChild(prefixNode);
+  lineBlock.appendChild(marker);
+  lineBlock.appendChild(glyphEl);
+  mirror.appendChild(beforeBlock);
+  mirror.appendChild(lineBlock);
+  const setBefore = editableText(documentRef, beforeBlock);
+  const setLine = editableText(documentRef, prefixNode);
+  let lineIndent = "";
 
   const parent = documentRef.body || documentRef.documentElement || globalThis.document?.body;
   if (lifecycle) lifecycle.node(mirror, parent);
@@ -221,9 +259,14 @@ export function createCaretMeasurer({ doc, win, lifecycle } = {}) {
     if (!isTextTarget(el) || isSkippedHost(el)) return null;
 
     if (el !== cachedEl) {
+      // Read every value before the first mirror write, so the copy costs
+      // one style resolve, not one per property.
       const computedStyle = windowRef.getComputedStyle(el);
-      for (const name of MIRROR_PROPERTIES) style[name] = computedStyle[name];
+      const copied = MIRROR_PROPERTIES.map((name) => computedStyle[name]);
       metrics = readMetrics(computedStyle);
+      MIRROR_PROPERTIES.forEach((name, index) => {
+        style[name] = copied[index];
+      });
       // A text input is one line that scrolls sideways; a textarea wraps.
       metrics.singleLine = el.tagName === "INPUT";
       style.whiteSpace = metrics.singleLine ? "pre" : "pre-wrap";
@@ -234,7 +277,22 @@ export function createCaretMeasurer({ doc, win, lifecycle } = {}) {
     const start = Math.min(el.selectionStart ?? value.length, value.length);
     const { underCaret, hasGlyph } = glyphAt(value, start);
 
-    prefixNode.textContent = value.slice(0, start);
+    const split = !metrics.singleLine && start > 0 ? value.lastIndexOf("\n", start - 1) : -1;
+    if (split < 0) {
+      setBefore("");
+      setLine(value.slice(0, start));
+    } else {
+      const before = value.slice(0, split);
+      // An empty last paragraph still takes a line in the textarea.
+      setBefore(before === "" || before.endsWith("\n") ? before + MARKER_CHAR : before);
+      setLine(value.slice(split + 1, start));
+    }
+    // text-indent belongs to the first line of the whole value only.
+    const indent = split < 0 ? "" : "0px";
+    if (indent !== lineIndent) {
+      lineIndent = indent;
+      lineBlock.style.textIndent = indent;
+    }
     const nextMarkerHeight = `${metrics.lineHeightPx}px`;
     if (nextMarkerHeight !== markerHeight) {
       markerHeight = nextMarkerHeight;

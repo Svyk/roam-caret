@@ -2,6 +2,9 @@ import { createLifecycle } from "./lifecycle.js";
 import { openRoamCaretSettings } from "./open-settings.js";
 import {
   MIRROR,
+  SAVED_STYLES_ID,
+  SAVED_STYLES_PROMPT,
+  STYLE_NAME_ID,
   buildDepotPanel,
   loadOptions,
   mirrorToDepot,
@@ -14,6 +17,7 @@ import {
   BODY_HIDE_NATIVE_CLASS,
   BUILTIN_PRESETS,
   DEFAULTS,
+  MAX_PRESETS,
   codeToPreset,
   needsCanvas,
   normalizePresetSnapshot,
@@ -24,7 +28,7 @@ import {
 } from "./cursor-smith.js";
 import { renderStudio, STUDIO_CSS } from "./studio.js";
 
-export const VERSION = "0.5.2";
+export const VERSION = "0.6.0";
 const CANVAS_Z_INDEX = 40; // PROVISIONAL
 const VERSION_FLAG = "__ROAM_CURSOR_SMITH_VERSION";
 const DIAG_FLAG = "__ROAM_CARET_DIAG";
@@ -83,6 +87,12 @@ function lookKey(snap) {
 
 function hasOwn(obj, key) {
   return !!obj && Object.prototype.hasOwnProperty.call(obj, key);
+}
+
+// "Custom" is the Look menu's own entry, "Current" was the old share name,
+// and a built-in name always loads the built-in look.
+function isReservedName(name) {
+  return name === "Custom" || name === "Current" || hasOwn(BUILTIN_PRESETS, name);
 }
 
 // A share code keeps its name unless that name already means a different
@@ -144,12 +154,16 @@ class CursorSmithRuntime {
     this._toastEl = null;
     this._fatalNotice = false;
     this._depotPanelReady = false;
+    this._suspended = false;
+    this._escapeBound = false;
+    this._onEscapeKey = (ev) => this.onEscape(ev);
     this.pendingPresetName = "";
     this.lifecycle.add(() => this.teardown());
   }
 
   teardown() {
     this.closeSettings();
+    this._unbindEscape();
     this._removePanelStyle();
     this.stopLite();
     this.stopNative();
@@ -189,7 +203,18 @@ class CursorSmithRuntime {
 
   ensureDiag() {
     if (this._diag) return this._diag;
-    this._diag = { measureCount: 0, measures: [] };
+    const runtime = this;
+    this._diag = {
+      measureCount: 0,
+      measures: [],
+      // Bench kill switch: detaches every listener, observer, frame and the
+      // blink, and hides the caret. Nothing is persisted or written.
+      suspend: () => runtime.suspend(),
+      resume: () => runtime.resume(),
+      get suspended() {
+        return runtime._suspended;
+      },
+    };
     try {
       ((typeof document !== "undefined" && document.defaultView) || globalThis)[DIAG_FLAG] = this._diag;
     } catch {
@@ -399,7 +424,28 @@ class CursorSmithRuntime {
     }
   }
 
+  suspend() {
+    if (this._suspended) return false;
+    this._suspended = true;
+    this.stopLite();
+    this.stopNative();
+    this.stopEngine();
+    this.stopMeasurer();
+    this._unbindEscape();
+    this.applyBodyClasses();
+    return true;
+  }
+
+  resume() {
+    if (!this._suspended) return false;
+    this._suspended = false;
+    if (this._overlay?.isConnected) this._bindEscape();
+    this.applySettings();
+    return true;
+  }
+
   applySettings() {
+    if (this._suspended) return;
     if (this.mobile || !this._settings.enabled) {
       this.stopLite();
       this.stopNative();
@@ -461,6 +507,7 @@ class CursorSmithRuntime {
       React: globalThis.window?.React || globalThis.React,
       handlers: {
         onChange: (id, raw) => this.setFromDepot(id, raw),
+        onSaveStyle: () => this.saveStyle(),
         onCopyCode: () => this.copyShareCode(),
         onImport: () => this.importShareCode(),
         onStudio: () => this.openSettings(),
@@ -477,6 +524,18 @@ class CursorSmithRuntime {
   async setFromDepot(id, raw) {
     if (id === "cs-import-code") {
       await this.extensionAPI.settings.set("cs-import-code", raw);
+      return;
+    }
+    // Typing a name stores it and nothing else: a rebuild would drop focus.
+    if (id === STYLE_NAME_ID) {
+      await this.extensionAPI.settings.set(STYLE_NAME_ID, String(raw ?? ""));
+      return;
+    }
+    if (id === SAVED_STYLES_ID) {
+      const name = String(raw ?? "");
+      await this.extensionAPI.settings.set(SAVED_STYLES_ID, SAVED_STYLES_PROMPT);
+      const snap = hasOwn(this._settings.presets, name) ? this._settings.presets[name] : null;
+      if (snap) this._set({ ...pickLook(snap), activePreset: name });
       return;
     }
     if (!(id in MIRROR)) return;
@@ -503,8 +562,40 @@ class CursorSmithRuntime {
     await mirrorToDepot(this.extensionAPI, this._settings, [id]);
   }
 
+  styleName() {
+    return String(this.extensionAPI.settings.get(STYLE_NAME_ID) ?? "").trim().slice(0, MAX_PRESET_NAME);
+  }
+
+  _setStyleName(name) {
+    if (this.extensionAPI.settings.get(STYLE_NAME_ID) === name) return null;
+    return this.extensionAPI.settings.set(STYLE_NAME_ID, name);
+  }
+
+  // A named look shares its name; a Custom look shares Style name, else its shape.
   shareName() {
-    return this._settings.activePreset || this._settings.cursorStyle || "Box";
+    if (this._settings.activePreset) return this._settings.activePreset;
+    const typed = this.styleName();
+    if (typed && typed !== "Custom" && typed !== "Current") return typed;
+    return this._settings.cursorStyle || "Box";
+  }
+
+  // Saves the current look under Style name (empty: the shape). An existing
+  // saved style of that name is overwritten; built-in names are refused.
+  async saveStyle() {
+    const name = this.styleName() || this._settings.cursorStyle || "Box";
+    if (isReservedName(name)) {
+      this.toast(`"${name}" is already a Roam Caret look. Pick another style name.`);
+      return null;
+    }
+    const presets = this._settings.presets || {};
+    if (!hasOwn(presets, name) && Object.keys(presets).length >= MAX_PRESETS) {
+      this.toast(`Roam Caret keeps ${MAX_PRESETS} saved styles. Save over an existing name.`);
+      return null;
+    }
+    await this._setStyleName(name);
+    this._set({ activePreset: name, presets: { ...presets, [name]: pickLook(this._settings) } });
+    this.toast(`Saved "${name}".`);
+    return name;
   }
 
   copyShareCode() {
@@ -524,10 +615,12 @@ class CursorSmithRuntime {
     const { snap } = decoded;
     const builtin = BUILTIN_PRESETS[decoded.name];
     if (builtin && lookKey(builtin) === lookKey(snap)) {
+      await this._setStyleName(decoded.name);
       this._set({ ...snap, activePreset: decoded.name });
     } else {
       const name = uniquePresetName(decoded.name, snap, this._settings.presets);
       const presets = { ...(this._settings.presets || {}), [name]: snap };
+      await this._setStyleName(name);
       this._set({ ...snap, activePreset: name, presets });
     }
     await this.extensionAPI.settings.set("cs-import-code", "");
@@ -551,6 +644,10 @@ class CursorSmithRuntime {
     ) {
       this._settings.activePreset = "";
       if (!depotIds.includes("cs-preset")) depotIds.push("cs-preset");
+    }
+    // Picking a named look puts its name in Style name, so Save updates it.
+    if (hasOwn(patch, "activePreset") && this._settings.activePreset) {
+      void this._setStyleName(this._settings.activePreset);
     }
     void persistOptions(this.extensionAPI, this._settings);
     this.applySettings();
@@ -611,10 +708,29 @@ class CursorSmithRuntime {
     this._overlay = overlay;
     this._panelEl = panelRoot;
     this._toastEl = toastEl;
+    if (!this._suspended) this._bindEscape();
     this.renderPanel();
   }
 
+  // Escape is heard only while the Studio is open: no keydown listener on
+  // the typing path.
+  _bindEscape() {
+    if (this._escapeBound || typeof document === "undefined") return;
+    document.addEventListener("keydown", this._onEscapeKey, true);
+    this._escapeBound = true;
+  }
+
+  _unbindEscape() {
+    if (!this._escapeBound) return;
+    this._escapeBound = false;
+    try {
+      document.removeEventListener("keydown", this._onEscapeKey, true);
+    } catch {
+    }
+  }
+
   closeSettings() {
+    this._unbindEscape();
     try {
       this._overlay?.remove();
     } catch {
@@ -798,6 +914,7 @@ export async function onload({ extensionAPI, extension }) {
   try {
     globalThis[VERSION_FLAG] = VERSION;
     runtime = new CursorSmithRuntime({ extensionAPI, lifecycle, mobile });
+    runtime.ensureDiag();
     await mirrorToDepot(extensionAPI, runtime._settings);
     await lifecycle.settingsPanel(extensionAPI, runtime.depotPanelConfig());
     runtime._depotPanelReady = true;
@@ -830,9 +947,6 @@ export async function onload({ extensionAPI, extension }) {
       label: "Roam Caret: Diagnose caret (5s)",
       callback: () => runtime.diagnoseCaret(),
     });
-    if (typeof document !== "undefined") {
-      lifecycle.event(document, "keydown", (ev) => runtime.onEscape(ev), true);
-    }
     if (!mobile) runtime.applySettings();
     console.info(`[roam-caret] Loaded v${extension?.version || VERSION}`);
   } catch (error) {

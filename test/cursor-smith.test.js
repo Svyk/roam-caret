@@ -282,6 +282,28 @@ test("presetToCode / codeToPreset roundtrip look keys", () => {
   }
 });
 
+test("presetToCode writes only __name and look keys, on one line", () => {
+  const full = normalizeSettings({
+    ...DEFAULTS,
+    enabled: false,
+    hideNativeCaret: false,
+    presets: { Other: pickLook(DEFAULTS) },
+    activePreset: "",
+  });
+  const code = presetToCode("Mine", full);
+  assert.doesNotMatch(code, /\s/);
+  const payload = JSON.parse(Buffer.from(code, "base64url").toString("utf8"));
+  assert.deepEqual(Object.keys(payload).sort(), ["__name", ...LOOK_KEYS].sort());
+  assert.equal(payload.__name, "Mine");
+});
+
+test("codeToPreset rejects a payload that nests presets or is an array", () => {
+  const encode = (value) => Buffer.from(JSON.stringify(value)).toString("base64url");
+  assert.equal(codeToPreset(encode({ __name: "X", ...pickLook(DEFAULTS), presets: {} })), null);
+  assert.equal(codeToPreset(encode([pickLook(DEFAULTS)])), null);
+  assert.ok(codeToPreset(encode({ __name: "X", ...pickLook(DEFAULTS) })));
+});
+
 test("codeToPreset rejects junk and oversize payloads", () => {
   assert.equal(codeToPreset("not-valid-base64!!!"), null);
   assert.equal(codeToPreset(""), null);

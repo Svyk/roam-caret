@@ -402,8 +402,11 @@ function normalizeSettings(raw) {
 }
 __name(normalizeSettings, "normalizeSettings");
 function presetToCode(name, snap) {
-  const payload = JSON.stringify(Object.assign({ __name: name }, snap));
-  return btoa(unescape(encodeURIComponent(payload))).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
+  const payload = { __name: name };
+  for (const k of LOOK_KEYS) {
+    if (snap && Object.prototype.hasOwnProperty.call(snap, k)) payload[k] = snap[k];
+  }
+  return btoa(unescape(encodeURIComponent(JSON.stringify(payload)))).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
 }
 __name(presetToCode, "presetToCode");
 function codeToPreset(code) {
@@ -413,7 +416,8 @@ function codeToPreset(code) {
     if (!trimmed || trimmed.length > MAX_CODE) return null;
     const b64 = trimmed.replace(/-/g, "+").replace(/_/g, "/");
     const obj = JSON.parse(decodeURIComponent(escape(atob(b64))));
-    if (!obj || typeof obj !== "object") return null;
+    if (!obj || typeof obj !== "object" || Array.isArray(obj)) return null;
+    if (Object.prototype.hasOwnProperty.call(obj, "presets")) return null;
     const name = String(obj.__name || "Imported preset").trim().slice(0, MAX_NAME) || "Imported preset";
     return { name, snap: normalizePresetSnapshot(obj) };
   } catch {
@@ -726,4 +730,5 @@ export {
   CANVAS_CLASS,
   TORCH_CLASS,
   normalizeHex,
+  MAX_PRESETS,
 };

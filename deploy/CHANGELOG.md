@@ -4,6 +4,20 @@ All notable changes to this project follow [Keep a Changelog](https://keepachang
 
 ## [Unreleased]
 
+## [0.6.0] - 2026-09-24
+
+### Changed
+- The caret measures once per frame, after the key, not inside the input event. Typing, selection, and scroll in the same frame share that one measure.
+- Whether the command palette is open is checked on focus, not by watching every DOM change on the page.
+- Long blocks lay out only the current paragraph. Earlier paragraphs are cached until the width or the font changes.
+- **Style name** and **Save style** store a look under a name. **Look** lists it. When Look is Custom, **Saved styles** appears so you can load one. A copied share code is that name plus the look. Importing the README example adds **Teal**.
+- Selected text in the focused field uses the caret colour. The colour is set when the field is focused, not on each key.
+
+### Fixed
+- Diagnose can suspend and resume the caret for a bench without writing settings or the graph.
+
+Live before/after key timings were not re-run. The Roam window was not idle.
+
 ## [0.5.2] - 2026-09-24
 
 ### Fixed

@@ -1,4 +1,4 @@
-/* Roam Caret v0.5.2 | MIT | generated; edit src/ */
+/* Roam Caret v0.6.0 | MIT | generated; edit src/ */
 
 // src/lifecycle.js
 function isPromiseLike(value) {
@@ -529,8 +529,11 @@ function normalizeSettings(raw) {
 }
 __name(normalizeSettings, "normalizeSettings");
 function presetToCode(name, snap) {
-  const payload = JSON.stringify(Object.assign({ __name: name }, snap));
-  return btoa(unescape(encodeURIComponent(payload))).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
+  const payload = { __name: name };
+  for (const k of LOOK_KEYS) {
+    if (snap && Object.prototype.hasOwnProperty.call(snap, k)) payload[k] = snap[k];
+  }
+  return btoa(unescape(encodeURIComponent(JSON.stringify(payload)))).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
 }
 __name(presetToCode, "presetToCode");
 function codeToPreset(code) {
@@ -540,7 +543,8 @@ function codeToPreset(code) {
     if (!trimmed || trimmed.length > MAX_CODE) return null;
     const b64 = trimmed.replace(/-/g, "+").replace(/_/g, "/");
     const obj = JSON.parse(decodeURIComponent(escape(atob(b64))));
-    if (!obj || typeof obj !== "object") return null;
+    if (!obj || typeof obj !== "object" || Array.isArray(obj)) return null;
+    if (Object.prototype.hasOwnProperty.call(obj, "presets")) return null;
     const name = String(obj.__name || "Imported preset").trim().slice(0, MAX_NAME) || "Imported preset";
     return { name, snap: normalizePresetSnapshot(obj) };
   } catch {
@@ -831,6 +835,9 @@ function hexToRgba(hex, alpha) {
   return `rgba(${int >> 16 & 255}, ${int >> 8 & 255}, ${int & 255}, ${alpha})`;
 }
 var OPTIONS_KEY = "options";
+var STYLE_NAME_ID = "cs-style-name";
+var SAVED_STYLES_ID = "cs-saved-styles";
+var SAVED_STYLES_PROMPT = "Pick a saved style";
 var MIRROR = Object.freeze({
   "cs-enabled": "enabled",
   "cs-preset": "activePreset",
@@ -900,19 +907,30 @@ function createPreviewComponent(React = globalThis.window?.React) {
   };
 }
 function buildDepotPanel({
-  settings: _settings = {},
+  settings = {},
   builtinNames,
   userNames,
   handlers = {},
   React = globalThis.window?.React
 } = {}) {
+  const savedNames = userNames || Object.keys(settings.presets || {});
   const presetItems = [
     "Custom",
     ...builtinNames || Object.keys(BUILTIN_PRESETS),
-    ...userNames || []
+    ...savedNames
   ];
   const onChange = handlers.onChange ?? (() => {
   });
+  const savedStylesRow = settings.activePreset ? [] : [{
+    id: SAVED_STYLES_ID,
+    name: "Saved styles",
+    description: savedNames.length ? "Load a style you saved or imported." : "Save or import a style to list it here.",
+    action: {
+      type: "select",
+      items: [SAVED_STYLES_PROMPT, ...savedNames],
+      onChange: (event) => onChange(SAVED_STYLES_ID, event.target?.value ?? event)
+    }
+  }];
   const rows = [
     {
       id: "cs-enabled",
@@ -931,6 +949,7 @@ function buildDepotPanel({
         onChange: (event) => onChange("cs-preset", event.target?.value ?? event)
       }
     },
+    ...savedStylesRow,
     {
       id: "cs-shape",
       name: "Shape",
@@ -1007,6 +1026,26 @@ function buildDepotPanel({
       action: {
         type: "switch",
         onChange: (event) => onChange("cs-hide-blur", event.target.checked)
+      }
+    },
+    {
+      id: STYLE_NAME_ID,
+      name: "Style name",
+      description: "Used by Save and by the next copied share code. Empty uses the shape.",
+      action: {
+        type: "input",
+        placeholder: "Teal",
+        onChange: (event) => onChange(STYLE_NAME_ID, event.target?.value ?? event)
+      }
+    },
+    {
+      id: "cs-save-style",
+      name: "Save style",
+      description: "Saves the current look under Style name and adds it to Look.",
+      action: {
+        type: "button",
+        content: "Save",
+        onClick: handlers.onSaveStyle
       }
     },
     {
@@ -1181,6 +1220,30 @@ function glyphAt(value, start) {
   const hasGlyph = underCaret !== "0" || value[start] === "0";
   return { underCaret, hasGlyph };
 }
+function editableText(documentRef, element) {
+  const node = typeof documentRef.createTextNode === "function" ? documentRef.createTextNode("") : null;
+  const canEdit = typeof node?.replaceData === "function";
+  if (canEdit) element.appendChild(node);
+  let current = "";
+  return (next) => {
+    const prev = current;
+    if (next === prev) return;
+    current = next;
+    if (!canEdit) {
+      element.textContent = next;
+      return;
+    }
+    let same;
+    if (next.length >= prev.length && next.startsWith(prev)) same = prev.length;
+    else if (prev.startsWith(next)) same = next.length;
+    else {
+      same = 0;
+      const limit = Math.min(prev.length, next.length);
+      while (same < limit && prev.charCodeAt(same) === next.charCodeAt(same)) same += 1;
+    }
+    node.replaceData(same, prev.length - same, next.slice(same));
+  };
+}
 function createCaretMeasurer({ doc, win, lifecycle } = {}) {
   const documentRef = doc || globalThis.document;
   const windowRef = win || documentRef?.defaultView || globalThis;
@@ -1201,6 +1264,8 @@ function createCaretMeasurer({ doc, win, lifecycle } = {}) {
   style.overflowWrap = "break-word";
   style.contain = "layout style";
   mirror.setAttribute("aria-hidden", "true");
+  const beforeBlock = documentRef.createElement("div");
+  const lineBlock = documentRef.createElement("div");
   const prefixNode = documentRef.createElement("span");
   const marker = documentRef.createElement("span");
   marker.style.display = "inline-block";
@@ -1208,9 +1273,14 @@ function createCaretMeasurer({ doc, win, lifecycle } = {}) {
   marker.style.verticalAlign = "top";
   marker.textContent = MARKER_CHAR;
   const glyphEl = documentRef.createElement("span");
-  mirror.appendChild(prefixNode);
-  mirror.appendChild(marker);
-  mirror.appendChild(glyphEl);
+  lineBlock.appendChild(prefixNode);
+  lineBlock.appendChild(marker);
+  lineBlock.appendChild(glyphEl);
+  mirror.appendChild(beforeBlock);
+  mirror.appendChild(lineBlock);
+  const setBefore = editableText(documentRef, beforeBlock);
+  const setLine = editableText(documentRef, prefixNode);
+  let lineIndent = "";
   const parent = documentRef.body || documentRef.documentElement || globalThis.document?.body;
   if (lifecycle) lifecycle.node(mirror, parent);
   else parent.append(mirror);
@@ -1255,8 +1325,11 @@ function createCaretMeasurer({ doc, win, lifecycle } = {}) {
     if (!isTextTarget(el) || isSkippedHost(el)) return null;
     if (el !== cachedEl) {
       const computedStyle = windowRef.getComputedStyle(el);
-      for (const name of MIRROR_PROPERTIES) style[name] = computedStyle[name];
+      const copied = MIRROR_PROPERTIES.map((name) => computedStyle[name]);
       metrics = readMetrics(computedStyle);
+      MIRROR_PROPERTIES.forEach((name, index) => {
+        style[name] = copied[index];
+      });
       metrics.singleLine = el.tagName === "INPUT";
       style.whiteSpace = metrics.singleLine ? "pre" : "pre-wrap";
       cachedEl = el;
@@ -1264,7 +1337,20 @@ function createCaretMeasurer({ doc, win, lifecycle } = {}) {
     const value = el.value ?? "";
     const start = Math.min(el.selectionStart ?? value.length, value.length);
     const { underCaret, hasGlyph } = glyphAt(value, start);
-    prefixNode.textContent = value.slice(0, start);
+    const split = !metrics.singleLine && start > 0 ? value.lastIndexOf("\n", start - 1) : -1;
+    if (split < 0) {
+      setBefore("");
+      setLine(value.slice(0, start));
+    } else {
+      const before = value.slice(0, split);
+      setBefore(before === "" || before.endsWith("\n") ? before + MARKER_CHAR : before);
+      setLine(value.slice(split + 1, start));
+    }
+    const indent = split < 0 ? "" : "0px";
+    if (indent !== lineIndent) {
+      lineIndent = indent;
+      lineBlock.style.textIndent = indent;
+    }
     const nextMarkerHeight = `${metrics.lineHeightPx}px`;
     if (nextMarkerHeight !== markerHeight) {
       markerHeight = nextMarkerHeight;
@@ -1360,10 +1446,14 @@ function isPasswordField(el) {
 }
 var COMMAND_PALETTE_CLASS = "rm-command-palette";
 var COMMAND_PALETTE_SELECTOR = `.${COMMAND_PALETTE_CLASS}`;
-var IN_PALETTE_SELECTOR = `${COMMAND_PALETTE_SELECTOR}, .rm-modal-portal--command-palette`;
+var PALETTE_PORTAL_CLASS = "rm-modal-portal--command-palette";
+var IN_PALETTE_SELECTOR = `${COMMAND_PALETTE_SELECTOR}, .${PALETTE_PORTAL_CLASS}`;
 var CARET_BOX_MARGIN_PX = 8;
 var BASE_Z_INDEX = 40;
 var DEMO_CLASS = "cs-lite-demo";
+var SELECTION_CLASS = "cs-sel";
+var SELECTION_BG = "--cs-selection";
+var SELECTION_TEXT = "--cs-selection-text";
 function isDemo(el) {
   return String(el?.className || "").split(/\s+/).includes("cs-demo");
 }
@@ -1399,7 +1489,8 @@ function opacityOf(settings) {
 }
 function containsPalette(node) {
   if (!node || node.nodeType !== 1) return false;
-  if (node.classList?.contains(COMMAND_PALETTE_CLASS)) return true;
+  const classes = node.classList;
+  if (classes?.contains(COMMAND_PALETTE_CLASS) || classes?.contains(PALETTE_PORTAL_CLASS)) return true;
   return !!(node.firstElementChild && node.querySelector?.(COMMAND_PALETTE_SELECTOR));
 }
 function caretOutsideTextarea(rect) {
@@ -1480,10 +1571,51 @@ function resizeObserverClass(win) {
 function sameSize(a, b) {
   return Math.abs(a - b) < 0.5;
 }
+function createSelectionPainter() {
+  let host = null;
+  let key = "";
+  const clear = () => {
+    const el = host;
+    if (!el) return;
+    host = null;
+    key = "";
+    try {
+      el.classList?.remove(SELECTION_CLASS);
+      el.style.removeProperty(SELECTION_BG);
+      el.style.removeProperty(SELECTION_TEXT);
+    } catch {
+    }
+  };
+  const paint = (el, color, textColor = "") => {
+    if (!el || !color) {
+      clear();
+      return;
+    }
+    const next = `${color}|${textColor}`;
+    if (el === host && next === key) return;
+    if (host && host !== el) clear();
+    try {
+      el.style.setProperty(SELECTION_BG, color);
+      el.style.setProperty(SELECTION_TEXT, glyphColorOn(color, textColor));
+      el.classList?.add(SELECTION_CLASS);
+      host = el;
+      key = next;
+    } catch {
+    }
+  };
+  return {
+    paint,
+    clear,
+    get host() {
+      return host;
+    }
+  };
+}
 function installNativeCaret({ doc, win, getSettings } = {}) {
   const documentRef = doc || globalThis.document;
   const windowRef = win || documentRef?.defaultView || globalThis;
   const painted = /* @__PURE__ */ new Set();
+  const selection = createSelectionPainter();
   let disposed = false;
   const colorFor = () => {
     const settings = typeof getSettings === "function" && getSettings() || {};
@@ -1494,6 +1626,7 @@ function installNativeCaret({ doc, win, getSettings } = {}) {
   };
   const clear = (el) => {
     painted.delete(el);
+    if (el === selection.host) selection.clear();
     try {
       el.style.removeProperty("caret-color");
     } catch {
@@ -1510,6 +1643,7 @@ function installNativeCaret({ doc, win, getSettings } = {}) {
       painted.add(el);
     } catch {
     }
+    selection.paint(el, color);
   };
   const refresh = () => {
     if (disposed) return;
@@ -1547,6 +1681,7 @@ function installNativeCaret({ doc, win, getSettings } = {}) {
     }
     themeObserver = null;
     for (const el of [...painted]) clear(el);
+    selection.clear();
   };
   return { refresh, dispose };
 }
@@ -1558,9 +1693,10 @@ function installLiteCaret({ doc, win, measurer, lifecycle, getSettings, recordTi
   let disposed = false;
   let lastEl = null;
   let lastSig = "";
-  let scrollRaf = 0;
-  let followRaf = 0;
-  let paletteOpen = !!documentRef.querySelector?.(COMMAND_PALETTE_SELECTOR);
+  let frame = 0;
+  let framePing = false;
+  const readPaletteOpen = () => !!documentRef.querySelector?.(COMMAND_PALETTE_SELECTOR);
+  let paletteOpen = readPaletteOpen();
   const perf = windowRef?.performance || globalThis.performance;
   const now = typeof perf?.now === "function" ? () => perf.now() : null;
   const overlay = documentRef.createElement("div");
@@ -1660,17 +1796,28 @@ function installLiteCaret({ doc, win, measurer, lifecycle, getSettings, recordTi
       nativePrev = null;
     }
   };
+  const selection = createSelectionPainter();
   const hide = () => {
     writeStyle("display", "none");
     restoreNativeCaret();
   };
+  const caretColor = () => isRoamDark(documentRef) ? settings.colorDark || "" : settings.colorLight || "";
+  const selectionColor = (color) => {
+    const opacity = opacityOf(settings);
+    return color && opacity < 1 ? hexToRgba(color, opacity) : color;
+  };
+  let paletteFor = null;
+  let layerInPalette = false;
+  const resolvePalette = (el) => {
+    if (el === paletteFor) return;
+    paletteFor = el;
+    layerInPalette = !!el.closest?.(IN_PALETTE_SELECTOR);
+  };
   let layerFor = null;
   let layerZ = String(BASE_Z_INDEX);
-  let layerInPalette = false;
   const resolveLayer = (el) => {
     if (el === layerFor) return;
     layerFor = el;
-    layerInPalette = !!el.closest?.(IN_PALETTE_SELECTOR);
     const top = stackingZIndex(el, documentRef, windowRef);
     let z = top >= BASE_Z_INDEX ? top + 1 : BASE_Z_INDEX;
     if (isDemo(el)) z = Math.max(z, DEMO_Z_INDEX);
@@ -1789,13 +1936,13 @@ function installLiteCaret({ doc, win, measurer, lifecycle, getSettings, recordTi
       rect.lineHeight && rect.lineHeight !== "normal" ? rect.lineHeight : `${height}px`
     );
   };
-  const paint = (rect, el) => {
+  const paint = (rect, el, color) => {
     const box = rect?.box;
     if (!rect || !rect.visible || box && !(box.width > 0 && box.height > 0) || caretOutsideTextarea(rect) || outsideClip(el, rect)) {
       hide();
       return false;
     }
-    const color = isRoamDark(documentRef) ? settings.colorDark || "" : settings.colorLight || "";
+    resolveLayer(el);
     const cursorStyle = settings.cursorStyle || "Box";
     let x = rect.x;
     let y = rect.y;
@@ -1861,18 +2008,36 @@ function installLiteCaret({ doc, win, measurer, lifecycle, getSettings, recordTi
     followed = el;
     followedBox = null;
   };
+  const release = () => {
+    active = null;
+    lastEl = null;
+    lastSig = "";
+    follow(null);
+    hide();
+    selection.clear();
+  };
   const measureAndApply = (el, ping) => {
     if (disposed) return;
     const t0 = recordTiming && now ? now() : null;
     readSettings();
+    if (active && active.isConnected === false) release();
     const target = el || documentRef.activeElement;
-    if (!target || !isCaretHost(target)) follow(null);
-    if (!target || !isCaretHost(target) || hasRangeSelection(target)) {
+    if (!target || target.isConnected === false || !isCaretHost(target)) {
+      follow(null);
       hide();
+      selection.clear();
       rememberTarget(target);
       return;
     }
-    resolveLayer(target);
+    const color = caretColor();
+    if (hasRangeSelection(target)) {
+      hide();
+      const last = measurer.latest?.();
+      selection.paint(target, selectionColor(color), last?.el === target ? last.color || "" : "");
+      rememberTarget(target);
+      return;
+    }
+    resolvePalette(target);
     if (paletteOpen && !layerInPalette) {
       hide();
       rememberTarget(target);
@@ -1882,42 +2047,66 @@ function installLiteCaret({ doc, win, measurer, lifecycle, getSettings, recordTi
     follow(target);
     const rect = measurer.measure(target);
     followedBox = rect?.box || null;
-    if (paint(rect, target)) {
+    if (paint(rect, target, color)) {
       syncBlink(ping);
       hideNativeCaret(target);
     }
+    selection.paint(target, selectionColor(color), rect?.color || "");
     rememberTarget(target);
     if (t0 != null) recordTiming(now() - t0);
+  };
+  const flush = () => {
+    frame = 0;
+    const ping = framePing;
+    framePing = false;
+    if (disposed || composing) return;
+    measureAndApply(documentRef.activeElement, ping);
+  };
+  const schedule = (ping) => {
+    if (disposed) return;
+    if (ping) framePing = true;
+    if (frame) return;
+    if (typeof windowRef.requestAnimationFrame !== "function") {
+      flush();
+      return;
+    }
+    frame = windowRef.requestAnimationFrame(flush);
+  };
+  const cancelFrame = () => {
+    if (!frame) return;
+    try {
+      windowRef.cancelAnimationFrame?.(frame);
+    } catch {
+    }
+    frame = 0;
+    framePing = false;
   };
   const onFocusIn = (event) => {
     const target = event?.target;
     layerFor = null;
+    paletteFor = null;
+    paletteOpen = readPaletteOpen();
     if (!target || !isCaretHost(target)) {
-      active = null;
-      lastEl = null;
-      lastSig = "";
-      follow(null);
-      hide();
+      release();
       return;
     }
-    measureAndApply(target, true);
+    schedule(true);
   };
   const onFocusOut = (event) => {
-    if (event?.target && event.target === nativeHiddenEl) restoreNativeCaret();
+    const target = event?.target;
+    if (target && target === nativeHiddenEl) restoreNativeCaret();
     const next = event?.relatedTarget || documentRef.activeElement;
-    if (next && isCaretHost(next)) return;
-    active = null;
-    lastEl = null;
-    lastSig = "";
-    follow(null);
-    hide();
-  };
-  const remeasureFollowed = () => {
-    if (disposed || composing || !followed || documentRef.activeElement !== followed) return;
-    measureAndApply(followed, false);
+    if (target && target === selection.host && next !== target) selection.clear();
+    if (next && next.isConnected !== false && isCaretHost(next)) return;
+    paletteOpen = readPaletteOpen();
+    release();
   };
   const onHostResize = (entries) => {
     if (disposed || composing || !followed) return;
+    if (followed.isConnected === false) {
+      release();
+      return;
+    }
     let entry = null;
     for (const item of entries || []) if (item?.target === followed) entry = item;
     if (!entry) return;
@@ -1926,7 +2115,8 @@ function installLiteCaret({ doc, win, measurer, lifecycle, getSettings, recordTi
     const widthSame = !!(size && box) && sameSize(size.inlineSize, box.width);
     if (widthSame && sameSize(size.blockSize, box.height)) return;
     if (!widthSame) measurer.invalidate?.();
-    remeasureFollowed();
+    if (documentRef.activeElement !== followed) return;
+    measureAndApply(followed, false);
   };
   const RO = resizeObserverClass(windowRef);
   if (RO) {
@@ -1936,14 +2126,9 @@ function installLiteCaret({ doc, win, measurer, lifecycle, getSettings, recordTi
       resizeObserver = null;
     }
   }
-  const onInput = (event) => {
+  const onInput = () => {
     if (composing) return;
-    measureAndApply(event?.target || documentRef.activeElement, true);
-    if (resizeObserver || followRaf || typeof windowRef.requestAnimationFrame !== "function") return;
-    followRaf = windowRef.requestAnimationFrame(() => {
-      followRaf = 0;
-      remeasureFollowed();
-    });
+    schedule(true);
   };
   const onCompositionStart = (event) => {
     const target = event?.target || documentRef.activeElement;
@@ -1951,22 +2136,23 @@ function installLiteCaret({ doc, win, measurer, lifecycle, getSettings, recordTi
     composing = true;
     hide();
   };
-  const onCompositionEnd = (event) => {
+  const onCompositionEnd = () => {
     if (!composing) return;
     composing = false;
-    measureAndApply(event?.target || documentRef.activeElement, true);
+    schedule(true);
   };
   const onRefreshEvent = (event) => {
     if (composing) return;
+    if (frame) {
+      framePing = true;
+      return;
+    }
     const target = documentRef.activeElement;
     if (target === lastEl && computeSig(target) === lastSig) {
       if (event?.type === "mouseup" && target === active) restartBlink();
       return;
     }
-    measureAndApply(target, true);
-  };
-  const remeasureScroll = () => {
-    measureAndApply(documentRef.activeElement, false);
+    schedule(true);
   };
   const SCROLL_OPTS = { capture: true, passive: true };
   const PASSIVE_OPTS = { passive: true };
@@ -1974,21 +2160,13 @@ function installLiteCaret({ doc, win, measurer, lifecycle, getSettings, recordTi
     if (disposed) return;
     const target = documentRef.activeElement || active;
     if (!target || !isCaretHost(target)) return;
-    if (paletteOpen && !(target === layerFor && layerInPalette)) return;
+    if (paletteOpen && !(target === paletteFor && layerInPalette)) return;
     const source = event?.target;
     if (source && typeof source === "object" && typeof source.nodeType === "number" && source !== documentRef) {
       const contains = typeof source.contains === "function" ? source.contains(target) : source === target;
       if (!contains) return;
     }
-    if (typeof windowRef.requestAnimationFrame !== "function") {
-      remeasureScroll();
-      return;
-    }
-    if (scrollRaf) return;
-    scrollRaf = windowRef.requestAnimationFrame(() => {
-      scrollRaf = 0;
-      remeasureScroll();
-    });
+    schedule(false);
   };
   const onWindowBlur = () => {
     readSettings();
@@ -1996,19 +2174,20 @@ function installLiteCaret({ doc, win, measurer, lifecycle, getSettings, recordTi
     hide();
   };
   const onWindowFocus = () => {
-    refresh();
+    schedule(true);
   };
   const onMotionChange = () => {
     reducedMotion = !!motionQuery?.matches;
     syncBlink(true);
   };
   const refresh = () => {
+    cancelFrame();
     measureAndApply(documentRef.activeElement, true);
   };
-  let paletteObserver = null;
+  let portalObserver = null;
   const MO = observerClass(windowRef);
   if (MO && documentRef.body) {
-    paletteObserver = new MO((records) => {
+    portalObserver = new MO((records) => {
       if (disposed) return;
       let changed = false;
       for (const record of records) {
@@ -2025,21 +2204,16 @@ function installLiteCaret({ doc, win, measurer, lifecycle, getSettings, recordTi
           }
         }
       }
-      if (!changed) {
-        if (active && active.isConnected === false) {
-          active = null;
-          lastEl = null;
-          lastSig = "";
-          follow(null);
-          hide();
-        }
+      if (active && active.isConnected === false) {
+        release();
         return;
       }
+      if (!changed) return;
       const target = documentRef.activeElement;
-      if (!composing && target && isCaretHost(target)) measureAndApply(target, true);
+      if (!composing && target && isCaretHost(target)) schedule(true);
       else hide();
     });
-    paletteObserver.observe(documentRef.body, { childList: true, subtree: true });
+    portalObserver.observe(documentRef.body, { childList: true });
   }
   const docListeners = [
     ["focusin", onFocusIn, false],
@@ -2066,14 +2240,7 @@ function installLiteCaret({ doc, win, measurer, lifecycle, getSettings, recordTi
     if (disposed) return;
     disposed = true;
     composing = false;
-    if (scrollRaf) {
-      windowRef.cancelAnimationFrame?.(scrollRaf);
-      scrollRaf = 0;
-    }
-    if (followRaf) {
-      windowRef.cancelAnimationFrame?.(followRaf);
-      followRaf = 0;
-    }
+    cancelFrame();
     try {
       resizeObserver?.disconnect();
     } catch {
@@ -2082,10 +2249,10 @@ function installLiteCaret({ doc, win, measurer, lifecycle, getSettings, recordTi
     followed = null;
     followedBox = null;
     try {
-      paletteObserver?.disconnect();
+      portalObserver?.disconnect();
     } catch {
     }
-    paletteObserver = null;
+    portalObserver = null;
     try {
       blinkAnim?.cancel();
     } catch {
@@ -2102,9 +2269,11 @@ function installLiteCaret({ doc, win, measurer, lifecycle, getSettings, recordTi
     visualViewport?.removeEventListener?.("resize", onScrollOrResize, PASSIVE_OPTS);
     motionQuery?.removeEventListener?.("change", onMotionChange);
     restoreNativeCaret();
+    selection.clear();
     overlay.remove();
     active = null;
     layerFor = null;
+    paletteFor = null;
   };
   return {
     refresh,
@@ -2488,7 +2657,7 @@ function renderStudio(root, ctl) {
 }
 
 // src/extension.js
-var VERSION = "0.5.2";
+var VERSION = "0.6.0";
 var CANVAS_Z_INDEX = 40;
 var VERSION_FLAG = "__ROAM_CURSOR_SMITH_VERSION";
 var DIAG_FLAG = "__ROAM_CARET_DIAG";
@@ -2535,6 +2704,9 @@ function lookKey(snap) {
 }
 function hasOwn(obj, key) {
   return !!obj && Object.prototype.hasOwnProperty.call(obj, key);
+}
+function isReservedName(name) {
+  return name === "Custom" || name === "Current" || hasOwn(BUILTIN_PRESETS, name);
 }
 function uniquePresetName(name, snap, presets = {}) {
   const key = lookKey(snap);
@@ -2591,11 +2763,15 @@ var CursorSmithRuntime = class {
     this._toastEl = null;
     this._fatalNotice = false;
     this._depotPanelReady = false;
+    this._suspended = false;
+    this._escapeBound = false;
+    this._onEscapeKey = (ev) => this.onEscape(ev);
     this.pendingPresetName = "";
     this.lifecycle.add(() => this.teardown());
   }
   teardown() {
     this.closeSettings();
+    this._unbindEscape();
     this._removePanelStyle();
     this.stopLite();
     this.stopNative();
@@ -2631,7 +2807,18 @@ var CursorSmithRuntime = class {
   }
   ensureDiag() {
     if (this._diag) return this._diag;
-    this._diag = { measureCount: 0, measures: [] };
+    const runtime2 = this;
+    this._diag = {
+      measureCount: 0,
+      measures: [],
+      // Bench kill switch: detaches every listener, observer, frame and the
+      // blink, and hides the caret. Nothing is persisted or written.
+      suspend: () => runtime2.suspend(),
+      resume: () => runtime2.resume(),
+      get suspended() {
+        return runtime2._suspended;
+      }
+    };
     try {
       (typeof document !== "undefined" && document.defaultView || globalThis)[DIAG_FLAG] = this._diag;
     } catch {
@@ -2826,7 +3013,26 @@ var CursorSmithRuntime = class {
       }).catch((error) => console.error(error));
     }
   }
+  suspend() {
+    if (this._suspended) return false;
+    this._suspended = true;
+    this.stopLite();
+    this.stopNative();
+    this.stopEngine();
+    this.stopMeasurer();
+    this._unbindEscape();
+    this.applyBodyClasses();
+    return true;
+  }
+  resume() {
+    if (!this._suspended) return false;
+    this._suspended = false;
+    if (this._overlay?.isConnected) this._bindEscape();
+    this.applySettings();
+    return true;
+  }
   applySettings() {
+    if (this._suspended) return;
     if (this.mobile || !this._settings.enabled) {
       this.stopLite();
       this.stopNative();
@@ -2886,6 +3092,7 @@ var CursorSmithRuntime = class {
       React: globalThis.window?.React || globalThis.React,
       handlers: {
         onChange: (id, raw) => this.setFromDepot(id, raw),
+        onSaveStyle: () => this.saveStyle(),
         onCopyCode: () => this.copyShareCode(),
         onImport: () => this.importShareCode(),
         onStudio: () => this.openSettings()
@@ -2900,6 +3107,17 @@ var CursorSmithRuntime = class {
   async setFromDepot(id, raw) {
     if (id === "cs-import-code") {
       await this.extensionAPI.settings.set("cs-import-code", raw);
+      return;
+    }
+    if (id === STYLE_NAME_ID) {
+      await this.extensionAPI.settings.set(STYLE_NAME_ID, String(raw ?? ""));
+      return;
+    }
+    if (id === SAVED_STYLES_ID) {
+      const name = String(raw ?? "");
+      await this.extensionAPI.settings.set(SAVED_STYLES_ID, SAVED_STYLES_PROMPT);
+      const snap = hasOwn(this._settings.presets, name) ? this._settings.presets[name] : null;
+      if (snap) this._set({ ...pickLook(snap), activePreset: name });
       return;
     }
     if (!(id in MIRROR)) return;
@@ -2921,8 +3139,37 @@ var CursorSmithRuntime = class {
     this._set(patch);
     await mirrorToDepot(this.extensionAPI, this._settings, [id]);
   }
+  styleName() {
+    return String(this.extensionAPI.settings.get(STYLE_NAME_ID) ?? "").trim().slice(0, MAX_PRESET_NAME);
+  }
+  _setStyleName(name) {
+    if (this.extensionAPI.settings.get(STYLE_NAME_ID) === name) return null;
+    return this.extensionAPI.settings.set(STYLE_NAME_ID, name);
+  }
+  // A named look shares its name; a Custom look shares Style name, else its shape.
   shareName() {
-    return this._settings.activePreset || this._settings.cursorStyle || "Box";
+    if (this._settings.activePreset) return this._settings.activePreset;
+    const typed = this.styleName();
+    if (typed && typed !== "Custom" && typed !== "Current") return typed;
+    return this._settings.cursorStyle || "Box";
+  }
+  // Saves the current look under Style name (empty: the shape). An existing
+  // saved style of that name is overwritten; built-in names are refused.
+  async saveStyle() {
+    const name = this.styleName() || this._settings.cursorStyle || "Box";
+    if (isReservedName(name)) {
+      this.toast(`"${name}" is already a Roam Caret look. Pick another style name.`);
+      return null;
+    }
+    const presets = this._settings.presets || {};
+    if (!hasOwn(presets, name) && Object.keys(presets).length >= MAX_PRESETS) {
+      this.toast(`Roam Caret keeps ${MAX_PRESETS} saved styles. Save over an existing name.`);
+      return null;
+    }
+    await this._setStyleName(name);
+    this._set({ activePreset: name, presets: { ...presets, [name]: pickLook(this._settings) } });
+    this.toast(`Saved "${name}".`);
+    return name;
   }
   copyShareCode() {
     const code = presetToCode(this.shareName(), pickLook(this._settings));
@@ -2940,10 +3187,12 @@ var CursorSmithRuntime = class {
     const { snap } = decoded;
     const builtin = BUILTIN_PRESETS[decoded.name];
     if (builtin && lookKey(builtin) === lookKey(snap)) {
+      await this._setStyleName(decoded.name);
       this._set({ ...snap, activePreset: decoded.name });
     } else {
       const name = uniquePresetName(decoded.name, snap, this._settings.presets);
       const presets = { ...this._settings.presets || {}, [name]: snap };
+      await this._setStyleName(name);
       this._set({ ...snap, activePreset: name, presets });
     }
     await this.extensionAPI.settings.set("cs-import-code", "");
@@ -2960,6 +3209,9 @@ var CursorSmithRuntime = class {
     if (this._settings.activePreset && !hasOwn(patch, "activePreset") && !this._matchesActivePreset(this._settings)) {
       this._settings.activePreset = "";
       if (!depotIds.includes("cs-preset")) depotIds.push("cs-preset");
+    }
+    if (hasOwn(patch, "activePreset") && this._settings.activePreset) {
+      void this._setStyleName(this._settings.activePreset);
     }
     void persistOptions(this.extensionAPI, this._settings);
     this.applySettings();
@@ -3015,9 +3267,26 @@ var CursorSmithRuntime = class {
     this._overlay = overlay;
     this._panelEl = panelRoot;
     this._toastEl = toastEl;
+    if (!this._suspended) this._bindEscape();
     this.renderPanel();
   }
+  // Escape is heard only while the Studio is open: no keydown listener on
+  // the typing path.
+  _bindEscape() {
+    if (this._escapeBound || typeof document === "undefined") return;
+    document.addEventListener("keydown", this._onEscapeKey, true);
+    this._escapeBound = true;
+  }
+  _unbindEscape() {
+    if (!this._escapeBound) return;
+    this._escapeBound = false;
+    try {
+      document.removeEventListener("keydown", this._onEscapeKey, true);
+    } catch {
+    }
+  }
   closeSettings() {
+    this._unbindEscape();
     try {
       this._overlay?.remove();
     } catch {
@@ -3188,6 +3457,7 @@ async function onload({ extensionAPI, extension }) {
   try {
     globalThis[VERSION_FLAG] = VERSION;
     runtime = new CursorSmithRuntime({ extensionAPI, lifecycle, mobile });
+    runtime.ensureDiag();
     await mirrorToDepot(extensionAPI, runtime._settings);
     await lifecycle.settingsPanel(extensionAPI, runtime.depotPanelConfig());
     runtime._depotPanelReady = true;
@@ -3219,9 +3489,6 @@ async function onload({ extensionAPI, extension }) {
       label: "Roam Caret: Diagnose caret (5s)",
       callback: () => runtime.diagnoseCaret()
     });
-    if (typeof document !== "undefined") {
-      lifecycle.event(document, "keydown", (ev) => runtime.onEscape(ev), true);
-    }
     if (!mobile) runtime.applySettings();
     console.info(`[roam-caret] Loaded v${extension?.version || VERSION}`);
   } catch (error) {

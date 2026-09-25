@@ -218,7 +218,8 @@ test("createCaretMeasurer reuses marker and glyph nodes after the first measure"
   assert.equal(createCalls, afterFirst);
 
   const mirror = body.children[0];
-  assert.equal(mirror.children.length, 3);
+  assert.equal(mirror.children.length, 2);
+  assert.equal(mirror.children[1].children.length, 3);
 
   measurer.dispose();
 });
@@ -324,7 +325,8 @@ function findOrCreateComputed() {
 // moves 7px per character in front of it.
 function layOutMirror(body) {
   const mirror = body.children[0];
-  const [prefix, marker] = mirror.children;
+  const line = mirror.children[1] || mirror;
+  const [prefix, marker] = line.children;
   const at = (value) => Number.parseFloat(value) || 0;
   Object.defineProperty(marker, "offsetLeft", {
     get: () => at(mirror.style.paddingLeft) + prefix.textContent.length * 7,

@@ -12,6 +12,12 @@ export function hexToRgba(hex, alpha) {
 
 export const OPTIONS_KEY = "options";
 
+// Depot-only rows: never mirrored from the blob, read only in extension.js.
+export const STYLE_NAME_ID = "cs-style-name";
+export const SAVED_STYLES_ID = "cs-saved-styles";
+// First item of the Saved styles menu, so every real style is a change event.
+export const SAVED_STYLES_PROMPT = "Pick a saved style";
+
 // Blob wins on load; cs-* ids are never read except cs-import-code.
 export const MIRROR = Object.freeze({
   "cs-enabled": "enabled",
@@ -86,18 +92,31 @@ export function createPreviewComponent(React = globalThis.window?.React) {
 }
 
 export function buildDepotPanel({
-  settings: _settings = {},
+  settings = {},
   builtinNames,
   userNames,
   handlers = {},
   React = globalThis.window?.React,
 } = {}) {
+  const savedNames = userNames || Object.keys(settings.presets || {});
   const presetItems = [
     "Custom",
     ...(builtinNames || Object.keys(BUILTIN_PRESETS)),
-    ...(userNames || []),
+    ...savedNames,
   ];
   const onChange = handlers.onChange ?? (() => {});
+  // Roam's panel is a static list: this row exists only while Look is Custom,
+  // and the panel is rebuilt whenever Look changes.
+  const savedStylesRow = settings.activePreset ? [] : [{
+    id: SAVED_STYLES_ID,
+    name: "Saved styles",
+    description: savedNames.length ? "Load a style you saved or imported." : "Save or import a style to list it here.",
+    action: {
+      type: "select",
+      items: [SAVED_STYLES_PROMPT, ...savedNames],
+      onChange: (event) => onChange(SAVED_STYLES_ID, event.target?.value ?? event),
+    },
+  }];
 
   const rows = [
     {
@@ -117,6 +136,7 @@ export function buildDepotPanel({
         onChange: (event) => onChange("cs-preset", event.target?.value ?? event),
       },
     },
+    ...savedStylesRow,
     {
       id: "cs-shape",
       name: "Shape",
@@ -193,6 +213,26 @@ export function buildDepotPanel({
       action: {
         type: "switch",
         onChange: (event) => onChange("cs-hide-blur", event.target.checked),
+      },
+    },
+    {
+      id: STYLE_NAME_ID,
+      name: "Style name",
+      description: "Used by Save and by the next copied share code. Empty uses the shape.",
+      action: {
+        type: "input",
+        placeholder: "Teal",
+        onChange: (event) => onChange(STYLE_NAME_ID, event.target?.value ?? event),
+      },
+    },
+    {
+      id: "cs-save-style",
+      name: "Save style",
+      description: "Saves the current look under Style name and adds it to Look.",
+      action: {
+        type: "button",
+        content: "Save",
+        onClick: handlers.onSaveStyle,
       },
     },
     {

@@ -673,3 +673,268 @@ test("Depot colour field ignores a partial hex", async () => {
     await cleanup();
   }
 });
+
+async function typeStyleName(api, name) {
+  await depotRow(api, "cs-style-name").action.onChange({ target: { value: name } });
+}
+
+async function clickSave(api) {
+  await depotRow(api, "cs-save-style").action.onClick();
+  await settle();
+  await settle();
+}
+
+test("Save style stores the look under Style name and Look lists it", async () => {
+  installMinimalDom();
+  const api = fakeExtensionApi();
+  const cleanup = await extension.onload({ extensionAPI: api, extension: { version: VERSION } });
+  const runtime = getRuntime();
+  try {
+    runtime._set({ cursorStyle: "Beam", colorLight: "#00695e", colorDark: "#5eead4" });
+    await settle();
+    const creates = panelCreates(api).length;
+    await typeStyleName(api, "  Teal  ");
+    assert.equal(panelCreates(api).length, creates, "typing a name does not rebuild the panel");
+
+    await clickSave(api);
+    assert.equal(runtime._settings.activePreset, "Teal");
+    assert.equal(runtime._settings.presets.Teal.colorDark, "#5eead4");
+    assert.equal(runtime._settings.presets.Teal.cursorStyle, "Beam");
+    assert.equal(api.settings.get("cs-preset"), "Teal");
+    assert.equal(api.settings.get("cs-style-name"), "Teal");
+    assert.ok(depotRow(api, "cs-preset").action.items.includes("Teal"));
+    assert.equal(depotRow(api, "cs-saved-styles"), undefined, "a named Look hides Saved styles");
+  } finally {
+    await cleanup();
+  }
+});
+
+test("an empty Style name saves under the shape; Custom and built-in names are refused", async () => {
+  installMinimalDom();
+  const api = fakeExtensionApi();
+  const cleanup = await extension.onload({ extensionAPI: api, extension: { version: VERSION } });
+  const runtime = getRuntime();
+  try {
+    runtime._set({ cursorStyle: "Underline" });
+    await typeStyleName(api, "");
+    await clickSave(api);
+    assert.equal(runtime._settings.activePreset, "Underline");
+    assert.ok(runtime._settings.presets.Underline);
+
+    for (const name of ["Custom", "Current", "Fast"]) {
+      runtime._set({ colorDark: "#010203" });
+      const before = JSON.stringify(runtime._settings.presets);
+      await typeStyleName(api, name);
+      assert.equal(await runtime.saveStyle(), null, name);
+      assert.equal(JSON.stringify(runtime._settings.presets), before, `${name} is never saved`);
+      assert.equal(runtime._settings.activePreset, "");
+    }
+  } finally {
+    await cleanup();
+  }
+});
+
+test("two style names do not collide, and saving the same name again updates that one style", async () => {
+  installMinimalDom();
+  const api = fakeExtensionApi();
+  const cleanup = await extension.onload({ extensionAPI: api, extension: { version: VERSION } });
+  const runtime = getRuntime();
+  try {
+    runtime._set({ colorDark: "#111111" });
+    await typeStyleName(api, "Alpha");
+    await clickSave(api);
+    runtime._set({ colorDark: "#222222" });
+    assert.equal(runtime._settings.activePreset, "", "editing turns Look to Custom");
+    await typeStyleName(api, "Beta");
+    await clickSave(api);
+    assert.equal(runtime._settings.presets.Alpha.colorDark, "#111111");
+    assert.equal(runtime._settings.presets.Beta.colorDark, "#222222");
+
+    runtime._set({ colorDark: "#333333" });
+    await typeStyleName(api, "Alpha");
+    await clickSave(api);
+    assert.equal(runtime._settings.presets.Alpha.colorDark, "#333333", "overwrites Alpha");
+    assert.equal(runtime._settings.presets.Beta.colorDark, "#222222", "Beta untouched");
+    assert.equal(Object.keys(runtime._settings.presets).length, 2);
+  } finally {
+    await cleanup();
+  }
+});
+
+test("Look Custom reveals Saved styles; picking one loads it and names Look", async () => {
+  installMinimalDom();
+  const api = fakeExtensionApi();
+  const cleanup = await extension.onload({ extensionAPI: api, extension: { version: VERSION } });
+  const runtime = getRuntime();
+  try {
+    runtime._set({ cursorStyle: "Box", colorDark: "#445566" });
+    await typeStyleName(api, "Slate");
+    await clickSave(api);
+    await depotRow(api, "cs-preset").action.onChange({ target: { value: "Fast" } });
+    await settle();
+    await settle();
+    assert.equal(depotRow(api, "cs-saved-styles"), undefined, "a built-in Look omits it");
+
+    await depotRow(api, "cs-preset").action.onChange({ target: { value: "Custom" } });
+    await settle();
+    await settle();
+    const saved = depotRow(api, "cs-saved-styles");
+    assert.ok(saved, "Custom reveals Saved styles");
+    assert.deepEqual(saved.action.items.slice(1), ["Slate"]);
+
+    await saved.action.onChange({ target: { value: "Slate" } });
+    await settle();
+    await settle();
+    assert.equal(runtime._settings.activePreset, "Slate");
+    assert.equal(runtime._settings.colorDark, "#445566");
+    assert.equal(api.settings.get("cs-preset"), "Slate");
+    assert.equal(api.settings.get("cs-style-name"), "Slate");
+    assert.equal(api.settings.get("cs-saved-styles"), saved.action.items[0], "menu back on its prompt");
+    assert.equal(depotRow(api, "cs-saved-styles"), undefined);
+  } finally {
+    await cleanup();
+  }
+});
+
+test("a copied code carries the style name and imports back under it", async () => {
+  installMinimalDom();
+  const api = fakeExtensionApi();
+  let cleanup = await extension.onload({ extensionAPI: api, extension: { version: VERSION } });
+  let runtime = getRuntime();
+  let code;
+  try {
+    runtime._set({ cursorStyle: "Beam", colorDark: "#5eead4", glow: true });
+    await typeStyleName(api, "Harbor");
+    assert.equal(codeToPreset(runtime.copyShareCode()).name, "Harbor", "Custom look: Style name");
+    await clickSave(api);
+    code = runtime.copyShareCode();
+    assert.equal(codeToPreset(code).name, "Harbor", "named look: the Look name");
+    assert.doesNotMatch(code, /\s/, "one line");
+  } finally {
+    await cleanup();
+  }
+
+  const other = fakeExtensionApi();
+  cleanup = await extension.onload({ extensionAPI: other, extension: { version: VERSION } });
+  runtime = getRuntime();
+  try {
+    await other.settings.set("cs-import-code", code);
+    await runtime.importShareCode();
+    await settle();
+    assert.equal(runtime._settings.activePreset, "Harbor");
+    assert.equal(runtime._settings.colorDark, "#5eead4");
+    assert.equal(other.settings.get("cs-preset"), "Harbor");
+    assert.equal(other.settings.get("cs-style-name"), "Harbor");
+    assert.ok(depotRow(other, "cs-preset").action.items.includes("Harbor"));
+  } finally {
+    await cleanup();
+  }
+});
+
+test("importing the README example shows Teal in Look and Style name", async () => {
+  installMinimalDom();
+  const readme = readFileSync(join(dirname(fileURLToPath(import.meta.url)), "../README.md"), "utf8");
+  const fence = readme.indexOf("```", readme.indexOf("## Example share code"));
+  const code = readme.slice(readme.indexOf("\n", fence) + 1, readme.indexOf("```", fence + 3)).trim();
+  const api = fakeExtensionApi();
+  const cleanup = await extension.onload({ extensionAPI: api, extension: { version: VERSION } });
+  const runtime = getRuntime();
+  try {
+    await api.settings.set("cs-import-code", code);
+    await runtime.importShareCode();
+    await settle();
+    assert.equal(api.settings.get("cs-preset"), "Teal");
+    assert.equal(api.settings.get("cs-style-name"), "Teal");
+    assert.equal(runtime._mode, "lite");
+  } finally {
+    await cleanup();
+  }
+});
+
+test("a code that nests presets is rejected on import", async () => {
+  installMinimalDom();
+  const api = fakeExtensionApi();
+  const cleanup = await extension.onload({ extensionAPI: api, extension: { version: VERSION } });
+  const runtime = getRuntime();
+  try {
+    const payload = { __name: "Sneaky", ...pickLook(DEFAULTS), presets: { Other: pickLook(DEFAULTS) } };
+    const nested = Buffer.from(JSON.stringify(payload)).toString("base64url");
+    await api.settings.set("cs-import-code", nested);
+    await runtime.importShareCode();
+    assert.equal(Object.keys(runtime._settings.presets).length, 0);
+    assert.equal(runtime._settings.activePreset, "");
+  } finally {
+    await cleanup();
+  }
+});
+
+test("diag suspend detaches every listener and resume reinstalls and remeasures, writing nothing", async () => {
+  installMinimalDom();
+  const api = fakeExtensionApi();
+  const cleanup = await extension.onload({ extensionAPI: api, extension: { version: VERSION } });
+  const runtime = getRuntime();
+  const diag = globalThis.window.__ROAM_CARET_DIAG;
+  const block = styledBlock();
+  const cancelled = [];
+  const origCancel = globalThis.cancelAnimationFrame;
+  globalThis.cancelAnimationFrame = (id) => cancelled.push(id);
+  try {
+    assert.equal(typeof diag.suspend, "function");
+    assert.equal(runtime._mode, "lite");
+    document.activeElement = block;
+    for (const { type, fn } of [...document._docListeners]) {
+      if (type === "input") fn({ target: block, type });
+    }
+    const listenersBefore = document._docListeners.length;
+    assert.ok(listenersBefore > 0);
+    const settingWrites = () => api.calls.filter(([name]) => name === "setting:set").length;
+    let writes = settingWrites();
+
+    assert.equal(diag.suspend(), true);
+    assert.equal(settingWrites(), writes, "suspend persists nothing");
+    assert.equal(diag.suspended, true);
+    assert.equal(document._docListeners.length, 0, "no document listener left");
+    assert.equal(document.body.children.filter((el) => el.className === "cs-lite-caret").length, 0);
+    assert.equal(runtime._lite, null);
+    assert.equal(runtime._measurer, null);
+    assert.ok(cancelled.length >= 1, "the pending frame is cancelled");
+    assert.equal(document.body.classList.contains(BODY_ACTIVE_CLASS), false);
+
+    runtime._set({ glow: false });
+    assert.equal(runtime._lite, null, "settings changes wait for resume");
+    assert.equal(document._docListeners.length, 0);
+    await settle();
+
+    writes = settingWrites();
+    const measured = runtime._measureCount;
+    assert.equal(diag.resume(), true);
+    await settle();
+    assert.equal(settingWrites(), writes, "resume persists nothing");
+    assert.equal(diag.suspended, false);
+    assert.ok(runtime._lite);
+    assert.equal(document._docListeners.length, listenersBefore);
+    assert.equal(runtime._measureCount, measured + 1, "the focused block is measured again");
+    assert.equal(block.style.getPropertyValue("caret-color"), "transparent");
+  } finally {
+    globalThis.cancelAnimationFrame = origCancel;
+    document.activeElement = document.body;
+    await cleanup();
+  }
+});
+
+test("Escape is heard only while the Studio is open", async () => {
+  installMinimalDom();
+  const api = fakeExtensionApi();
+  const cleanup = await extension.onload({ extensionAPI: api, extension: { version: VERSION } });
+  const runtime = getRuntime();
+  const keydowns = () => document._docListeners.filter((l) => l.type === "keydown").length;
+  try {
+    assert.equal(keydowns(), 0);
+    runtime.openSettings();
+    assert.equal(keydowns(), 1);
+    document.dispatchKeydown({ key: "Escape", stopPropagation() {} });
+    assert.equal(keydowns(), 0);
+  } finally {
+    await cleanup();
+  }
+});

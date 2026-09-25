@@ -87,3 +87,7 @@ body.cs-active .svy-caret-overlay-ui {
    block, and at least this value on a Studio preview textarea. */
 .cs-lite-caret.cs-lite-demo { z-index: 10003; }
 .cs-lite-glyph { display: none; text-align: center; white-space: pre; pointer-events: none; }
+
+/* Text selected in the focused caret field uses the caret colour. The class
+   and both properties sit on that one field while it has focus. */
+.cs-sel::selection { background: var(--cs-selection); color: var(--cs-selection-text); }

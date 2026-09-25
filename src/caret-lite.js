@@ -11,10 +11,14 @@ function isPasswordField(el) {
 
 const COMMAND_PALETTE_CLASS = "rm-command-palette";
 const COMMAND_PALETTE_SELECTOR = `.${COMMAND_PALETTE_CLASS}`;
-const IN_PALETTE_SELECTOR = `${COMMAND_PALETTE_SELECTOR}, .rm-modal-portal--command-palette`;
+const PALETTE_PORTAL_CLASS = "rm-modal-portal--command-palette";
+const IN_PALETTE_SELECTOR = `${COMMAND_PALETTE_SELECTOR}, .${PALETTE_PORTAL_CLASS}`;
 const CARET_BOX_MARGIN_PX = 8;
 const BASE_Z_INDEX = 40;
 const DEMO_CLASS = "cs-lite-demo";
+export const SELECTION_CLASS = "cs-sel";
+const SELECTION_BG = "--cs-selection";
+const SELECTION_TEXT = "--cs-selection-text";
 
 function isDemo(el) {
   return String(el?.className || "").split(/\s+/).includes("cs-demo");
@@ -66,9 +70,11 @@ function opacityOf(settings) {
   return Number.isFinite(value) ? Math.min(1, Math.max(0, value)) : 1;
 }
 
+// Called only for nodes added to or removed from <body> itself.
 function containsPalette(node) {
   if (!node || node.nodeType !== 1) return false;
-  if (node.classList?.contains(COMMAND_PALETTE_CLASS)) return true;
+  const classes = node.classList;
+  if (classes?.contains(COMMAND_PALETTE_CLASS) || classes?.contains(PALETTE_PORTAL_CLASS)) return true;
   return !!(node.firstElementChild && node.querySelector?.(COMMAND_PALETTE_SELECTOR));
 }
 
@@ -168,10 +174,58 @@ function sameSize(a, b) {
   return Math.abs(a - b) < 0.5;
 }
 
+// Text selection in the focused host takes the caret colour through one class
+// and two custom properties on that field. They are written on focus and on a
+// colour change, never per key, and cleared on blur and unload.
+function createSelectionPainter() {
+  let host = null;
+  let key = "";
+
+  const clear = () => {
+    const el = host;
+    if (!el) return;
+    host = null;
+    key = "";
+    try {
+      el.classList?.remove(SELECTION_CLASS);
+      el.style.removeProperty(SELECTION_BG);
+      el.style.removeProperty(SELECTION_TEXT);
+    } catch {
+    }
+  };
+
+  const paint = (el, color, textColor = "") => {
+    if (!el || !color) {
+      clear();
+      return;
+    }
+    const next = `${color}|${textColor}`;
+    if (el === host && next === key) return;
+    if (host && host !== el) clear();
+    try {
+      el.style.setProperty(SELECTION_BG, color);
+      el.style.setProperty(SELECTION_TEXT, glyphColorOn(color, textColor));
+      el.classList?.add(SELECTION_CLASS);
+      host = el;
+      key = next;
+    } catch {
+    }
+  };
+
+  return {
+    paint,
+    clear,
+    get host() {
+      return host;
+    },
+  };
+}
+
 export function installNativeCaret({ doc, win, getSettings } = {}) {
   const documentRef = doc || globalThis.document;
   const windowRef = win || documentRef?.defaultView || globalThis;
   const painted = new Set();
+  const selection = createSelectionPainter();
   let disposed = false;
 
   const colorFor = () => {
@@ -184,12 +238,15 @@ export function installNativeCaret({ doc, win, getSettings } = {}) {
 
   const clear = (el) => {
     painted.delete(el);
+    if (el === selection.host) selection.clear();
     try {
       el.style.removeProperty("caret-color");
     } catch {
     }
   };
 
+  // No layout or style read: the selection text is black or white, picked
+  // from the caret colour alone.
   const paint = (el) => {
     const color = colorFor();
     if (!color) {
@@ -201,6 +258,7 @@ export function installNativeCaret({ doc, win, getSettings } = {}) {
       painted.add(el);
     } catch {
     }
+    selection.paint(el, color);
   };
 
   const refresh = () => {
@@ -245,6 +303,7 @@ export function installNativeCaret({ doc, win, getSettings } = {}) {
     }
     themeObserver = null;
     for (const el of [...painted]) clear(el);
+    selection.clear();
   };
 
   return { refresh, dispose };
@@ -258,9 +317,11 @@ export function installLiteCaret({ doc, win, measurer, lifecycle, getSettings, r
   let disposed = false;
   let lastEl = null;
   let lastSig = "";
-  let scrollRaf = 0;
-  let followRaf = 0;
-  let paletteOpen = !!documentRef.querySelector?.(COMMAND_PALETTE_SELECTOR);
+  let frame = 0;
+  let framePing = false;
+  // One document query per focus change, never per key.
+  const readPaletteOpen = () => !!documentRef.querySelector?.(COMMAND_PALETTE_SELECTOR);
+  let paletteOpen = readPaletteOpen();
 
   const perf = windowRef?.performance || globalThis.performance;
   const now = typeof perf?.now === "function" ? () => perf.now() : null;
@@ -375,19 +436,37 @@ export function installLiteCaret({ doc, win, measurer, lifecycle, getSettings, r
     }
   };
 
+  const selection = createSelectionPainter();
+
   const hide = () => {
     writeStyle("display", "none");
     restoreNativeCaret();
   };
 
-  // Stacking and palette membership, read once per focused host.
+  const caretColor = () => (isRoamDark(documentRef) ? settings.colorDark || "" : settings.colorLight || "");
+
+  const selectionColor = (color) => {
+    const opacity = opacityOf(settings);
+    return color && opacity < 1 ? hexToRgba(color, opacity) : color;
+  };
+
+  // Palette membership, read once per focused host. A DOM query, no style
+  // read, so a block behind the palette is never measured.
+  let paletteFor = null;
+  let layerInPalette = false;
+  const resolvePalette = (el) => {
+    if (el === paletteFor) return;
+    paletteFor = el;
+    layerInPalette = !!el.closest?.(IN_PALETTE_SELECTOR);
+  };
+
+  // Stacking, read once per focused host after the measure's layout, so the
+  // ancestor style reads are clean.
   let layerFor = null;
   let layerZ = String(BASE_Z_INDEX);
-  let layerInPalette = false;
   const resolveLayer = (el) => {
     if (el === layerFor) return;
     layerFor = el;
-    layerInPalette = !!el.closest?.(IN_PALETTE_SELECTOR);
     const top = stackingZIndex(el, documentRef, windowRef);
     let z = top >= BASE_Z_INDEX ? top + 1 : BASE_Z_INDEX;
     if (isDemo(el)) z = Math.max(z, DEMO_Z_INDEX);
@@ -521,9 +600,9 @@ export function installLiteCaret({ doc, win, measurer, lifecycle, getSettings, r
     );
   };
 
-  // Reads nothing from layout: the measurer already produced the one layout
-  // (box included) and the clip rects read against it before any write here.
-  const paint = (rect, el) => {
+  // Every read happens before the first write here: the measurer produced
+  // the one layout, and the clip rects and stacking walk read against it.
+  const paint = (rect, el, color) => {
     const box = rect?.box;
     if (
       !rect ||
@@ -535,8 +614,8 @@ export function installLiteCaret({ doc, win, measurer, lifecycle, getSettings, r
       hide();
       return false;
     }
+    resolveLayer(el);
 
-    const color = isRoamDark(documentRef) ? settings.colorDark || "" : settings.colorLight || "";
     const cursorStyle = settings.cursorStyle || "Box";
     let x = rect.x;
     let y = rect.y;
@@ -613,18 +692,40 @@ export function installLiteCaret({ doc, win, measurer, lifecycle, getSettings, r
     followedBox = null;
   };
 
+  const release = () => {
+    active = null;
+    lastEl = null;
+    lastSig = "";
+    follow(null);
+    hide();
+    selection.clear();
+  };
+
+  // Strict read-then-write: the mirror write and its one layout, every
+  // geometry read, then the overlay, native-caret and selection writes.
   const measureAndApply = (el, ping) => {
     if (disposed) return;
     const t0 = recordTiming && now ? now() : null;
     readSettings();
+    // A dialog that unmounts its focused field fires no focusout.
+    if (active && active.isConnected === false) release();
     const target = el || documentRef.activeElement;
-    if (!target || !isCaretHost(target)) follow(null);
-    if (!target || !isCaretHost(target) || hasRangeSelection(target)) {
+    if (!target || target.isConnected === false || !isCaretHost(target)) {
+      follow(null);
       hide();
+      selection.clear();
       rememberTarget(target);
       return;
     }
-    resolveLayer(target);
+    const color = caretColor();
+    if (hasRangeSelection(target)) {
+      hide();
+      const last = measurer.latest?.();
+      selection.paint(target, selectionColor(color), last?.el === target ? last.color || "" : "");
+      rememberTarget(target);
+      return;
+    }
+    resolvePalette(target);
     // With the palette open, only its own field gets a caret: nothing on the
     // dimmed page behind it.
     if (paletteOpen && !layerInPalette) {
@@ -636,46 +737,77 @@ export function installLiteCaret({ doc, win, measurer, lifecycle, getSettings, r
     follow(target);
     const rect = measurer.measure(target);
     followedBox = rect?.box || null;
-    if (paint(rect, target)) {
+    if (paint(rect, target, color)) {
       syncBlink(ping);
       hideNativeCaret(target);
     }
+    selection.paint(target, selectionColor(color), rect?.color || "");
     rememberTarget(target);
     if (t0 != null) recordTiming(now() - t0);
+  };
+
+  // Caret events only mark the frame dirty. One rAF measures the focused host
+  // after Roam's own handlers ran: N events in a frame give one measure, and
+  // none of it runs inside the event dispatch.
+  const flush = () => {
+    frame = 0;
+    const ping = framePing;
+    framePing = false;
+    if (disposed || composing) return;
+    measureAndApply(documentRef.activeElement, ping);
+  };
+
+  const schedule = (ping) => {
+    if (disposed) return;
+    if (ping) framePing = true;
+    if (frame) return;
+    if (typeof windowRef.requestAnimationFrame !== "function") {
+      flush();
+      return;
+    }
+    frame = windowRef.requestAnimationFrame(flush);
+  };
+
+  const cancelFrame = () => {
+    if (!frame) return;
+    try {
+      windowRef.cancelAnimationFrame?.(frame);
+    } catch {
+    }
+    frame = 0;
+    framePing = false;
   };
 
   const onFocusIn = (event) => {
     const target = event?.target;
     layerFor = null;
+    paletteFor = null;
+    paletteOpen = readPaletteOpen();
     if (!target || !isCaretHost(target)) {
-      active = null;
-      lastEl = null;
-      lastSig = "";
-      follow(null);
-      hide();
+      release();
       return;
     }
-    measureAndApply(target, true);
+    schedule(true);
   };
 
   const onFocusOut = (event) => {
-    if (event?.target && event.target === nativeHiddenEl) restoreNativeCaret();
+    const target = event?.target;
+    if (target && target === nativeHiddenEl) restoreNativeCaret();
     const next = event?.relatedTarget || documentRef.activeElement;
-    if (next && isCaretHost(next)) return;
-    active = null;
-    lastEl = null;
-    lastSig = "";
-    follow(null);
-    hide();
+    if (target && target === selection.host && next !== target) selection.clear();
+    if (next && next.isConnected !== false && isCaretHost(next)) return;
+    paletteOpen = readPaletteOpen();
+    release();
   };
 
-  const remeasureFollowed = () => {
-    if (disposed || composing || !followed || documentRef.activeElement !== followed) return;
-    measureAndApply(followed, false);
-  };
-
+  // ResizeObserver callbacks run after the frame's layout, so the reads here
+  // are clean. Measured now: a next-frame rAF would show one stale frame.
   const onHostResize = (entries) => {
     if (disposed || composing || !followed) return;
+    if (followed.isConnected === false) {
+      release();
+      return;
+    }
     let entry = null;
     for (const item of entries || []) if (item?.target === followed) entry = item;
     if (!entry) return;
@@ -685,7 +817,8 @@ export function installLiteCaret({ doc, win, measurer, lifecycle, getSettings, r
     if (widthSame && sameSize(size.blockSize, box.height)) return;
     // A new width can rewrap the mirror, so copy the host's style again.
     if (!widthSame) measurer.invalidate?.();
-    remeasureFollowed();
+    if (documentRef.activeElement !== followed) return;
+    measureAndApply(followed, false);
   };
 
   const RO = resizeObserverClass(windowRef);
@@ -697,16 +830,9 @@ export function installLiteCaret({ doc, win, measurer, lifecycle, getSettings, r
     }
   }
 
-  const onInput = (event) => {
+  const onInput = () => {
     if (composing) return; // never measure mid-composition
-    measureAndApply(event?.target || documentRef.activeElement, true);
-    // Without ResizeObserver, look once more after the host's own input
-    // handlers ran. The caret above is already painted.
-    if (resizeObserver || followRaf || typeof windowRef.requestAnimationFrame !== "function") return;
-    followRaf = windowRef.requestAnimationFrame(() => {
-      followRaf = 0;
-      remeasureFollowed();
-    });
+    schedule(true);
   };
 
   const onCompositionStart = (event) => {
@@ -716,26 +842,27 @@ export function installLiteCaret({ doc, win, measurer, lifecycle, getSettings, r
     hide();
   };
 
-  const onCompositionEnd = (event) => {
+  const onCompositionEnd = () => {
     if (!composing) return;
     composing = false;
-    measureAndApply(event?.target || documentRef.activeElement, true);
+    schedule(true);
   };
 
   // selectionchange / keyup / mouseup. A moved caret (arrow keys, click)
   // remeasures and restarts the blink; an unmoved click only restarts it.
+  // The signature is value length and selection: no geometry read.
   const onRefreshEvent = (event) => {
     if (composing) return;
+    if (frame) {
+      framePing = true;
+      return;
+    }
     const target = documentRef.activeElement;
     if (target === lastEl && computeSig(target) === lastSig) {
       if (event?.type === "mouseup" && target === active) restartBlink();
       return;
     }
-    measureAndApply(target, true);
-  };
-
-  const remeasureScroll = () => {
-    measureAndApply(documentRef.activeElement, false);
+    schedule(true);
   };
 
   const SCROLL_OPTS = { capture: true, passive: true };
@@ -745,7 +872,7 @@ export function installLiteCaret({ doc, win, measurer, lifecycle, getSettings, r
     if (disposed) return;
     const target = documentRef.activeElement || active;
     if (!target || !isCaretHost(target)) return;
-    if (paletteOpen && !(target === layerFor && layerInPalette)) return;
+    if (paletteOpen && !(target === paletteFor && layerInPalette)) return;
     // Only remeasure when the scrolled surface can move the caret: window,
     // document, visualViewport, or an ancestor of the active textarea.
     // Sidebar / autocomplete / unrelated overflow scrolls are ignored.
@@ -760,15 +887,7 @@ export function installLiteCaret({ doc, win, measurer, lifecycle, getSettings, r
         typeof source.contains === "function" ? source.contains(target) : source === target;
       if (!contains) return;
     }
-    if (typeof windowRef.requestAnimationFrame !== "function") {
-      remeasureScroll();
-      return;
-    }
-    if (scrollRaf) return;
-    scrollRaf = windowRef.requestAnimationFrame(() => {
-      scrollRaf = 0;
-      remeasureScroll();
-    });
+    schedule(false);
   };
 
   const onWindowBlur = () => {
@@ -778,7 +897,7 @@ export function installLiteCaret({ doc, win, measurer, lifecycle, getSettings, r
   };
 
   const onWindowFocus = () => {
-    refresh();
+    schedule(true);
   };
 
   const onMotionChange = () => {
@@ -786,16 +905,18 @@ export function installLiteCaret({ doc, win, measurer, lifecycle, getSettings, r
     syncBlink(true);
   };
 
+  // Settings change: measure now, in place of any frame already queued.
   const refresh = () => {
+    cancelFrame();
     measureAndApply(documentRef.activeElement, true);
   };
 
-  // The palette flag flips only when a node carrying the palette class is
-  // added or removed, so the keystroke path reads a boolean, not the DOM.
-  let paletteObserver = null;
+  // Blueprint mounts the palette portal as a direct <body> child, so the
+  // observer watches only <body>'s own children: none of Roam's block churn.
+  let portalObserver = null;
   const MO = observerClass(windowRef);
   if (MO && documentRef.body) {
-    paletteObserver = new MO((records) => {
+    portalObserver = new MO((records) => {
       if (disposed) return;
       let changed = false;
       for (const record of records) {
@@ -812,22 +933,16 @@ export function installLiteCaret({ doc, win, measurer, lifecycle, getSettings, r
           }
         }
       }
-      if (!changed) {
-        // A dialog that unmounts its focused field fires no focusout.
-        if (active && active.isConnected === false) {
-          active = null;
-          lastEl = null;
-          lastSig = "";
-          follow(null);
-          hide();
-        }
+      if (active && active.isConnected === false) {
+        release();
         return;
       }
+      if (!changed) return;
       const target = documentRef.activeElement;
-      if (!composing && target && isCaretHost(target)) measureAndApply(target, true);
+      if (!composing && target && isCaretHost(target)) schedule(true);
       else hide();
     });
-    paletteObserver.observe(documentRef.body, { childList: true, subtree: true });
+    portalObserver.observe(documentRef.body, { childList: true });
   }
 
   const docListeners = [
@@ -856,14 +971,7 @@ export function installLiteCaret({ doc, win, measurer, lifecycle, getSettings, r
     if (disposed) return;
     disposed = true;
     composing = false;
-    if (scrollRaf) {
-      windowRef.cancelAnimationFrame?.(scrollRaf);
-      scrollRaf = 0;
-    }
-    if (followRaf) {
-      windowRef.cancelAnimationFrame?.(followRaf);
-      followRaf = 0;
-    }
+    cancelFrame();
     try {
       resizeObserver?.disconnect();
     } catch {
@@ -872,10 +980,10 @@ export function installLiteCaret({ doc, win, measurer, lifecycle, getSettings, r
     followed = null;
     followedBox = null;
     try {
-      paletteObserver?.disconnect();
+      portalObserver?.disconnect();
     } catch {
     }
-    paletteObserver = null;
+    portalObserver = null;
     try {
       blinkAnim?.cancel();
     } catch {
@@ -892,9 +1000,11 @@ export function installLiteCaret({ doc, win, measurer, lifecycle, getSettings, r
     visualViewport?.removeEventListener?.("resize", onScrollOrResize, PASSIVE_OPTS);
     motionQuery?.removeEventListener?.("change", onMotionChange);
     restoreNativeCaret();
+    selection.clear();
     overlay.remove();
     active = null;
     layerFor = null;
+    paletteFor = null;
   };
 
   return {
