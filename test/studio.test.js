@@ -35,7 +35,7 @@ function listenerBag() {
 
 // DOM order: window and document capture, the element's ancestors, the
 // target, then bubble back up. stopPropagation ends it after the current node.
-function dispatch(win, page, target, type, key) {
+function dispatch(win, page, target, type, key, init = {}) {
   const path = [win, page];
   const ancestors = [];
   for (let n = target.parentNode; n; n = n.parentNode) ancestors.unshift(n);
@@ -46,6 +46,7 @@ function dispatch(win, page, target, type, key) {
     key,
     target,
     defaultPrevented: false,
+    ...init,
     stopPropagation() { stopped = true; },
     preventDefault() { this.defaultPrevented = true; },
   };
@@ -324,7 +325,7 @@ test("the preview stops a key from bubbling to Roam and still receives it", () =
   });
 });
 
-test("the Studio textarea stops keydown from bubbling and lets beforeinput through", () => {
+test("the preview stops every key and input event at the field and cancels none", () => {
   withFakeDoc((doc) => {
     const root = doc.createElement("div");
     root.className = "cs-studio";
@@ -332,14 +333,113 @@ test("the Studio textarea stops keydown from bubbling and lets beforeinput throu
     const demo = root.querySelector(".cs-demo");
     const win = listenerBag();
     const page = listenerBag();
+    const captured = [];
     const bubbled = [];
-    page.addEventListener("keydown", (ev) => bubbled.push(ev.type), false);
-    page.addEventListener("beforeinput", (ev) => bubbled.push(ev.type), false);
-    const key = dispatch(win, page, demo, "keydown", "a");
-    const before = dispatch(win, page, demo, "beforeinput", "a");
-    assert.equal(key.defaultPrevented, false);
-    assert.equal(before.defaultPrevented, false);
-    assert.deepEqual(bubbled, ["beforeinput"], "beforeinput must reach the document so the character inserts");
+    const types = ["keydown", "keypress", "keyup", "beforeinput", "input"];
+    for (const type of types) {
+      page.addEventListener(type, (ev) => captured.push(ev.type), true);
+      page.addEventListener(type, (ev) => bubbled.push(ev.type), false);
+    }
+    for (const type of types) {
+      const ev = dispatch(win, page, demo, type, "a", { inputType: "insertText", data: "a" });
+      assert.equal(ev.defaultPrevented, false, `${type} is never cancelled`);
+    }
+    assert.deepEqual(captured, types, "capture listeners (the caret) still hear every event");
+    assert.deepEqual(bubbled, [], "Roam's document listeners never handle the preview's keys");
+    assert.equal(demo.value, "", "nothing cancelled, so the browser does the typing");
+  });
+});
+
+// What Chrome does with one key: keydown; unless cancelled, beforeinput;
+// unless cancelled, the edit and input.
+function pressKey(win, page, field, key, init = {}) {
+  const down = dispatch(win, page, field, "keydown", key, init);
+  if (down.defaultPrevented) return;
+  if (key.length > 1 && key !== "Enter") return;
+  const data = key === "Enter" ? "\n" : key;
+  const before = dispatch(win, page, field, "beforeinput", undefined, { inputType: "insertText", data });
+  if (before.defaultPrevented) return;
+  const at = field.selectionStart ?? field.value.length;
+  field.value = field.value.slice(0, at) + data + field.value.slice(field.selectionEnd ?? at);
+  field.selectionStart = field.selectionEnd = at + data.length;
+  dispatch(win, page, field, "input", undefined, { inputType: "insertText", data });
+}
+
+function typingRig(field) {
+  const win = listenerBag();
+  const page = listenerBag();
+  const caretInputs = [];
+  page.addEventListener("input", () => caretInputs.push("input"), true);
+  field.dispatchEvent = (ev) => {
+    dispatch(win, page, field, ev.type, undefined, { inputType: ev.inputType, data: ev.data });
+    return true;
+  };
+  return { win, page, caretInputs };
+}
+
+test("a key Roam cancels on document capture still types into the Studio preview", () => {
+  withFakeDoc((doc) => {
+    const root = doc.createElement("div");
+    root.className = "cs-studio";
+    renderStudio(root, makeCtl({ ...DEFAULTS }));
+    const demo = root.querySelector(".cs-demo");
+    const { win, page, caretInputs } = typingRig(demo);
+    // Roam's key handler: document capture, preventDefault on every key.
+    page.addEventListener("keydown", (ev) => ev.preventDefault(), true);
+
+    for (const key of ["h", "i", " ", "Enter", "é", "x"]) pressKey(win, page, demo, key);
+    assert.equal(demo.value, "hi \néx", "every character lands in the textarea");
+    assert.deepEqual([demo.selectionStart, demo.selectionEnd], [6, 6]);
+
+    pressKey(win, page, demo, "Backspace");
+    assert.equal(demo.value, "hi \né");
+    demo.setSelectionRange(0, 2);
+    pressKey(win, page, demo, "Delete");
+    assert.equal(demo.value, " \né", "Delete removes the selection");
+    assert.equal(caretInputs.length, 8, "each edit tells the caret with one input event");
+
+    pressKey(win, page, demo, "b", { ctrlKey: true });
+    pressKey(win, page, demo, "a", { metaKey: true });
+    pressKey(win, page, demo, "ArrowLeft");
+    pressKey(win, page, demo, "Escape");
+    pressKey(win, page, demo, "q", { isComposing: true });
+    assert.equal(demo.value, " \né", "shortcuts, arrows, Escape and IME keys are not typed");
+  });
+});
+
+test("an input Roam cancels on capture is applied once, and Backspace keeps an emoji whole", () => {
+  withFakeDoc((doc) => {
+    const root = doc.createElement("div");
+    root.className = "cs-studio";
+    renderStudio(root, makeCtl({ ...DEFAULTS }));
+    const demo = root.querySelector(".cs-demo");
+    const { win, page } = typingRig(demo);
+    page.addEventListener("beforeinput", (ev) => ev.preventDefault(), true);
+    pressKey(win, page, demo, "o");
+    pressKey(win, page, demo, "k");
+    assert.equal(demo.value, "ok");
+
+    demo.value = "a\u{1F600}";
+    demo.setSelectionRange(3, 3);
+    dispatch(win, page, demo, "beforeinput", undefined, { inputType: "deleteContentBackward", defaultPrevented: true });
+    assert.equal(demo.value, "a");
+  });
+});
+
+test("Escape still reaches the Studio's own listener", () => {
+  withFakeDoc((doc) => {
+    const root = doc.createElement("div");
+    root.className = "cs-studio";
+    renderStudio(root, makeCtl({ ...DEFAULTS }));
+    const demo = root.querySelector(".cs-demo");
+    const win = listenerBag();
+    const page = listenerBag();
+    const heard = [];
+    page.addEventListener("keydown", (ev) => heard.push(ev.key), false);
+    const ev = dispatch(win, page, demo, "keydown", "Escape");
+    assert.deepEqual(heard, ["Escape"]);
+    assert.equal(ev.defaultPrevented, false);
+    assert.equal(demo.value, "");
   });
 });
 
@@ -369,6 +469,15 @@ test("the Depot preview .cs-demo is covered by the same shield while it is mount
   assert.deepEqual(capture, ["a"], "the key still reaches the field");
   assert.deepEqual(bubble, [], "Roam's bubble listener does not also handle it");
   assert.equal(ev.defaultPrevented, false);
+
+  el.value = "";
+  el.setSelectionRange = function setSelectionRange(start, end) {
+    this.selectionStart = start;
+    this.selectionEnd = end;
+  };
+  page.addEventListener("keydown", (e) => e.preventDefault(), true);
+  pressKey(win, page, el, "z");
+  assert.equal(el.value, "z", "the Depot preview types through a capture preventDefault too");
 
   textarea.props.ref(null);
   assert.equal(el._listeners.length, 0, "unmount removes the field listeners");

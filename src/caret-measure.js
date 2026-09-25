@@ -345,6 +345,10 @@ export function createCaretMeasurer({ doc, win, lifecycle } = {}) {
     latest() {
       return latestRect;
     },
+    // No caret field has focus: the canvas engine stops drawing the last one.
+    clear() {
+      latestRect = null;
+    },
     subscribe(fn) {
       subscribers.add(fn);
       return () => subscribers.delete(fn);

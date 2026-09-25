@@ -3,7 +3,6 @@ import { openRoamCaretSettings } from "./open-settings.js";
 import {
   MIRROR,
   SAVED_STYLES_ID,
-  SAVED_STYLES_PROMPT,
   STYLE_NAME_ID,
   buildDepotPanel,
   loadOptions,
@@ -11,7 +10,14 @@ import {
   persistOptions,
 } from "./settings.js";
 import { createCaretMeasurer } from "./caret-measure.js";
-import { installLiteCaret, installNativeCaret, isPlainLine } from "./caret-lite.js";
+import {
+  STUDIO_OPEN_CLASS,
+  coveredByPanel,
+  installLiteCaret,
+  installNativeCaret,
+  isCaretHost,
+  isPlainLine,
+} from "./caret-lite.js";
 import {
   BODY_ACTIVE_CLASS,
   BODY_HIDE_NATIVE_CLASS,
@@ -28,7 +34,7 @@ import {
 } from "./cursor-smith.js";
 import { renderStudio, STUDIO_CSS } from "./studio.js";
 
-export const VERSION = "0.6.2";
+export const VERSION = "0.6.3";
 const CANVAS_Z_INDEX = 40; // PROVISIONAL
 const VERSION_FLAG = "__ROAM_CURSOR_SMITH_VERSION";
 const DIAG_FLAG = "__ROAM_CARET_DIAG";
@@ -147,6 +153,7 @@ class CursorSmithRuntime {
     this._mode = null;
     this._pumpInstalled = false;
     this._pumpListeners = [];
+    this._pump = null;
     this._measureCount = 0;
     this._overlay = null;
     this._panelEl = null;
@@ -157,6 +164,8 @@ class CursorSmithRuntime {
     this._suspended = false;
     this._escapeBound = false;
     this._onEscapeKey = (ev) => this.onEscape(ev);
+    this._onStudioFocus = (ev) => this.keepStudioFocus(ev);
+    this._studioOpener = null;
     this.pendingPresetName = "";
     this.lifecycle.add(() => this.teardown());
   }
@@ -278,7 +287,13 @@ class CursorSmithRuntime {
     const pump = () => {
       try {
         const el = document.activeElement;
-        if (!this._measurer || !el) return;
+        if (!this._measurer) return;
+        // Nothing to draw: the canvas stops showing the last caret instead of
+        // leaving it on a panel or on a field that lost focus.
+        if (!el || !isCaretHost(el) || coveredByPanel(el, document)) {
+          this._measurer.clear();
+          return;
+        }
         const start = now ? now() : null;
         this._measurer.measure(el);
         if (start != null) this.recordTiming(now() - start);
@@ -286,6 +301,7 @@ class CursorSmithRuntime {
       }
     };
     this._pumpInstalled = true;
+    this._pump = pump;
     this._bindPumpListener(document, "focusin", pump, true);
     this._bindPumpListener(document, "input", pump, true);
     this._bindPumpListener(document, "selectionchange", pump, false);
@@ -307,6 +323,7 @@ class CursorSmithRuntime {
     }
     this._pumpListeners = [];
     this._pumpInstalled = false;
+    this._pump = null;
   }
 
   startLite() {
@@ -504,10 +521,12 @@ class CursorSmithRuntime {
       settings: this._settings,
       builtinNames: Object.keys(BUILTIN_PRESETS),
       userNames: Object.keys(this._settings.presets || {}),
+      styleName: this.styleName(),
       React: globalThis.window?.React || globalThis.React,
       handlers: {
         onChange: (id, raw) => this.setFromDepot(id, raw),
-        onSaveStyle: () => this.saveStyle(),
+        // Roam's button passes its click event; the Save row passes the name.
+        onSaveStyle: (name) => this.saveStyle(typeof name === "string" ? name : undefined),
         onCopyCode: () => this.copyShareCode(),
         onImport: () => this.importShareCode(),
         onStudio: () => this.openSettings(),
@@ -531,11 +550,13 @@ class CursorSmithRuntime {
       await this.extensionAPI.settings.set(STYLE_NAME_ID, String(raw ?? ""));
       return;
     }
+    // Picking a style loads it; the menu then shows it. The prompt changes
+    // nothing, and the menu goes back to the current style.
     if (id === SAVED_STYLES_ID) {
       const name = String(raw ?? "");
-      await this.extensionAPI.settings.set(SAVED_STYLES_ID, SAVED_STYLES_PROMPT);
       const snap = hasOwn(this._settings.presets, name) ? this._settings.presets[name] : null;
       if (snap) this._set({ ...pickLook(snap), activePreset: name });
+      else await mirrorToDepot(this.extensionAPI, this._settings, [SAVED_STYLES_ID]);
       return;
     }
     if (!(id in MIRROR)) return;
@@ -579,10 +600,14 @@ class CursorSmithRuntime {
     return this._settings.cursorStyle || "Box";
   }
 
-  // Saves the current look under Style name (empty: the shape). An existing
-  // saved style of that name is overwritten; built-in names are refused.
-  async saveStyle() {
-    const name = this.styleName() || this._settings.cursorStyle || "Box";
+  // Saves the current look under the typed name (empty: the shape). An
+  // existing saved style of that name is overwritten; built-in names are
+  // refused. The Save row passes the name it shows; the button reads Style name.
+  async saveStyle(typedName) {
+    const typed = typedName == null
+      ? this.styleName()
+      : String(typedName).trim().slice(0, MAX_PRESET_NAME);
+    const name = typed || this._settings.cursorStyle || "Box";
     if (isReservedName(name)) {
       this.toast(`"${name}" is already a Roam Caret look. Pick another style name.`);
       return null;
@@ -643,7 +668,7 @@ class CursorSmithRuntime {
       && !this._matchesActivePreset(this._settings)
     ) {
       this._settings.activePreset = "";
-      if (!depotIds.includes("cs-preset")) depotIds.push("cs-preset");
+      for (const id of ["cs-preset", SAVED_STYLES_ID]) if (!depotIds.includes(id)) depotIds.push(id);
     }
     // Picking a named look puts its name in Style name, so Save updates it.
     if (hasOwn(patch, "activePreset") && this._settings.activePreset) {
@@ -704,21 +729,25 @@ class CursorSmithRuntime {
     const toastEl = document.createElement("div");
     toastEl.className = "cs-toast";
     overlay.append(panelRoot, toastEl);
+    this._studioOpener = document.activeElement;
     document.body.append(overlay);
-    document.body.classList.add("cs-studio-open");
-    if (this._lite?.overlay) this._lite.overlay.style.display = "none";
+    document.body.classList.add(STUDIO_OPEN_CLASS);
     this._overlay = overlay;
     this._panelEl = panelRoot;
     this._toastEl = toastEl;
     if (!this._suspended) this._bindStudioKeys();
     this.renderPanel();
+    // A block still focused under the Studio stops drawing now.
+    this._lite?.refresh();
+    this._pump?.();
   }
 
-  // Escape and the preview key shield are bound only while the Studio is
-  // open: no keydown listener on the typing path.
+  // Escape and the focus guard are bound only while the Studio is open: no
+  // keydown listener on the typing path.
   _bindStudioKeys() {
     if (this._escapeBound || typeof document === "undefined") return;
     document.addEventListener("keydown", this._onEscapeKey, true);
+    (document.defaultView || globalThis).addEventListener?.("focus", this._onStudioFocus, true);
     this._escapeBound = true;
   }
 
@@ -727,12 +756,26 @@ class CursorSmithRuntime {
     this._escapeBound = false;
     try {
       document.removeEventListener("keydown", this._onEscapeKey, true);
+      (document.defaultView || globalThis).removeEventListener?.("focus", this._onStudioFocus, true);
     } catch {
     }
   }
 
+  // Roam's Settings dialog is a Blueprint overlay with enforceFocus. Its
+  // document-capture focus listener pulls focus back into the dialog one
+  // frame after anything outside it is focused, so the Studio opened from
+  // Roam Depot could never keep focus and took no typing. Window capture runs
+  // first: a focus event inside the Studio stops there.
+  keepStudioFocus(ev) {
+    const target = ev?.target;
+    if (target?.nodeType === 1 && this._overlay?.contains?.(target)) ev.stopPropagation();
+  }
+
   closeSettings() {
-    try { document.body?.classList?.remove("cs-studio-open"); } catch { /* already gone */ }
+    const wasOpen = !!this._overlay;
+    const opener = this._studioOpener;
+    this._studioOpener = null;
+    try { document.body?.classList?.remove(STUDIO_OPEN_CLASS); } catch { /* already gone */ }
     this._unbindStudioKeys();
     try {
       this._overlay?.remove();
@@ -742,6 +785,15 @@ class CursorSmithRuntime {
     this._panelEl = null;
     this._toastEl = null;
     this._removePanelStyle();
+    if (!wasOpen) return;
+    // Focus goes back to what opened the Studio (Roam Depot's Open button),
+    // so the Settings dialog keeps focus and Escape.
+    try {
+      if (opener?.isConnected && opener !== document.body) opener.focus?.({ preventScroll: true });
+    } catch {
+    }
+    this._lite?.refresh();
+    this._pump?.();
   }
 
   onEscape(ev) {

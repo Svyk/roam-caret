@@ -4,6 +4,18 @@ All notable changes to this project follow [Keep a Changelog](https://keepachang
 
 ## [Unreleased]
 
+## [0.6.3] - 2026-09-24
+
+### Fixed
+- The Studio takes typing when you open it from Roam Depot. Roam's Settings dialog pulled focus back into itself one frame after the Studio preview got it, so keys went to the dialog. Focus inside the Studio now stops before that check, and closing the Studio puts focus back on the Open button.
+- Opening Roam Depot no longer draws the custom caret in its fields. Roam focuses the first text field in Settings when it opens, and the caret drew there. In Roam Depot and the Studio only the preview draws the custom caret. Name, number and colour fields keep the browser caret. A block still focused under the Studio or the Settings dialog draws nothing.
+- The preview caret shows only when it sits wholly inside the preview box. In canvas mode the caret and its effects are clipped to that box.
+- Canvas mode stops drawing the last caret when focus leaves a text field.
+- Both previews stop their key and input events at the field, as Chief of Staff's composer does. If a listener that runs first cancels a key, the preview types the character itself.
+
+### Changed
+- **Styles** sits directly under **Look**, always lists saved and imported styles, and shows the current one. **Save as** puts the name field and **Save** on one row. Save adds the name to Styles and makes it the current look. Copy shares that name. Import adds the code's name to Styles and selects it.
+
 ## [0.6.2] - 2026-09-24
 
 ### Fixed

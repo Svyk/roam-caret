@@ -1,4 +1,4 @@
-/* Roam Caret v0.6.2 | MIT | generated; edit src/ */
+/* Roam Caret v0.6.3 | MIT | generated; edit src/ */
 
 // src/cursor-smith.js
 var __defProp = Object.defineProperty;
@@ -2068,14 +2068,15 @@ function getCaretClipRect(e, doc) {
     e._clipChain = resolveClipChain(active);
   }
   const chain = e._clipChain;
-  if (!chain || !chain.length) return null;
+  const demo = !!active.classList?.contains("cs-demo");
+  if (!demo && (!chain || !chain.length)) return null;
   const win = doc.defaultView || window;
   const { top: chromeTop, bottom: chromeBottom } = chromeInsets(e, doc);
   let top = chromeTop;
   let left = 0;
   let bottom = chromeBottom;
   let right = win.innerWidth;
-  for (const el2 of chain) {
+  for (const el2 of demo ? [...chain || [], active] : chain) {
     if (!el2.isConnected) {
       e._clipChainFor = null;
       return null;
@@ -3365,6 +3366,7 @@ export {
   caretCoords,
   draw,
   drawBeamCaret,
+  getCaretClipRect,
   hexToRgba,
   isTextCaretHost,
   nextSchedule

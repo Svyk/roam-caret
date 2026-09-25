@@ -1,4 +1,4 @@
-/* Roam Caret v0.6.2 | MIT | generated; edit src/ */
+/* Roam Caret v0.6.3 | MIT | generated; edit src/ */
 
 // src/lifecycle.js
 function isPromiseLike(value) {
@@ -871,16 +871,63 @@ var RERENDER_KEYS = /* @__PURE__ */ new Set([
 ]);
 var PROP_ATTRS = /* @__PURE__ */ new Set(["value", "checked", "selected"]);
 var HEX6 = /^#[0-9a-fA-F]{6}$/;
-var SHIELDED_KEYS = ["keydown"];
-function stopPreviewKey(ev) {
-  if (ev.key !== "Escape") ev.stopPropagation();
+var SHIELDED_EVENTS = ["keydown", "keypress", "keyup", "beforeinput", "input"];
+function editForKey(ev) {
+  if (ev.metaKey || ev.ctrlKey && !ev.altKey) return null;
+  const key = ev.key;
+  if (key === "Enter") return { text: "\n", inputType: "insertLineBreak" };
+  if (key === "Backspace") return { dir: -1, inputType: "deleteContentBackward" };
+  if (key === "Delete") return { dir: 1, inputType: "deleteContentForward" };
+  if (typeof key === "string" && [...key].length === 1) return { text: key, inputType: "insertText" };
+  return null;
+}
+function editForInput(ev) {
+  const type = ev.inputType;
+  if (type === "insertText" && ev.data) return { text: ev.data, inputType: type };
+  if (type === "insertLineBreak" || type === "insertParagraph") return { text: "\n", inputType: type };
+  if (type === "deleteContentBackward") return { dir: -1, inputType: type };
+  if (type === "deleteContentForward") return { dir: 1, inputType: type };
+  return null;
+}
+function charSize(value, index, dir) {
+  const code = value.charCodeAt(dir < 0 ? index - 1 : index);
+  const paired = dir < 0 ? code >= 56320 && code <= 57343 : code >= 55296 && code <= 56319;
+  return paired ? 2 : 1;
+}
+function applyEdit(field, edit) {
+  const value = String(field.value ?? "");
+  let start = Math.min(field.selectionStart ?? value.length, value.length);
+  let end = Math.min(field.selectionEnd ?? start, value.length);
+  if (start > end) [start, end] = [end, start];
+  const text = edit.text || "";
+  if (!text && start === end) {
+    if (edit.dir < 0) start = Math.max(0, start - charSize(value, start, -1));
+    else end = Math.min(value.length, end + charSize(value, end, 1));
+  }
+  field.value = value.slice(0, start) + text + value.slice(end);
+  const caret = start + text.length;
+  field.setSelectionRange?.(caret, caret);
+  const win = field.ownerDocument?.defaultView || globalThis;
+  const Ctor = win.InputEvent || win.Event;
+  if (typeof Ctor !== "function" || typeof field.dispatchEvent !== "function") return;
+  try {
+    field.dispatchEvent(new Ctor("input", { bubbles: true, inputType: edit.inputType, data: text || null }));
+  } catch {
+  }
+}
+function onPreviewEvent(ev) {
+  if (ev.key === "Escape") return;
+  ev.stopPropagation();
+  if (!ev.defaultPrevented || ev.isComposing) return;
+  const edit = ev.type === "keydown" ? editForKey(ev) : ev.type === "beforeinput" ? editForInput(ev) : null;
+  if (edit) applyEdit(ev.currentTarget || ev.target, edit);
 }
 function shieldPreviewField(el) {
   if (!el?.addEventListener) return () => {
   };
-  for (const type of SHIELDED_KEYS) el.addEventListener(type, stopPreviewKey);
+  for (const type of SHIELDED_EVENTS) el.addEventListener(type, onPreviewEvent);
   return () => {
-    for (const type of SHIELDED_KEYS) el.removeEventListener(type, stopPreviewKey);
+    for (const type of SHIELDED_EVENTS) el.removeEventListener(type, onPreviewEvent);
   };
 }
 function h(tag, attrs, ...children) {
@@ -1016,7 +1063,7 @@ function renderStudio(root, ctl) {
     placeholder: "Type here to see your cursor…\nPress Enter for Thunderstrike."
   });
   if (prevValue) demo.value = prevValue;
-  for (const type of SHIELDED_KEYS) demo.addEventListener(type, stopPreviewKey);
+  shieldPreviewField(demo);
   const shapeItems = (ENUMS.cursorStyle.includes("Beam") ? ["Beam", "Line", "Box", "Underline"] : ["Line", "Box", "Underline"]).map((v) => ({ value: v, label: v }));
   const caretBody = [
     select("cursorStyle", shapeItems),
@@ -1219,10 +1266,11 @@ function hexToRgba(hex, alpha) {
 var OPTIONS_KEY = "options";
 var STYLE_NAME_ID = "cs-style-name";
 var SAVED_STYLES_ID = "cs-saved-styles";
-var SAVED_STYLES_PROMPT = "Pick a saved style";
+var SAVED_STYLES_PROMPT = "Pick a style";
 var MIRROR = Object.freeze({
   "cs-enabled": "enabled",
   "cs-preset": "activePreset",
+  [SAVED_STYLES_ID]: "activePreset",
   "cs-shape": "cursorStyle",
   "cs-color-light": "colorLight",
   "cs-color-dark": "colorDark",
@@ -1246,6 +1294,10 @@ function projectToDepot(settings) {
     const value = settings[blobKey];
     if (depotId === "cs-preset") {
       out[depotId] = settings.activePreset || "Custom";
+    } else if (depotId === SAVED_STYLES_ID) {
+      const name = settings.activePreset;
+      const saved = !!name && !!settings.presets && Object.prototype.hasOwnProperty.call(settings.presets, name);
+      out[depotId] = saved ? name : SAVED_STYLES_PROMPT;
     } else if (depotId === "cs-width") {
       out[depotId] = String(value);
     } else if (depotId === "cs-color-light" || depotId === "cs-color-dark") {
@@ -1294,10 +1346,39 @@ function createPreviewComponent(React = globalThis.window?.React) {
     );
   };
 }
+function createSaveStyleComponent(React = globalThis.window?.React, { name = "", placeholder = "", onName, onSave } = {}) {
+  if (typeof React?.createElement !== "function") return null;
+  const h2 = React.createElement;
+  return function RoamCaretSaveStyle() {
+    let field = null;
+    return h2(
+      "div",
+      { className: "cs-save-style" },
+      h2("input", {
+        ref: (el) => {
+          field = el;
+        },
+        className: "bp3-input cs-save-name",
+        type: "text",
+        defaultValue: name,
+        placeholder,
+        spellCheck: false,
+        "aria-label": "Style name",
+        onChange: (event) => onName?.(event.target?.value ?? "")
+      }),
+      h2("button", {
+        type: "button",
+        className: "bp3-button",
+        onClick: () => onSave?.(field ? field.value : name)
+      }, "Save")
+    );
+  };
+}
 function buildDepotPanel({
   settings = {},
   builtinNames,
   userNames,
+  styleName = "",
   handlers = {},
   React = globalThis.window?.React
 } = {}) {
@@ -1309,16 +1390,43 @@ function buildDepotPanel({
   ];
   const onChange = handlers.onChange ?? (() => {
   });
-  const savedStylesRow = settings.activePreset ? [] : [{
-    id: SAVED_STYLES_ID,
-    name: "Saved styles",
-    description: savedNames.length ? "Load a style you saved or imported." : "Save or import a style to list it here.",
+  const shape = settings.cursorStyle || "Box";
+  const saveStyle = createSaveStyleComponent(React, {
+    name: styleName,
+    placeholder: shape,
+    onName: (value) => onChange(STYLE_NAME_ID, value),
+    onSave: (name) => handlers.onSaveStyle?.(name)
+  });
+  const saveRows = saveStyle ? [{
+    id: "cs-save-style",
+    name: "Save as",
+    description: "Type a name and press Save. It joins Styles and becomes the look. Empty uses the shape.",
     action: {
-      type: "select",
-      items: [SAVED_STYLES_PROMPT, ...savedNames],
-      onChange: (event) => onChange(SAVED_STYLES_ID, event.target?.value ?? event)
+      type: "reactComponent",
+      component: saveStyle
     }
-  }];
+  }] : [
+    {
+      id: STYLE_NAME_ID,
+      name: "Style name",
+      description: "Type a name, then press Save. Empty uses the shape.",
+      action: {
+        type: "input",
+        placeholder: shape,
+        onChange: (event) => onChange(STYLE_NAME_ID, event.target?.value ?? event)
+      }
+    },
+    {
+      id: "cs-save-style",
+      name: "Save style",
+      description: "Adds the look to Styles under that name and makes it the look.",
+      action: {
+        type: "button",
+        content: "Save",
+        onClick: handlers.onSaveStyle
+      }
+    }
+  ];
   const rows = [
     {
       id: "cs-enabled",
@@ -1338,26 +1446,16 @@ function buildDepotPanel({
       }
     },
     {
-      id: STYLE_NAME_ID,
-      name: "Style name",
-      description: "Used by Save and by the next copied share code. Empty uses the shape.",
+      id: SAVED_STYLES_ID,
+      name: "Styles",
+      description: savedNames.length ? "Your saved and imported styles. Pick one to use it." : "Save or import a style to list it here.",
       action: {
-        type: "input",
-        placeholder: "Teal",
-        onChange: (event) => onChange(STYLE_NAME_ID, event.target?.value ?? event)
+        type: "select",
+        items: [SAVED_STYLES_PROMPT, ...savedNames],
+        onChange: (event) => onChange(SAVED_STYLES_ID, event.target?.value ?? event)
       }
     },
-    {
-      id: "cs-save-style",
-      name: "Save style",
-      description: "Saves the current look under Style name and adds it to Look.",
-      action: {
-        type: "button",
-        content: "Save",
-        onClick: handlers.onSaveStyle
-      }
-    },
-    ...savedStylesRow,
+    ...saveRows,
     {
       id: "cs-shape",
       name: "Shape",
@@ -1787,6 +1885,10 @@ function createCaretMeasurer({ doc, win, lifecycle } = {}) {
     latest() {
       return latestRect;
     },
+    // No caret field has focus: the canvas engine stops drawing the last one.
+    clear() {
+      latestRect = null;
+    },
     subscribe(fn) {
       subscribers.add(fn);
       return () => subscribers.delete(fn);
@@ -1842,14 +1944,26 @@ var DEMO_CLASS = "cs-lite-demo";
 var SELECTION_CLASS = "cs-sel";
 var SELECTION_BG = "--cs-selection";
 var SELECTION_TEXT = "--cs-selection-text";
+var STUDIO_SELECTOR = ".cs-studio";
+var STUDIO_OPEN_CLASS = "cs-studio-open";
+var PANEL_SELECTOR = `${STUDIO_SELECTOR}, .rm-settings, .rm-modal-dialog--settings`;
+var MODAL_OPEN_CLASS = "bp3-overlay-open";
+var IN_MODAL_SELECTOR = `.${MODAL_OPEN_CLASS}, ${IN_PALETTE_SELECTOR}`;
 function isDemo(el) {
   return String(el?.className || "").split(/\s+/).includes("cs-demo");
 }
 function isCaretHost(el) {
   if (!isTextTarget(el) || isPasswordField(el)) return false;
   if (isSkippedHost(el)) return false;
-  if (typeof el.closest === "function" && el.closest(".cs-studio") && !isDemo(el)) return false;
+  if (typeof el.closest === "function" && el.closest(PANEL_SELECTOR) && !isDemo(el)) return false;
   return true;
+}
+function coveredByPanel(el, doc) {
+  const classes = doc?.body?.classList;
+  if (!classes) return false;
+  if (classes.contains(STUDIO_OPEN_CLASS)) return !el.closest?.(STUDIO_SELECTOR);
+  if (classes.contains(MODAL_OPEN_CLASS)) return !el.closest?.(IN_MODAL_SELECTOR);
+  return false;
 }
 function stackingZIndex(el, doc, win) {
   if (typeof win?.getComputedStyle !== "function") return 0;
@@ -1883,12 +1997,14 @@ function containsPalette(node) {
   if (classes?.contains(COMMAND_PALETTE_CLASS) || classes?.contains(PALETTE_PORTAL_CLASS)) return true;
   return !!(node.firstElementChild && node.querySelector?.(COMMAND_PALETTE_SELECTOR));
 }
-function caretOutsideTextarea(rect) {
+function caretOutsideTextarea(rect, strict) {
   const box = rect.box;
   if (!box) return false;
   const right = box.right ?? box.left + box.width;
   const bottom = box.bottom ?? box.top + box.height;
-  return rect.x < box.left - CARET_BOX_MARGIN_PX || rect.x > right + CARET_BOX_MARGIN_PX || rect.y < box.top - CARET_BOX_MARGIN_PX || rect.y > bottom + CARET_BOX_MARGIN_PX;
+  const margin = strict ? 0 : CARET_BOX_MARGIN_PX;
+  const low = strict ? rect.y + (rect.height || 0) : rect.y;
+  return rect.x < box.left - margin || rect.x > right + margin || rect.y < box.top - margin || low > bottom + margin;
 }
 function resolveClipChain(el, doc, win) {
   const chain = [];
@@ -2328,7 +2444,7 @@ function installLiteCaret({ doc, win, measurer, lifecycle, getSettings, recordTi
   };
   const paint = (rect, el, color) => {
     const box = rect?.box;
-    if (!rect || !rect.visible || box && !(box.width > 0 && box.height > 0) || caretOutsideTextarea(rect) || outsideClip(el, rect)) {
+    if (!rect || !rect.visible || box && !(box.width > 0 && box.height > 0) || caretOutsideTextarea(rect, isDemo(el)) || outsideClip(el, rect)) {
       hide();
       return false;
     }
@@ -2419,7 +2535,7 @@ function installLiteCaret({ doc, win, measurer, lifecycle, getSettings, recordTi
       rememberTarget(target);
       return;
     }
-    if (documentRef.body?.classList?.contains("cs-studio-open") && !target.closest?.(".cs-studio")) {
+    if (coveredByPanel(target, documentRef)) {
       follow(null);
       hide();
       rememberTarget(target);
@@ -2684,7 +2800,7 @@ function installLiteCaret({ doc, win, measurer, lifecycle, getSettings, recordTi
 }
 
 // src/extension.js
-var VERSION = "0.6.2";
+var VERSION = "0.6.3";
 var CANVAS_Z_INDEX = 40;
 var VERSION_FLAG = "__ROAM_CURSOR_SMITH_VERSION";
 var DIAG_FLAG = "__ROAM_CARET_DIAG";
@@ -2783,6 +2899,7 @@ var CursorSmithRuntime = class {
     this._mode = null;
     this._pumpInstalled = false;
     this._pumpListeners = [];
+    this._pump = null;
     this._measureCount = 0;
     this._overlay = null;
     this._panelEl = null;
@@ -2793,6 +2910,8 @@ var CursorSmithRuntime = class {
     this._suspended = false;
     this._escapeBound = false;
     this._onEscapeKey = (ev) => this.onEscape(ev);
+    this._onStudioFocus = (ev) => this.keepStudioFocus(ev);
+    this._studioOpener = null;
     this.pendingPresetName = "";
     this.lifecycle.add(() => this.teardown());
   }
@@ -2903,7 +3022,11 @@ var CursorSmithRuntime = class {
     const pump = () => {
       try {
         const el = document.activeElement;
-        if (!this._measurer || !el) return;
+        if (!this._measurer) return;
+        if (!el || !isCaretHost(el) || coveredByPanel(el, document)) {
+          this._measurer.clear();
+          return;
+        }
         const start = now ? now() : null;
         this._measurer.measure(el);
         if (start != null) this.recordTiming(now() - start);
@@ -2911,6 +3034,7 @@ var CursorSmithRuntime = class {
       }
     };
     this._pumpInstalled = true;
+    this._pump = pump;
     this._bindPumpListener(document, "focusin", pump, true);
     this._bindPumpListener(document, "input", pump, true);
     this._bindPumpListener(document, "selectionchange", pump, false);
@@ -2931,6 +3055,7 @@ var CursorSmithRuntime = class {
     }
     this._pumpListeners = [];
     this._pumpInstalled = false;
+    this._pump = null;
   }
   startLite() {
     if (this.mobile || !this._settings.enabled || this._lite || !canStartLite()) return;
@@ -3116,10 +3241,12 @@ var CursorSmithRuntime = class {
       settings: this._settings,
       builtinNames: Object.keys(BUILTIN_PRESETS),
       userNames: Object.keys(this._settings.presets || {}),
+      styleName: this.styleName(),
       React: globalThis.window?.React || globalThis.React,
       handlers: {
         onChange: (id, raw) => this.setFromDepot(id, raw),
-        onSaveStyle: () => this.saveStyle(),
+        // Roam's button passes its click event; the Save row passes the name.
+        onSaveStyle: (name) => this.saveStyle(typeof name === "string" ? name : void 0),
         onCopyCode: () => this.copyShareCode(),
         onImport: () => this.importShareCode(),
         onStudio: () => this.openSettings()
@@ -3142,9 +3269,9 @@ var CursorSmithRuntime = class {
     }
     if (id === SAVED_STYLES_ID) {
       const name = String(raw ?? "");
-      await this.extensionAPI.settings.set(SAVED_STYLES_ID, SAVED_STYLES_PROMPT);
       const snap = hasOwn(this._settings.presets, name) ? this._settings.presets[name] : null;
       if (snap) this._set({ ...pickLook(snap), activePreset: name });
+      else await mirrorToDepot(this.extensionAPI, this._settings, [SAVED_STYLES_ID]);
       return;
     }
     if (!(id in MIRROR)) return;
@@ -3180,10 +3307,12 @@ var CursorSmithRuntime = class {
     if (typed && typed !== "Custom" && typed !== "Current") return typed;
     return this._settings.cursorStyle || "Box";
   }
-  // Saves the current look under Style name (empty: the shape). An existing
-  // saved style of that name is overwritten; built-in names are refused.
-  async saveStyle() {
-    const name = this.styleName() || this._settings.cursorStyle || "Box";
+  // Saves the current look under the typed name (empty: the shape). An
+  // existing saved style of that name is overwritten; built-in names are
+  // refused. The Save row passes the name it shows; the button reads Style name.
+  async saveStyle(typedName) {
+    const typed = typedName == null ? this.styleName() : String(typedName).trim().slice(0, MAX_PRESET_NAME);
+    const name = typed || this._settings.cursorStyle || "Box";
     if (isReservedName(name)) {
       this.toast(`"${name}" is already a Roam Caret look. Pick another style name.`);
       return null;
@@ -3235,7 +3364,7 @@ var CursorSmithRuntime = class {
     const depotIds = this._depotIdsForPatch(patch);
     if (this._settings.activePreset && !hasOwn(patch, "activePreset") && !this._matchesActivePreset(this._settings)) {
       this._settings.activePreset = "";
-      if (!depotIds.includes("cs-preset")) depotIds.push("cs-preset");
+      for (const id of ["cs-preset", SAVED_STYLES_ID]) if (!depotIds.includes(id)) depotIds.push(id);
     }
     if (hasOwn(patch, "activePreset") && this._settings.activePreset) {
       void this._setStyleName(this._settings.activePreset);
@@ -3290,20 +3419,23 @@ var CursorSmithRuntime = class {
     const toastEl = document.createElement("div");
     toastEl.className = "cs-toast";
     overlay.append(panelRoot, toastEl);
+    this._studioOpener = document.activeElement;
     document.body.append(overlay);
-    document.body.classList.add("cs-studio-open");
-    if (this._lite?.overlay) this._lite.overlay.style.display = "none";
+    document.body.classList.add(STUDIO_OPEN_CLASS);
     this._overlay = overlay;
     this._panelEl = panelRoot;
     this._toastEl = toastEl;
     if (!this._suspended) this._bindStudioKeys();
     this.renderPanel();
+    this._lite?.refresh();
+    this._pump?.();
   }
-  // Escape and the preview key shield are bound only while the Studio is
-  // open: no keydown listener on the typing path.
+  // Escape and the focus guard are bound only while the Studio is open: no
+  // keydown listener on the typing path.
   _bindStudioKeys() {
     if (this._escapeBound || typeof document === "undefined") return;
     document.addEventListener("keydown", this._onEscapeKey, true);
+    (document.defaultView || globalThis).addEventListener?.("focus", this._onStudioFocus, true);
     this._escapeBound = true;
   }
   _unbindStudioKeys() {
@@ -3311,12 +3443,25 @@ var CursorSmithRuntime = class {
     this._escapeBound = false;
     try {
       document.removeEventListener("keydown", this._onEscapeKey, true);
+      (document.defaultView || globalThis).removeEventListener?.("focus", this._onStudioFocus, true);
     } catch {
     }
   }
+  // Roam's Settings dialog is a Blueprint overlay with enforceFocus. Its
+  // document-capture focus listener pulls focus back into the dialog one
+  // frame after anything outside it is focused, so the Studio opened from
+  // Roam Depot could never keep focus and took no typing. Window capture runs
+  // first: a focus event inside the Studio stops there.
+  keepStudioFocus(ev) {
+    const target = ev?.target;
+    if (target?.nodeType === 1 && this._overlay?.contains?.(target)) ev.stopPropagation();
+  }
   closeSettings() {
+    const wasOpen = !!this._overlay;
+    const opener = this._studioOpener;
+    this._studioOpener = null;
     try {
-      document.body?.classList?.remove("cs-studio-open");
+      document.body?.classList?.remove(STUDIO_OPEN_CLASS);
     } catch {
     }
     this._unbindStudioKeys();
@@ -3328,6 +3473,13 @@ var CursorSmithRuntime = class {
     this._panelEl = null;
     this._toastEl = null;
     this._removePanelStyle();
+    if (!wasOpen) return;
+    try {
+      if (opener?.isConnected && opener !== document.body) opener.focus?.({ preventScroll: true });
+    } catch {
+    }
+    this._lite?.refresh();
+    this._pump?.();
   }
   onEscape(ev) {
     if (ev.key === "Escape" && this._overlay?.isConnected) {

@@ -11,10 +11,11 @@ import {
   BUILTIN_PRESETS,
   DEFAULTS,
   codeToPreset,
+  LOOK_KEYS,
   pickLook,
   presetToCode,
 } from "../src/cursor-smith.js";
-import { OPTIONS_KEY } from "../src/settings.js";
+import { OPTIONS_KEY, SAVED_STYLES_ID, SAVED_STYLES_PROMPT } from "../src/settings.js";
 
 const COMMANDS = [
   "Roam Caret: Open settings",
@@ -67,9 +68,14 @@ function installMinimalDom() {
   };
   function createElement(tag) {
     const el = {
+      nodeType: 1,
       tagName: tag.toUpperCase(),
       className: "",
       get ownerDocument() { return globalThis.document; },
+      contains(node) {
+        for (let n = node; n; n = n.parentNode) if (n === this) return true;
+        return false;
+      },
       style: { setProperty() {}, getPropertyValue: () => "", getPropertyPriority: () => "" },
       getContext: tag.toLowerCase() === "canvas" ? () => ({
         setTransform() {},
@@ -703,7 +709,8 @@ test("Save style stores the look under Style name and Look lists it", async () =
     assert.equal(api.settings.get("cs-preset"), "Teal");
     assert.equal(api.settings.get("cs-style-name"), "Teal");
     assert.ok(depotRow(api, "cs-preset").action.items.includes("Teal"));
-    assert.equal(depotRow(api, "cs-saved-styles"), undefined, "a named Look hides Saved styles");
+    assert.deepEqual(depotRow(api, SAVED_STYLES_ID).action.items, [SAVED_STYLES_PROMPT, "Teal"]);
+    assert.equal(api.settings.get(SAVED_STYLES_ID), "Teal", "Styles shows the saved name");
   } finally {
     await cleanup();
   }
@@ -761,7 +768,7 @@ test("two style names do not collide, and saving the same name again updates tha
   }
 });
 
-test("Look Custom reveals Saved styles; picking one loads it and names Look", async () => {
+test("Styles stays listed whatever Look is; picking a style loads it and the menu shows it", async () => {
   installMinimalDom();
   const api = fakeExtensionApi();
   const cleanup = await extension.onload({ extensionAPI: api, extension: { version: VERSION } });
@@ -773,24 +780,105 @@ test("Look Custom reveals Saved styles; picking one loads it and names Look", as
     await depotRow(api, "cs-preset").action.onChange({ target: { value: "Fast" } });
     await settle();
     await settle();
-    assert.equal(depotRow(api, "cs-saved-styles"), undefined, "a built-in Look omits it");
+    const styles = depotRow(api, SAVED_STYLES_ID);
+    assert.ok(styles, "a built-in Look keeps Styles listed");
+    assert.deepEqual(styles.action.items, [SAVED_STYLES_PROMPT, "Slate"]);
+    assert.equal(api.settings.get(SAVED_STYLES_ID), SAVED_STYLES_PROMPT, "Fast is not a saved style");
 
-    await depotRow(api, "cs-preset").action.onChange({ target: { value: "Custom" } });
-    await settle();
-    await settle();
-    const saved = depotRow(api, "cs-saved-styles");
-    assert.ok(saved, "Custom reveals Saved styles");
-    assert.deepEqual(saved.action.items.slice(1), ["Slate"]);
-
-    await saved.action.onChange({ target: { value: "Slate" } });
+    await styles.action.onChange({ target: { value: "Slate" } });
     await settle();
     await settle();
     assert.equal(runtime._settings.activePreset, "Slate");
     assert.equal(runtime._settings.colorDark, "#445566");
     assert.equal(api.settings.get("cs-preset"), "Slate");
     assert.equal(api.settings.get("cs-style-name"), "Slate");
-    assert.equal(api.settings.get("cs-saved-styles"), saved.action.items[0], "menu back on its prompt");
-    assert.equal(depotRow(api, "cs-saved-styles"), undefined);
+    assert.equal(api.settings.get(SAVED_STYLES_ID), "Slate", "the menu shows the style it loaded");
+
+    await api.settings.set(SAVED_STYLES_ID, SAVED_STYLES_PROMPT);
+    await depotRow(api, SAVED_STYLES_ID).action.onChange({ target: { value: SAVED_STYLES_PROMPT } });
+    await settle();
+    assert.equal(runtime._settings.activePreset, "Slate", "the prompt changes nothing");
+    assert.equal(api.settings.get(SAVED_STYLES_ID), "Slate", "and the menu goes back to the style");
+
+    runtime._set({ colorDark: "#000001" });
+    await settle();
+    assert.equal(runtime._settings.activePreset, "");
+    assert.equal(api.settings.get(SAVED_STYLES_ID), SAVED_STYLES_PROMPT, "an edited look is no saved style");
+  } finally {
+    await cleanup();
+  }
+});
+
+// The React tree Roam would render for a reactComponent row.
+const treeReact = { createElement: (tag, props, ...children) => ({ tag, props: props || {}, children }) };
+
+function decodeCode(code) {
+  return JSON.parse(Buffer.from(code, "base64url").toString("utf8"));
+}
+
+test("Save as: type a name, press Save; Styles shows it, it is the look, and Copy shares it", async () => {
+  installMinimalDom();
+  const prevReact = globalThis.window.React;
+  globalThis.window.React = treeReact;
+  const api = fakeExtensionApi();
+  const cleanup = await extension.onload({ extensionAPI: api, extension: { version: VERSION } });
+  const runtime = getRuntime();
+  try {
+    runtime._set({ cursorStyle: "Beam", colorDark: "#5eead4" });
+    await settle();
+    const row = depotRow(api, "cs-save-style");
+    assert.equal(row.action.type, "reactComponent");
+    const [input, button] = row.action.component().children;
+    input.props.onChange({ target: { value: "Ocean" } });
+    await settle();
+    input.props.ref({ value: "Ocean" });
+    await button.props.onClick();
+    await settle();
+    await settle();
+
+    assert.equal(runtime._settings.activePreset, "Ocean");
+    assert.equal(runtime._settings.presets.Ocean.colorDark, "#5eead4");
+    assert.equal(api.settings.get(SAVED_STYLES_ID), "Ocean");
+    assert.deepEqual(depotRow(api, SAVED_STYLES_ID).action.items, [SAVED_STYLES_PROMPT, "Ocean"]);
+    const [nextInput] = depotRow(api, "cs-save-style").action.component().children;
+    assert.equal(nextInput.props.defaultValue, "Ocean", "the name field shows the saved name");
+
+    const payload = decodeCode(runtime.copyShareCode());
+    assert.equal(payload.__name, "Ocean");
+    assert.deepEqual(Object.keys(payload).sort(), ["__name", ...LOOK_KEYS].sort(), "__name and look keys only");
+
+    const [empty, save] = depotRow(api, "cs-save-style").action.component().children;
+    runtime._set({ cursorStyle: "Underline" });
+    empty.props.ref({ value: "  " });
+    await save.props.onClick();
+    await settle();
+    assert.equal(runtime._settings.activePreset, "Underline", "an empty name saves under the shape");
+    for (const name of ["Custom", "Current", "Fast"]) {
+      runtime._set({ colorDark: "#010203" });
+      const [field, btn] = depotRow(api, "cs-save-style").action.component().children;
+      field.props.ref({ value: name });
+      assert.equal(await btn.props.onClick(), null, `${name} is refused`);
+    }
+  } finally {
+    globalThis.window.React = prevReact;
+    await cleanup();
+  }
+});
+
+test("Import adds the code's name to Styles and selects it", async () => {
+  installMinimalDom();
+  const api = fakeExtensionApi();
+  const cleanup = await extension.onload({ extensionAPI: api, extension: { version: VERSION } });
+  const runtime = getRuntime();
+  try {
+    const code = presetToCode("Harbor", { ...pickLook(DEFAULTS), cursorStyle: "Beam", colorDark: "#123456" });
+    await api.settings.set("cs-import-code", code);
+    await runtime.importShareCode();
+    await settle();
+    await settle();
+    assert.equal(runtime._settings.activePreset, "Harbor");
+    assert.deepEqual(depotRow(api, SAVED_STYLES_ID).action.items, [SAVED_STYLES_PROMPT, "Harbor"]);
+    assert.equal(api.settings.get(SAVED_STYLES_ID), "Harbor");
   } finally {
     await cleanup();
   }
@@ -958,5 +1046,119 @@ test("the Studio does not install a window key shield", async () => {
   } finally {
     await cleanup();
     win.addEventListener = origAdd;
+  }
+});
+
+// Window capture, then document capture, as the browser runs a focus event.
+function dispatchFocus(winListeners, target) {
+  let stopped = false;
+  let immediate = false;
+  const ev = {
+    type: "focus",
+    target,
+    defaultPrevented: false,
+    stopPropagation() { stopped = true; },
+    stopImmediatePropagation() { stopped = true; immediate = true; },
+    preventDefault() { this.defaultPrevented = true; },
+  };
+  for (const l of [...winListeners]) if (l.type === "focus" && l.capture && !immediate) l.fn(ev);
+  if (stopped) return ev;
+  for (const l of [...document._docListeners]) if (l.type === "focus" && l.capture && !immediate) l.fn(ev);
+  return ev;
+}
+
+test("the Studio keeps focus when opened from Roam's Settings dialog", async () => {
+  installMinimalDom();
+  const win = globalThis.window;
+  const origAdd = win.addEventListener;
+  const origRemove = win.removeEventListener;
+  const winListeners = [];
+  const isCapture = (opts) => (typeof opts === "object" ? !!opts?.capture : !!opts);
+  win.addEventListener = (type, fn, opts) => winListeners.push({ type, fn, capture: isCapture(opts) });
+  win.removeEventListener = (type, fn, opts) => {
+    const idx = winListeners.findIndex((l) => l.type === type && l.fn === fn && l.capture === isCapture(opts));
+    if (idx >= 0) winListeners.splice(idx, 1);
+  };
+  const focusCaptures = () => winListeners.filter((l) => l.type === "focus" && l.capture).length;
+  // Blueprint's enforceFocus on the Settings dialog: document capture, and it
+  // pulls focus back to the dialog when anything outside it is focused.
+  const dialog = document.createElement("div");
+  const pulledBack = [];
+  const enforceFocus = (ev) => {
+    if (!dialog.contains(ev.target)) {
+      ev.preventDefault();
+      ev.stopImmediatePropagation();
+      pulledBack.push(ev.target);
+    }
+  };
+  document.addEventListener("focus", enforceFocus, true);
+  const api = fakeExtensionApi();
+  const cleanup = await extension.onload({ extensionAPI: api, extension: { version: VERSION } });
+  const runtime = getRuntime();
+  try {
+    const openButton = document.createElement("button");
+    dialog.append(openButton);
+    let refocused = 0;
+    openButton.focus = () => { refocused += 1; };
+    document.activeElement = openButton;
+
+    assert.equal(focusCaptures(), 0);
+    runtime.openSettings();
+    assert.equal(focusCaptures(), 1, "one window-capture focus guard while the Studio is open");
+    const preview = runtime._panelEl.children[0];
+    assert.ok(runtime._overlay.contains(preview));
+    const ev = dispatchFocus(winListeners, preview);
+    assert.deepEqual(pulledBack, [], "focus inside the Studio never reaches the dialog's trap");
+    assert.equal(ev.defaultPrevented, false);
+
+    const outside = document.createElement("textarea");
+    dispatchFocus(winListeners, outside);
+    assert.deepEqual(pulledBack, [outside], "the trap still guards everything else");
+
+    runtime.closeSettings();
+    assert.equal(focusCaptures(), 0, "the guard leaves with the Studio");
+    assert.equal(refocused, 1, "focus goes back to Roam Depot's Open button");
+  } finally {
+    document.removeEventListener("focus", enforceFocus, true);
+    document.activeElement = document.body;
+    win.addEventListener = origAdd;
+    win.removeEventListener = origRemove;
+    await cleanup();
+  }
+});
+
+test("canvas pump: no caret field, or a block under the Studio, clears the last caret", async () => {
+  installMinimalDom();
+  const api = fakeExtensionApi();
+  const cleanup = await extension.onload({ extensionAPI: api, extension: { version: VERSION } });
+  const runtime = getRuntime();
+  const block = styledBlock();
+  try {
+    runtime.ensureMeasurer();
+    runtime.ensurePump();
+    document.activeElement = block;
+    runtime._pump();
+    assert.ok(runtime._measurer.latest(), "a focused block is measured");
+
+    document.activeElement = document.body;
+    runtime._pump();
+    assert.equal(runtime._measurer.latest(), null, "focus left: nothing to draw");
+
+    document.activeElement = block;
+    runtime._pump();
+    assert.ok(runtime._measurer.latest());
+    runtime.openSettings();
+    assert.equal(runtime._measurer.latest(), null, "the Studio covers the block");
+    runtime.closeSettings();
+    assert.ok(runtime._measurer.latest(), "closing the Studio draws the block again");
+
+    const depotField = { ...styledBlock(), tagName: "INPUT", type: "text", getAttribute: () => "text", closest: (sel) => (sel.includes(".rm-settings") ? {} : null) };
+    document.activeElement = depotField;
+    runtime._pump();
+    assert.equal(runtime._measurer.latest(), null, "a Settings field keeps the browser caret");
+  } finally {
+    document.activeElement = document.body;
+    runtime.stopPump();
+    await cleanup();
   }
 });

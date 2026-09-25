@@ -21,6 +21,7 @@ import {
   caretCoords,
   draw,
   drawBeamCaret,
+  getCaretClipRect,
   nextSchedule,
 } from "../src/cursor-engine.js";
 
@@ -430,4 +431,39 @@ test("cursor-engine.js reads the measurer and parks idle (no 100ms heartbeat)", 
   assert.doesNotMatch(frameBody, /getComputedStyle/);
   assert.doesNotMatch(frameBody, /formFieldCaretCoords/);
   assert.doesNotMatch(frameBody, /genericCaretCoords/);
+});
+
+test("canvas: a focused preview clips the caret and its effects to the preview box", () => {
+  const styles = new Map();
+  const doc = {
+    body: {},
+    documentElement: {},
+    querySelector: () => null,
+    defaultView: {
+      innerWidth: 1000,
+      innerHeight: 800,
+      getComputedStyle: (el) => styles.get(el) || { position: "static", overflowX: "visible", overflowY: "visible" },
+    },
+  };
+  const panel = {
+    parentElement: doc.body,
+    getBoundingClientRect: () => ({ top: 50, left: 50, bottom: 700, right: 600 }),
+    isConnected: true,
+  };
+  styles.set(panel, { position: "static", overflowX: "auto", overflowY: "auto" });
+  const field = (demo) => ({
+    ownerDocument: doc,
+    parentElement: panel,
+    isConnected: true,
+    classList: { contains: (name) => demo && name === "cs-demo" },
+    getBoundingClientRect: () => ({ top: 100, left: 100, bottom: 200, right: 400 }),
+  });
+
+  doc.activeElement = field(true);
+  const clip = getCaretClipRect({}, doc);
+  assert.deepEqual([clip.top, clip.left, clip.bottom, clip.right], [100, 100, 200, 400]);
+
+  doc.activeElement = field(false);
+  const block = getCaretClipRect({}, doc);
+  assert.deepEqual([block.top, block.left, block.bottom, block.right], [50, 50, 700, 600], "a block clips to its scroller");
 });

@@ -20,6 +20,8 @@ body.cs-active.cs-hide-native .cs-demo { caret-color: transparent !important; }
   resize: vertical;
 }
 .cs-demo::placeholder { color: inherit; opacity: 0.45; }
+.cs-save-style { display: flex; gap: 6px; align-items: center; }
+.cs-save-name { width: 180px; }
 
 body.cs-active.cs-hide-native textarea.rm-block__input,
 body.cs-active.cs-hide-native textarea[id^="block-input-"],

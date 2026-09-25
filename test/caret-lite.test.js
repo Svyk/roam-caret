@@ -863,6 +863,97 @@ test("Studio demo raises only its own caret above the panel", () => {
   assert.equal(lite.overlay.classList.contains("cs-lite-demo"), false);
 });
 
+// closest() for a field under the given ancestor classes.
+function under(...classes) {
+  return (sel) => (sel.split(",").some((part) => classes.includes(part.trim().replace(/^\./, ""))) ? {} : null);
+}
+
+test("Roam Settings and Studio fields keep the browser caret; only the preview draws", () => {
+  const { lite, doc, listeners, measurer } = installHarness();
+  let measured = 0;
+  const base = measurer.measure.bind(measurer);
+  measurer.measure = (el) => {
+    measured += 1;
+    return base(el);
+  };
+  const fields = [
+    makeInput({ closest: under("rm-settings"), style: makeStyle({ "caret-color": "red" }) }),
+    makeInput({ type: "number", closest: under("rm-modal-dialog--settings") }),
+    makeInput({ closest: under("cs-studio") }),
+  ];
+  for (const field of fields) {
+    doc.activeElement = field;
+    listeners.get("focusin")({ target: field });
+    assert.equal(lite.overlay.style.display, "none");
+  }
+  assert.equal(measured, 0, "no measure for a settings field");
+  assert.equal(fields[0].style.getPropertyValue("caret-color"), "red", "its browser caret is untouched");
+
+  const preview = makeTextarea({ id: "", className: "cs-demo", closest: under("rm-settings") });
+  doc.activeElement = preview;
+  listeners.get("focusin")({ target: preview });
+  assert.notEqual(lite.overlay.style.display, "none", "the Depot preview draws");
+});
+
+test("a block left focused under the Studio or Roam's Settings dialog draws nothing", () => {
+  const { lite, doc, body, listeners, textarea, measurer } = installHarness();
+  listeners.get("focusin")({ target: textarea });
+  assert.notEqual(lite.overlay.style.display, "none");
+  let measured = 0;
+  const base = measurer.measure.bind(measurer);
+  measurer.measure = (el) => {
+    measured += 1;
+    return base(el);
+  };
+
+  for (const cls of ["cs-studio-open", "bp3-overlay-open"]) {
+    body.classList.add(cls);
+    lite.refresh();
+    assert.equal(lite.overlay.style.display, "none", cls);
+    listeners.get("input")({ target: textarea });
+    assert.equal(lite.overlay.style.display, "none", `${cls}: typing keeps it hidden`);
+    body.classList.remove(cls);
+  }
+  assert.equal(measured, 0, "a covered block is never measured");
+
+  body.classList.add("bp3-overlay-open");
+  const dialogField = makeTextarea({ id: "", className: "cs-demo", closest: under("bp3-overlay-open", "rm-settings") });
+  doc.activeElement = dialogField;
+  listeners.get("focusin")({ target: dialogField });
+  assert.notEqual(lite.overlay.style.display, "none", "a field inside the open dialog draws");
+
+  body.classList.add("cs-studio-open");
+  lite.refresh();
+  assert.equal(lite.overlay.style.display, "none", "the Studio covers the Settings dialog too");
+  const studioPreview = makeTextarea({ id: "", className: "cs-demo", closest: under("cs-studio") });
+  doc.activeElement = studioPreview;
+  listeners.get("focusin")({ target: studioPreview });
+  assert.notEqual(lite.overlay.style.display, "none", "the Studio preview draws");
+  body.classList.remove("cs-studio-open", "bp3-overlay-open");
+
+  doc.activeElement = textarea;
+  listeners.get("focusin")({ target: textarea });
+  assert.notEqual(lite.overlay.style.display, "none", "closed: the block draws again");
+});
+
+test("the preview caret draws only wholly inside the preview box", () => {
+  // box: 0..600 x 0..200
+  for (const [rect, inside] of [
+    [{ x: 10, y: 20, height: 19 }, true],
+    [{ x: 10, y: 185, height: 19 }, false],
+    [{ x: 604, y: 20, height: 19 }, false],
+    [{ x: 10, y: -4, height: 19 }, false],
+  ]) {
+    const { lite, listeners, textarea } = installHarness(rect, { id: "", className: "cs-demo" });
+    listeners.get("focusin")({ target: textarea });
+    assert.equal(lite.overlay.style.display !== "none", inside, JSON.stringify(rect));
+    if (!inside) assert.notEqual(lite.overlay.style.zIndex, "10003", "never raised over the panel");
+  }
+  const { lite, listeners, textarea } = installHarness({ x: 10, y: 185, height: 19 });
+  listeners.get("focusin")({ target: textarea });
+  assert.notEqual(lite.overlay.style.display, "none", "a block keeps its 8px slack");
+});
+
 test("showChar paints no glyph on Line or Beam", () => {
   for (const cursorStyle of ["Line", "Beam"]) {
     const { lite, listeners, textarea } = installHarness({}, {}, { cursorStyle, showChar: true });

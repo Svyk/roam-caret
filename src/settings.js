@@ -13,16 +13,17 @@ export function hexToRgba(hex, alpha) {
 
 export const OPTIONS_KEY = "options";
 
-// Depot-only rows: never mirrored from the blob, read only in extension.js.
+// The typed style name: a Depot-only value, read only in extension.js.
 export const STYLE_NAME_ID = "cs-style-name";
 export const SAVED_STYLES_ID = "cs-saved-styles";
-// First item of the Saved styles menu, so every real style is a change event.
-export const SAVED_STYLES_PROMPT = "Pick a saved style";
+// First item of the Styles menu, shown while the look is not a saved style.
+export const SAVED_STYLES_PROMPT = "Pick a style";
 
 // Blob wins on load; cs-* ids are never read except cs-import-code.
 export const MIRROR = Object.freeze({
   "cs-enabled": "enabled",
   "cs-preset": "activePreset",
+  [SAVED_STYLES_ID]: "activePreset",
   "cs-shape": "cursorStyle",
   "cs-color-light": "colorLight",
   "cs-color-dark": "colorDark",
@@ -49,6 +50,10 @@ export function projectToDepot(settings) {
     const value = settings[blobKey];
     if (depotId === "cs-preset") {
       out[depotId] = settings.activePreset || "Custom";
+    } else if (depotId === SAVED_STYLES_ID) {
+      const name = settings.activePreset;
+      const saved = !!name && !!settings.presets && Object.prototype.hasOwnProperty.call(settings.presets, name);
+      out[depotId] = saved ? name : SAVED_STYLES_PROMPT;
     } else if (depotId === "cs-width") {
       out[depotId] = String(value);
     } else if (depotId === "cs-color-light" || depotId === "cs-color-dark") {
@@ -99,10 +104,38 @@ export function createPreviewComponent(React = globalThis.window?.React) {
   };
 }
 
+// Name and Save on one row: type a name, press Save. The field is
+// uncontrolled, so a rerender never resets what is being typed.
+export function createSaveStyleComponent(React = globalThis.window?.React, { name = "", placeholder = "", onName, onSave } = {}) {
+  if (typeof React?.createElement !== "function") return null;
+  const h = React.createElement;
+  return function RoamCaretSaveStyle() {
+    let field = null;
+    return h("div", { className: "cs-save-style" },
+      h("input", {
+        ref: (el) => { field = el; },
+        className: "bp3-input cs-save-name",
+        type: "text",
+        defaultValue: name,
+        placeholder,
+        spellCheck: false,
+        "aria-label": "Style name",
+        onChange: (event) => onName?.(event.target?.value ?? ""),
+      }),
+      h("button", {
+        type: "button",
+        className: "bp3-button",
+        onClick: () => onSave?.(field ? field.value : name),
+      }, "Save"),
+    );
+  };
+}
+
 export function buildDepotPanel({
   settings = {},
   builtinNames,
   userNames,
+  styleName = "",
   handlers = {},
   React = globalThis.window?.React,
 } = {}) {
@@ -113,18 +146,44 @@ export function buildDepotPanel({
     ...savedNames,
   ];
   const onChange = handlers.onChange ?? (() => {});
-  // Roam's panel is a static list: this row exists only while Look is Custom,
-  // and the panel is rebuilt whenever Look changes.
-  const savedStylesRow = settings.activePreset ? [] : [{
-    id: SAVED_STYLES_ID,
-    name: "Saved styles",
-    description: savedNames.length ? "Load a style you saved or imported." : "Save or import a style to list it here.",
+  const shape = settings.cursorStyle || "Box";
+  const saveStyle = createSaveStyleComponent(React, {
+    name: styleName,
+    placeholder: shape,
+    onName: (value) => onChange(STYLE_NAME_ID, value),
+    onSave: (name) => handlers.onSaveStyle?.(name),
+  });
+  // Without React, Name and Save fall back to two plain rows.
+  const saveRows = saveStyle ? [{
+    id: "cs-save-style",
+    name: "Save as",
+    description: "Type a name and press Save. It joins Styles and becomes the look. Empty uses the shape.",
     action: {
-      type: "select",
-      items: [SAVED_STYLES_PROMPT, ...savedNames],
-      onChange: (event) => onChange(SAVED_STYLES_ID, event.target?.value ?? event),
+      type: "reactComponent",
+      component: saveStyle,
     },
-  }];
+  }] : [
+    {
+      id: STYLE_NAME_ID,
+      name: "Style name",
+      description: "Type a name, then press Save. Empty uses the shape.",
+      action: {
+        type: "input",
+        placeholder: shape,
+        onChange: (event) => onChange(STYLE_NAME_ID, event.target?.value ?? event),
+      },
+    },
+    {
+      id: "cs-save-style",
+      name: "Save style",
+      description: "Adds the look to Styles under that name and makes it the look.",
+      action: {
+        type: "button",
+        content: "Save",
+        onClick: handlers.onSaveStyle,
+      },
+    },
+  ];
 
   const rows = [
     {
@@ -145,26 +204,16 @@ export function buildDepotPanel({
       },
     },
     {
-      id: STYLE_NAME_ID,
-      name: "Style name",
-      description: "Used by Save and by the next copied share code. Empty uses the shape.",
+      id: SAVED_STYLES_ID,
+      name: "Styles",
+      description: savedNames.length ? "Your saved and imported styles. Pick one to use it." : "Save or import a style to list it here.",
       action: {
-        type: "input",
-        placeholder: "Teal",
-        onChange: (event) => onChange(STYLE_NAME_ID, event.target?.value ?? event),
+        type: "select",
+        items: [SAVED_STYLES_PROMPT, ...savedNames],
+        onChange: (event) => onChange(SAVED_STYLES_ID, event.target?.value ?? event),
       },
     },
-    {
-      id: "cs-save-style",
-      name: "Save style",
-      description: "Saves the current look under Style name and adds it to Look.",
-      action: {
-        type: "button",
-        content: "Save",
-        onClick: handlers.onSaveStyle,
-      },
-    },
-    ...savedStylesRow,
+    ...saveRows,
     {
       id: "cs-shape",
       name: "Shape",

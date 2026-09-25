@@ -25,21 +25,75 @@ const RERENDER_KEYS = new Set([
 const PROP_ATTRS = new Set(["value", "checked", "selected"]);
 const HEX6 = /^#[0-9a-fA-F]{6}$/;
 
-// Roam's document listener runs on the bubble. Stopping the key there keeps
-// the graph editor from also handling it. Stopping it on window capture
-// never lets the textarea see the key, so nothing is typed. Escape passes
-// so it still closes the Studio.
-const SHIELDED_KEYS = ["keydown"];
+// Roam listens for keys on document. Like Chief of Staff's composer, the
+// preview stops its own key and input events at the field, so Roam never
+// handles them too. Escape passes so it still closes the Studio.
+const SHIELDED_EVENTS = ["keydown", "keypress", "keyup", "beforeinput", "input"];
 
-function stopPreviewKey(ev) {
-  if (ev.key !== "Escape") ev.stopPropagation();
+function editForKey(ev) {
+  if (ev.metaKey || (ev.ctrlKey && !ev.altKey)) return null;
+  const key = ev.key;
+  if (key === "Enter") return { text: "\n", inputType: "insertLineBreak" };
+  if (key === "Backspace") return { dir: -1, inputType: "deleteContentBackward" };
+  if (key === "Delete") return { dir: 1, inputType: "deleteContentForward" };
+  if (typeof key === "string" && [...key].length === 1) return { text: key, inputType: "insertText" };
+  return null;
+}
+
+function editForInput(ev) {
+  const type = ev.inputType;
+  if (type === "insertText" && ev.data) return { text: ev.data, inputType: type };
+  if (type === "insertLineBreak" || type === "insertParagraph") return { text: "\n", inputType: type };
+  if (type === "deleteContentBackward") return { dir: -1, inputType: type };
+  if (type === "deleteContentForward") return { dir: 1, inputType: type };
+  return null;
+}
+
+// One character, so Backspace never splits an emoji.
+function charSize(value, index, dir) {
+  const code = value.charCodeAt(dir < 0 ? index - 1 : index);
+  const paired = dir < 0 ? code >= 0xdc00 && code <= 0xdfff : code >= 0xd800 && code <= 0xdbff;
+  return paired ? 2 : 1;
+}
+
+function applyEdit(field, edit) {
+  const value = String(field.value ?? "");
+  let start = Math.min(field.selectionStart ?? value.length, value.length);
+  let end = Math.min(field.selectionEnd ?? start, value.length);
+  if (start > end) [start, end] = [end, start];
+  const text = edit.text || "";
+  if (!text && start === end) {
+    if (edit.dir < 0) start = Math.max(0, start - charSize(value, start, -1));
+    else end = Math.min(value.length, end + charSize(value, end, 1));
+  }
+  field.value = value.slice(0, start) + text + value.slice(end);
+  const caret = start + text.length;
+  field.setSelectionRange?.(caret, caret);
+  const win = field.ownerDocument?.defaultView || globalThis;
+  const Ctor = win.InputEvent || win.Event;
+  if (typeof Ctor !== "function" || typeof field.dispatchEvent !== "function") return;
+  try {
+    field.dispatchEvent(new Ctor("input", { bubbles: true, inputType: edit.inputType, data: text || null }));
+  } catch {
+  }
+}
+
+// A listener that runs before the field (window or document capture) and
+// cancels the key would leave the preview empty. The field then sees
+// defaultPrevented and applies the edit itself. Nothing here cancels a key.
+function onPreviewEvent(ev) {
+  if (ev.key === "Escape") return;
+  ev.stopPropagation();
+  if (!ev.defaultPrevented || ev.isComposing) return;
+  const edit = ev.type === "keydown" ? editForKey(ev) : ev.type === "beforeinput" ? editForInput(ev) : null;
+  if (edit) applyEdit(ev.currentTarget || ev.target, edit);
 }
 
 export function shieldPreviewField(el) {
   if (!el?.addEventListener) return () => {};
-  for (const type of SHIELDED_KEYS) el.addEventListener(type, stopPreviewKey);
+  for (const type of SHIELDED_EVENTS) el.addEventListener(type, onPreviewEvent);
   return () => {
-    for (const type of SHIELDED_KEYS) el.removeEventListener(type, stopPreviewKey);
+    for (const type of SHIELDED_EVENTS) el.removeEventListener(type, onPreviewEvent);
   };
 }
 
@@ -181,7 +235,7 @@ export function renderStudio(root, ctl) {
     placeholder: "Type here to see your cursor…\nPress Enter for Thunderstrike.",
   });
   if (prevValue) demo.value = prevValue;
-  for (const type of SHIELDED_KEYS) demo.addEventListener(type, stopPreviewKey);
+  shieldPreviewField(demo);
 
   const shapeItems = (ENUMS.cursorStyle.includes("Beam")
     ? ["Beam", "Line", "Box", "Underline"]

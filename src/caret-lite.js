@@ -19,20 +19,39 @@ const DEMO_CLASS = "cs-lite-demo";
 export const SELECTION_CLASS = "cs-sel";
 const SELECTION_BG = "--cs-selection";
 const SELECTION_TEXT = "--cs-selection-text";
+const STUDIO_SELECTOR = ".cs-studio";
+export const STUDIO_OPEN_CLASS = "cs-studio-open";
+// Roam's Settings dialog, Roam Depot tabs included.
+const PANEL_SELECTOR = `${STUDIO_SELECTOR}, .rm-settings, .rm-modal-dialog--settings`;
+// Blueprint sets this on <body> only while a modal with a backdrop is open.
+const MODAL_OPEN_CLASS = "bp3-overlay-open";
+const IN_MODAL_SELECTOR = `.${MODAL_OPEN_CLASS}, ${IN_PALETTE_SELECTOR}`;
 
 function isDemo(el) {
   return String(el?.className || "").split(/\s+/).includes("cs-demo");
 }
 
-// Any text field: block textareas, the command palette, Find or Create, Depot
-// settings, the preview. No layout read here; paint() rejects a zero-size box
-// against the box the measure already read.
+// Any text field: block textareas, the command palette, Find or Create, the
+// previews. No layout read here; paint() rejects a zero-size box against the
+// box the measure already read.
 export function isCaretHost(el) {
   if (!isTextTarget(el) || isPasswordField(el)) return false;
   if (isSkippedHost(el)) return false;
-  // Number and colour fields in the Studio are controls, not a writing surface.
-  if (typeof el.closest === "function" && el.closest(".cs-studio") && !isDemo(el)) return false;
+  // In the Studio and Roam's Settings dialog only the preview is a writing
+  // surface. Number, colour and name fields keep the browser caret.
+  if (typeof el.closest === "function" && el.closest(PANEL_SELECTOR) && !isDemo(el)) return false;
   return true;
+}
+
+// The Studio and a Blueprint modal (Roam's Settings, the palette) cover the
+// page. A field still focused under one would paint on the panel, so only a
+// field inside the open panel draws. Body classes only: no query per key.
+export function coveredByPanel(el, doc) {
+  const classes = doc?.body?.classList;
+  if (!classes) return false;
+  if (classes.contains(STUDIO_OPEN_CLASS)) return !el.closest?.(STUDIO_SELECTOR);
+  if (classes.contains(MODAL_OPEN_CLASS)) return !el.closest?.(IN_MODAL_SELECTOR);
+  return false;
 }
 
 // Highest numeric z-index on a positioned node from the host up to <body>.
@@ -81,16 +100,19 @@ function containsPalette(node) {
   return !!(node.firstElementChild && node.querySelector?.(COMMAND_PALETTE_SELECTOR));
 }
 
-function caretOutsideTextarea(rect) {
+// A preview sits on a panel, so its caret must lie wholly inside the box.
+function caretOutsideTextarea(rect, strict) {
   const box = rect.box;
   if (!box) return false;
   const right = box.right ?? box.left + box.width;
   const bottom = box.bottom ?? box.top + box.height;
+  const margin = strict ? 0 : CARET_BOX_MARGIN_PX;
+  const low = strict ? rect.y + (rect.height || 0) : rect.y;
   return (
-    rect.x < box.left - CARET_BOX_MARGIN_PX ||
-    rect.x > right + CARET_BOX_MARGIN_PX ||
-    rect.y < box.top - CARET_BOX_MARGIN_PX ||
-    rect.y > bottom + CARET_BOX_MARGIN_PX
+    rect.x < box.left - margin ||
+    rect.x > right + margin ||
+    rect.y < box.top - margin ||
+    low > bottom + margin
   );
 }
 
@@ -611,7 +633,7 @@ export function installLiteCaret({ doc, win, measurer, lifecycle, getSettings, r
       !rect ||
       !rect.visible ||
       (box && !(box.width > 0 && box.height > 0)) ||
-      caretOutsideTextarea(rect) ||
+      caretOutsideTextarea(rect, isDemo(el)) ||
       outsideClip(el, rect)
     ) {
       hide();
@@ -720,9 +742,7 @@ export function installLiteCaret({ doc, win, measurer, lifecycle, getSettings, r
       rememberTarget(target);
       return;
     }
-    // The Studio covers the page. A caret for a block behind it would paint
-    // on top of the panel. Only the preview inside the Studio is drawn.
-    if (documentRef.body?.classList?.contains("cs-studio-open") && !target.closest?.(".cs-studio")) {
+    if (coveredByPanel(target, documentRef)) {
       follow(null);
       hide();
       rememberTarget(target);

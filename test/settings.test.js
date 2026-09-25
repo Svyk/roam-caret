@@ -7,6 +7,7 @@ import {
   MIRROR,
   SAVED_STYLES_ID,
   SAVED_STYLES_PROMPT,
+  STYLE_NAME_ID,
   buildDepotPanel,
   createPreviewComponent,
   mirrorToDepot,
@@ -16,9 +17,8 @@ import {
 const DEPOT_IDS = [
   "cs-enabled",
   "cs-preset",
-  "cs-style-name",
-  "cs-save-style",
   "cs-saved-styles",
+  "cs-save-style",
   "cs-shape",
   "cs-color-light",
   "cs-color-dark",
@@ -53,8 +53,9 @@ test("every MIRROR value is a DEFAULTS key", () => {
 test("buildDepotPanel tab title and row count", () => {
   const withReact = buildDepotPanel({ React: fakeReact });
   assert.equal(withReact.tabTitle, "Roam Caret");
-  assert.equal(withReact.settings.length, 19);
+  assert.equal(withReact.settings.length, 18);
 
+  // Without React: no preview, and Name and Save are two plain rows.
   const withoutReact = buildDepotPanel({ React: null });
   assert.equal(withoutReact.settings.length, 18);
 });
@@ -111,7 +112,7 @@ test("depot buttons set action.content labels", () => {
   const copy = panel.settings.find((row) => row.id === "cs-copy-code");
   const importBtn = panel.settings.find((row) => row.id === "cs-import");
   const studio = panel.settings.find((row) => row.id === "cs-studio");
-  const save = panel.settings.find((row) => row.id === "cs-save-style");
+  const save = buildDepotPanel({ React: null }).settings.find((row) => row.id === "cs-save-style");
   assert.equal(save.name, "Save style");
   assert.equal(save.action.content, "Save");
   assert.equal(copy.action.content, "Copy");
@@ -119,42 +120,66 @@ test("depot buttons set action.content labels", () => {
   assert.equal(studio.action.content, "Open");
 });
 
-test("Custom reveals the Saved styles select, listing every saved style", () => {
+test("Styles lists every saved style whatever Look is", () => {
   const presets = { Teal: {}, Night: {} };
-  const panel = buildDepotPanel({ settings: { activePreset: "", presets }, React: null });
-  const ids = panel.settings.map((row) => row.id);
-  assert.equal(ids.indexOf(SAVED_STYLES_ID), ids.indexOf("cs-preset") + 3, "under Style name and Save");
-  const row = panel.settings.find((r) => r.id === SAVED_STYLES_ID);
-  assert.equal(row.name, "Saved styles");
-  assert.equal(row.action.type, "select");
-  assert.deepEqual(row.action.items, [SAVED_STYLES_PROMPT, "Teal", "Night"]);
-  const name = panel.settings.find((r) => r.id === "cs-style-name");
-  assert.equal(name.name, "Style name");
-  assert.equal(name.action.type, "input");
-});
-
-test("a named Look omits the Saved styles row", () => {
-  for (const activePreset of ["Fast", "Teal"]) {
-    const panel = buildDepotPanel({ settings: { activePreset, presets: { Teal: {} } }, React: null });
-    assert.equal(panel.settings.some((row) => row.id === SAVED_STYLES_ID), false, activePreset);
-    assert.ok(panel.settings.some((row) => row.id === "cs-style-name"), "Style name stays");
+  for (const activePreset of ["", "Fast", "Teal"]) {
+    for (const React of [null, fakeReact]) {
+      const panel = buildDepotPanel({ settings: { activePreset, presets }, React });
+      const row = panel.settings.find((r) => r.id === SAVED_STYLES_ID);
+      assert.ok(row, `Styles is listed with Look ${activePreset || "Custom"}`);
+      assert.equal(row.name, "Styles");
+      assert.equal(row.action.type, "select");
+      assert.deepEqual(row.action.items, [SAVED_STYLES_PROMPT, "Teal", "Night"]);
+    }
   }
 });
 
-test("Style name, Save style and Saved styles are the first rows after Look", () => {
-  const afterLook = (settings) => {
-    const ids = buildDepotPanel({ settings, React: null }).settings.map((row) => row.id);
+test("Styles, then Name and Save, sit directly under Look", () => {
+  const afterLook = (React) => {
+    const ids = buildDepotPanel({ settings: { activePreset: "Fast", presets: { Teal: {} } }, React })
+      .settings.map((row) => row.id);
     const look = ids.indexOf("cs-preset");
-    assert.ok(look >= 0);
-    return ids.slice(look + 1, look + 4);
+    assert.equal(look, 1);
+    return ids.slice(look + 1, ids.indexOf("cs-shape"));
   };
-  assert.deepEqual(
-    afterLook({ activePreset: "", presets: { Teal: {} } }),
-    ["cs-style-name", "cs-save-style", SAVED_STYLES_ID],
-  );
-  assert.deepEqual(
-    afterLook({ activePreset: "Fast", presets: { Teal: {} } }),
-    ["cs-style-name", "cs-save-style", "cs-shape"],
-    "a named Look has no Saved styles row",
-  );
+  assert.deepEqual(afterLook(fakeReact), [SAVED_STYLES_ID, "cs-save-style"]);
+  assert.deepEqual(afterLook(null), [SAVED_STYLES_ID, STYLE_NAME_ID, "cs-save-style"]);
+});
+
+test("the Save row puts the name field and the Save button side by side", () => {
+  const typed = [];
+  const saved = [];
+  const panel = buildDepotPanel({
+    settings: { cursorStyle: "Beam" },
+    styleName: "Teal",
+    React: fakeReact,
+    handlers: {
+      onChange: (id, value) => typed.push([id, value]),
+      onSaveStyle: (name) => saved.push(name),
+    },
+  });
+  const row = panel.settings.find((r) => r.id === "cs-save-style");
+  assert.equal(row.name, "Save as");
+  assert.equal(row.action.type, "reactComponent");
+  const tree = row.action.component();
+  assert.equal(tree.props.className, "cs-save-style");
+  const [input, button] = tree.children;
+  assert.equal(input.tag, "input");
+  assert.equal(input.props.defaultValue, "Teal", "shows the current style name");
+  assert.equal(input.props.placeholder, "Beam", "an empty name saves under the shape");
+  assert.equal(button.tag, "button");
+  assert.deepEqual(button.children, ["Save"]);
+
+  input.props.onChange({ target: { value: "Ocean" } });
+  assert.deepEqual(typed, [[STYLE_NAME_ID, "Ocean"]]);
+  input.props.ref({ value: "Ocean" });
+  button.props.onClick();
+  assert.deepEqual(saved, ["Ocean"], "Save takes the name in the field");
+});
+
+test("the Styles menu shows the active saved style, else its prompt", () => {
+  const presets = { Teal: {} };
+  assert.equal(projectToDepot({ activePreset: "Teal", presets })[SAVED_STYLES_ID], "Teal");
+  assert.equal(projectToDepot({ activePreset: "Fast", presets })[SAVED_STYLES_ID], SAVED_STYLES_PROMPT);
+  assert.equal(projectToDepot({ activePreset: "", presets })[SAVED_STYLES_ID], SAVED_STYLES_PROMPT);
 });
