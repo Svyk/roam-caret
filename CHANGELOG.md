@@ -15,6 +15,9 @@ All notable changes to this project follow [Keep a Changelog](https://keepachang
 
 ### Changed
 - **Styles** sits directly under **Look**, always lists saved and imported styles, and shows the current one. **Save as** puts the name field and **Save** on one row. Save adds the name to Styles and makes it the current look. Copy shares that name. Import adds the code's name to Styles and selects it.
+- Each keystroke costs one style recalc less. The measure used to replace the letter under the caret with a new text node every time. It now edits that node in place, as it already did for the line. The glow shadow string is built once per colour, not on every key.
+
+Bench on Readwisenotes (live 0.6.2, before this release), per key against Roam Caret detached: layouts +1.00, style recalcs +1.59, script +2.62 ms at 120 ms; +0.96, +0.87, +2.45 ms at 30 ms. A profiled run put all Roam Caret code at 0.115 ms per key of self time, no function above 0.04 ms. The rest of the script gap is the one allowed forced layout and noise: it moved from +2.6 to +5.6 ms between identical runs. In Roam's own Chromium, a new text node per measure costs one style recalc and an in-place edit costs none. So this release should drop the recalc gap by one. That is not re-benched until it is live.
 
 ## [0.6.2] - 2026-09-24
 

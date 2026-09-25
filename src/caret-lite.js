@@ -625,6 +625,17 @@ export function installLiteCaret({ doc, win, measurer, lifecycle, getSettings, r
     );
   };
 
+  // The glow string is built once per colour, not once per key.
+  let glowColor = "";
+  let glowShadow = "";
+  const glowFor = (color) => {
+    if (color !== glowColor) {
+      glowColor = color;
+      glowShadow = `0 0 0 1px ${hexToRgba(color, 0.18)}, 0 0 8px ${hexToRgba(color, 0.3)}`;
+    }
+    return glowShadow;
+  };
+
   // Every read happens before the first write here: the measurer produced
   // the one layout, and the clip rects and stacking walk read against it.
   const paint = (rect, el, color) => {
@@ -686,12 +697,7 @@ export function installLiteCaret({ doc, win, measurer, lifecycle, getSettings, r
     writeStyle("width", `${width}px`);
     writeStyle("height", `${height}px`);
     writeStyle("opacity", opacity < 1 ? String(opacity) : "");
-    writeStyle(
-      "boxShadow",
-      settings.glow
-        ? `0 0 0 1px ${hexToRgba(color, 0.18)}, 0 0 8px ${hexToRgba(color, 0.3)}`
-        : "",
-    );
+    writeStyle("boxShadow", settings.glow ? glowFor(color) : "");
     setLayer(el);
     paintGlyph(rect, cursorStyle, color, height);
     return true;

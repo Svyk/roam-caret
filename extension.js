@@ -1766,6 +1766,7 @@ function createCaretMeasurer({ doc, win, lifecycle } = {}) {
   mirror.appendChild(lineBlock);
   const setBefore = editableText(documentRef, beforeBlock);
   const setLine = editableText(documentRef, prefixNode);
+  const setGlyph = editableText(documentRef, glyphEl);
   let lineIndent = "";
   const parent = documentRef.body || documentRef.documentElement || globalThis.document?.body;
   if (lifecycle) lifecycle.node(mirror, parent);
@@ -1842,7 +1843,7 @@ function createCaretMeasurer({ doc, win, lifecycle } = {}) {
       markerHeight = nextMarkerHeight;
       marker.style.height = nextMarkerHeight;
     }
-    glyphEl.textContent = underCaret;
+    setGlyph(underCaret);
     const box = el.getBoundingClientRect();
     const glyphWidth = glyphEl.offsetWidth || metrics.fontSizePx * 0.6 || 8;
     const offsetH = el.offsetHeight || 0;
@@ -2442,6 +2443,15 @@ function installLiteCaret({ doc, win, measurer, lifecycle, getSettings, recordTi
       rect.lineHeight && rect.lineHeight !== "normal" ? rect.lineHeight : `${height}px`
     );
   };
+  let glowColor = "";
+  let glowShadow = "";
+  const glowFor = (color) => {
+    if (color !== glowColor) {
+      glowColor = color;
+      glowShadow = `0 0 0 1px ${hexToRgba(color, 0.18)}, 0 0 8px ${hexToRgba(color, 0.3)}`;
+    }
+    return glowShadow;
+  };
   const paint = (rect, el, color) => {
     const box = rect?.box;
     if (!rect || !rect.visible || box && !(box.width > 0 && box.height > 0) || caretOutsideTextarea(rect, isDemo(el)) || outsideClip(el, rect)) {
@@ -2492,10 +2502,7 @@ function installLiteCaret({ doc, win, measurer, lifecycle, getSettings, recordTi
     writeStyle("width", `${width}px`);
     writeStyle("height", `${height}px`);
     writeStyle("opacity", opacity < 1 ? String(opacity) : "");
-    writeStyle(
-      "boxShadow",
-      settings.glow ? `0 0 0 1px ${hexToRgba(color, 0.18)}, 0 0 8px ${hexToRgba(color, 0.3)}` : ""
-    );
+    writeStyle("boxShadow", settings.glow ? glowFor(color) : "");
     setLayer(el);
     paintGlyph(rect, cursorStyle, color, height);
     return true;

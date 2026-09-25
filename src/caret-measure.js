@@ -205,6 +205,8 @@ export function createCaretMeasurer({ doc, win, lifecycle } = {}) {
   mirror.appendChild(lineBlock);
   const setBefore = editableText(documentRef, beforeBlock);
   const setLine = editableText(documentRef, prefixNode);
+  // Edited in place too: a new Text node per key cost a style recalc per key.
+  const setGlyph = editableText(documentRef, glyphEl);
   let lineIndent = "";
 
   const parent = documentRef.body || documentRef.documentElement || globalThis.document?.body;
@@ -298,7 +300,7 @@ export function createCaretMeasurer({ doc, win, lifecycle } = {}) {
       markerHeight = nextMarkerHeight;
       marker.style.height = nextMarkerHeight;
     }
-    glyphEl.textContent = underCaret;
+    setGlyph(underCaret);
 
     // The one forced layout per measure: every geometry read below runs
     // against the layout this call produces, with no writes in between.

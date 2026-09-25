@@ -224,6 +224,38 @@ test("createCaretMeasurer reuses marker and glyph nodes after the first measure"
   measurer.dispose();
 });
 
+test("the glyph under the caret is edited in place, never a new Text node per key", () => {
+  const { doc } = createFakeDoc();
+  const texts = [];
+  doc.createTextNode = (data) => {
+    const node = {
+      nodeType: 3,
+      data: String(data),
+      replaceData(offset, count, value) {
+        this.data = this.data.slice(0, offset) + value + this.data.slice(offset + count);
+      },
+    };
+    texts.push(node);
+    return node;
+  };
+  const win = { getComputedStyle: fakeComputed, addEventListener() {}, removeEventListener() {} };
+  const measurer = createCaretMeasurer({ doc, win });
+  const created = texts.length;
+  const glyphText = texts[created - 1];
+  const el = fakeTextEl(doc, { value: "", selectionStart: 0 });
+  for (const ch of "typing at the end") {
+    el.value += ch;
+    el.selectionStart = el.value.length;
+    measurer.measure(el);
+  }
+  el.value = "abc";
+  el.selectionStart = 1;
+  measurer.measure(el);
+  assert.equal(texts.length, created, "no Text node is created after setup");
+  assert.equal(glyphText.data, "b", "the glyph node now holds the character under the caret");
+  measurer.dispose();
+});
+
 test("createCaretMeasurer invalidates style cache when documentElement class changes", () => {
   const { doc } = createFakeDoc();
   const documentElement = { className: "" };
