@@ -26,9 +26,9 @@ import {
   presetToCode,
   randomizeLook,
 } from "./cursor-smith.js";
-import { installPreviewShield, renderStudio, STUDIO_CSS } from "./studio.js";
+import { renderStudio, STUDIO_CSS } from "./studio.js";
 
-export const VERSION = "0.6.1";
+export const VERSION = "0.6.2";
 const CANVAS_Z_INDEX = 40; // PROVISIONAL
 const VERSION_FLAG = "__ROAM_CURSOR_SMITH_VERSION";
 const DIAG_FLAG = "__ROAM_CARET_DIAG";
@@ -157,7 +157,6 @@ class CursorSmithRuntime {
     this._suspended = false;
     this._escapeBound = false;
     this._onEscapeKey = (ev) => this.onEscape(ev);
-    this._unshieldStudio = null;
     this.pendingPresetName = "";
     this.lifecycle.add(() => this.teardown());
   }
@@ -706,6 +705,8 @@ class CursorSmithRuntime {
     toastEl.className = "cs-toast";
     overlay.append(panelRoot, toastEl);
     document.body.append(overlay);
+    document.body.classList.add("cs-studio-open");
+    if (this._lite?.overlay) this._lite.overlay.style.display = "none";
     this._overlay = overlay;
     this._panelEl = panelRoot;
     this._toastEl = toastEl;
@@ -719,7 +720,6 @@ class CursorSmithRuntime {
     if (this._escapeBound || typeof document === "undefined") return;
     document.addEventListener("keydown", this._onEscapeKey, true);
     this._escapeBound = true;
-    this._unshieldStudio = installPreviewShield(document.defaultView || globalThis);
   }
 
   _unbindStudioKeys() {
@@ -729,14 +729,10 @@ class CursorSmithRuntime {
       document.removeEventListener("keydown", this._onEscapeKey, true);
     } catch {
     }
-    try {
-      this._unshieldStudio?.();
-    } catch {
-    }
-    this._unshieldStudio = null;
   }
 
   closeSettings() {
+    try { document.body?.classList?.remove("cs-studio-open"); } catch { /* already gone */ }
     this._unbindStudioKeys();
     try {
       this._overlay?.remove();

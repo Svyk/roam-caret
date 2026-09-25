@@ -29,7 +29,10 @@ function isDemo(el) {
 // against the box the measure already read.
 export function isCaretHost(el) {
   if (!isTextTarget(el) || isPasswordField(el)) return false;
-  return !isSkippedHost(el);
+  if (isSkippedHost(el)) return false;
+  // Number and colour fields in the Studio are controls, not a writing surface.
+  if (typeof el.closest === "function" && el.closest(".cs-studio") && !isDemo(el)) return false;
+  return true;
 }
 
 // Highest numeric z-index on a positioned node from the host up to <body>.
@@ -714,6 +717,14 @@ export function installLiteCaret({ doc, win, measurer, lifecycle, getSettings, r
       follow(null);
       hide();
       selection.clear();
+      rememberTarget(target);
+      return;
+    }
+    // The Studio covers the page. A caret for a block behind it would paint
+    // on top of the panel. Only the preview inside the Studio is drawn.
+    if (documentRef.body?.classList?.contains("cs-studio-open") && !target.closest?.(".cs-studio")) {
+      follow(null);
+      hide();
       rememberTarget(target);
       return;
     }

@@ -4,6 +4,12 @@ All notable changes to this project follow [Keep a Changelog](https://keepachang
 
 ## [Unreleased]
 
+## [0.6.2] - 2026-09-24
+
+### Fixed
+- Studio preview accepts typing. The key is no longer stopped before it reaches the box.
+- Opening Studio hides the page caret, so it does not sit on top of the panel. Studio controls keep the browser caret. The preview still uses the custom one.
+
 ## [0.6.1] - 2026-09-24
 
 ### Fixed

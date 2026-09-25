@@ -4,7 +4,7 @@ import test from "node:test";
 
 import { CANVAS_EFFECT_KEYS, DEFAULTS } from "../src/cursor-smith.js";
 import { createPreviewComponent } from "../src/settings.js";
-import { installPreviewShield, renderStudio, STUDIO_CSS } from "../src/studio.js";
+import { renderStudio, STUDIO_CSS } from "../src/studio.js";
 
 function walk(el, fn) {
   fn(el);
@@ -289,7 +289,7 @@ function findInput(root, type) {
   return found;
 }
 
-test("the shield keeps a key in the Studio preview from Roam's document keydown listener", () => {
+test("the preview stops a key from bubbling to Roam and still receives it", () => {
   withFakeDoc((doc) => {
     const ctl = makeCtl({ ...DEFAULTS });
     let rerenders = 0;
@@ -300,26 +300,21 @@ test("the shield keeps a key in the Studio preview from Roam's document keydown 
     const demo = root.querySelector(".cs-demo");
     const win = listenerBag();
     const page = listenerBag();
-    const roam = [];
-    page.addEventListener("keydown", (ev) => roam.push(ev.key), true);
+    const capture = [];
+    const bubble = [];
+    const onField = [];
+    page.addEventListener("keydown", (ev) => capture.push(ev.key), true);
+    page.addEventListener("keydown", (ev) => bubble.push(ev.key), false);
+    demo.addEventListener("keydown", (ev) => onField.push(ev.key));
 
-    dispatch(win, page, demo, "keydown", "a");
-    assert.deepEqual(roam, ["a"], "without the shield Roam sees the key");
+    const ev = dispatch(win, page, demo, "keydown", "a");
+    assert.deepEqual(onField, ["a"], "the textarea receives the key");
+    assert.deepEqual(capture, ["a"], "a window shield must not swallow the key");
+    assert.deepEqual(bubble, [], "Roam's bubble listener does not also handle it");
+    assert.equal(ev.defaultPrevented, false);
 
-    const off = installPreviewShield(win);
-    roam.length = 0;
-    const ev = dispatch(win, page, demo, "keydown", "b");
-    assert.deepEqual(roam, [], "Roam's listener did not run");
-    assert.equal(ev.defaultPrevented, false, "the character still lands");
-    dispatch(win, page, findInput(root, "number"), "keydown", "5");
-    assert.deepEqual(roam, [], "a field inside .cs-studio is shielded too");
     dispatch(win, page, demo, "keydown", "Escape");
-    assert.deepEqual(roam, ["Escape"], "Escape still reaches the Studio's close handler");
-
-    off();
-    roam.length = 0;
-    dispatch(win, page, demo, "keydown", "c");
-    assert.deepEqual(roam, ["c"], "removing the shield restores Roam's listener");
+    assert.deepEqual(bubble, ["Escape"], "Escape still bubbles so the Studio can close");
 
     for (const type of ["keydown", "keypress", "beforeinput", "input", "keyup"]) {
       dispatch(win, page, demo, type, "d");
@@ -329,7 +324,7 @@ test("the shield keeps a key in the Studio preview from Roam's document keydown 
   });
 });
 
-test("the Studio textarea stops keydown and beforeinput on itself", () => {
+test("the Studio textarea stops keydown from bubbling and lets beforeinput through", () => {
   withFakeDoc((doc) => {
     const root = doc.createElement("div");
     root.className = "cs-studio";
@@ -338,12 +333,13 @@ test("the Studio textarea stops keydown and beforeinput on itself", () => {
     const win = listenerBag();
     const page = listenerBag();
     const bubbled = [];
-    for (const type of ["keydown", "beforeinput"]) {
-      page.addEventListener(type, (ev) => bubbled.push(ev.type), false);
-      const ev = dispatch(win, page, demo, type, "a");
-      assert.equal(ev.defaultPrevented, false);
-    }
-    assert.deepEqual(bubbled, [], "nothing bubbles to the document");
+    page.addEventListener("keydown", (ev) => bubbled.push(ev.type), false);
+    page.addEventListener("beforeinput", (ev) => bubbled.push(ev.type), false);
+    const key = dispatch(win, page, demo, "keydown", "a");
+    const before = dispatch(win, page, demo, "beforeinput", "a");
+    assert.equal(key.defaultPrevented, false);
+    assert.equal(before.defaultPrevented, false);
+    assert.deepEqual(bubbled, ["beforeinput"], "beforeinput must reach the document so the character inserts");
   });
 });
 
@@ -363,20 +359,21 @@ test("the Depot preview .cs-demo is covered by the same shield while it is mount
     ownerDocument: { defaultView: win },
     closest(sel) { return closestIn(this, sel); },
   };
-  const roam = [];
-  page.addEventListener("keydown", (ev) => roam.push(ev.key), true);
-  page.addEventListener("keydown", (ev) => roam.push(ev.key), false);
+  const capture = [];
+  const bubble = [];
+  page.addEventListener("keydown", (ev) => capture.push(ev.key), true);
+  page.addEventListener("keydown", (ev) => bubble.push(ev.key), false);
 
   textarea.props.ref(el);
   const ev = dispatch(win, page, el, "keydown", "a");
-  assert.deepEqual(roam, [], "neither document listener ran");
+  assert.deepEqual(capture, ["a"], "the key still reaches the field");
+  assert.deepEqual(bubble, [], "Roam's bubble listener does not also handle it");
   assert.equal(ev.defaultPrevented, false);
 
   textarea.props.ref(null);
-  assert.equal(win._listeners.length, 0, "unmount removes the window shield");
   assert.equal(el._listeners.length, 0, "unmount removes the field listeners");
   dispatch(win, page, el, "keydown", "b");
-  assert.deepEqual(roam, ["b", "b"]);
+  assert.deepEqual(bubble, ["b"]);
 });
 
 test("text and caret in the preview survive a toggle that rerenders", () => {

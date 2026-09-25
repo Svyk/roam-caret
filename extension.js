@@ -1,4 +1,4 @@
-/* Roam Caret v0.6.1 | MIT | generated; edit src/ */
+/* Roam Caret v0.6.2 | MIT | generated; edit src/ */
 
 // src/lifecycle.js
 function isPromiseLike(value) {
@@ -871,33 +871,15 @@ var RERENDER_KEYS = /* @__PURE__ */ new Set([
 ]);
 var PROP_ATTRS = /* @__PURE__ */ new Set(["value", "checked", "selected"]);
 var HEX6 = /^#[0-9a-fA-F]{6}$/;
-var SHIELDED_KEYS = ["keydown", "keypress", "beforeinput"];
-var PREVIEW_FIELDS = ".cs-demo, .cs-studio";
-function isPreviewField(el) {
-  return typeof el?.closest === "function" && !!el.closest(PREVIEW_FIELDS);
-}
+var SHIELDED_KEYS = ["keydown"];
 function stopPreviewKey(ev) {
   if (ev.key !== "Escape") ev.stopPropagation();
 }
-function installPreviewShield(win) {
-  if (typeof win?.addEventListener !== "function") return () => {
-  };
-  const shield = (ev) => {
-    if (isPreviewField(ev.target)) stopPreviewKey(ev);
-  };
-  for (const type of SHIELDED_KEYS) win.addEventListener(type, shield, true);
-  let installed = true;
-  return () => {
-    if (!installed) return;
-    installed = false;
-    for (const type of SHIELDED_KEYS) win.removeEventListener(type, shield, true);
-  };
-}
 function shieldPreviewField(el) {
+  if (!el?.addEventListener) return () => {
+  };
   for (const type of SHIELDED_KEYS) el.addEventListener(type, stopPreviewKey);
-  const off = installPreviewShield(el.ownerDocument?.defaultView);
   return () => {
-    off();
     for (const type of SHIELDED_KEYS) el.removeEventListener(type, stopPreviewKey);
   };
 }
@@ -1865,7 +1847,9 @@ function isDemo(el) {
 }
 function isCaretHost(el) {
   if (!isTextTarget(el) || isPasswordField(el)) return false;
-  return !isSkippedHost(el);
+  if (isSkippedHost(el)) return false;
+  if (typeof el.closest === "function" && el.closest(".cs-studio") && !isDemo(el)) return false;
+  return true;
 }
 function stackingZIndex(el, doc, win) {
   if (typeof win?.getComputedStyle !== "function") return 0;
@@ -2435,6 +2419,12 @@ function installLiteCaret({ doc, win, measurer, lifecycle, getSettings, recordTi
       rememberTarget(target);
       return;
     }
+    if (documentRef.body?.classList?.contains("cs-studio-open") && !target.closest?.(".cs-studio")) {
+      follow(null);
+      hide();
+      rememberTarget(target);
+      return;
+    }
     const color = caretColor();
     if (hasRangeSelection(target)) {
       hide();
@@ -2694,7 +2684,7 @@ function installLiteCaret({ doc, win, measurer, lifecycle, getSettings, recordTi
 }
 
 // src/extension.js
-var VERSION = "0.6.1";
+var VERSION = "0.6.2";
 var CANVAS_Z_INDEX = 40;
 var VERSION_FLAG = "__ROAM_CURSOR_SMITH_VERSION";
 var DIAG_FLAG = "__ROAM_CARET_DIAG";
@@ -2803,7 +2793,6 @@ var CursorSmithRuntime = class {
     this._suspended = false;
     this._escapeBound = false;
     this._onEscapeKey = (ev) => this.onEscape(ev);
-    this._unshieldStudio = null;
     this.pendingPresetName = "";
     this.lifecycle.add(() => this.teardown());
   }
@@ -3302,6 +3291,8 @@ var CursorSmithRuntime = class {
     toastEl.className = "cs-toast";
     overlay.append(panelRoot, toastEl);
     document.body.append(overlay);
+    document.body.classList.add("cs-studio-open");
+    if (this._lite?.overlay) this._lite.overlay.style.display = "none";
     this._overlay = overlay;
     this._panelEl = panelRoot;
     this._toastEl = toastEl;
@@ -3314,7 +3305,6 @@ var CursorSmithRuntime = class {
     if (this._escapeBound || typeof document === "undefined") return;
     document.addEventListener("keydown", this._onEscapeKey, true);
     this._escapeBound = true;
-    this._unshieldStudio = installPreviewShield(document.defaultView || globalThis);
   }
   _unbindStudioKeys() {
     if (!this._escapeBound) return;
@@ -3323,13 +3313,12 @@ var CursorSmithRuntime = class {
       document.removeEventListener("keydown", this._onEscapeKey, true);
     } catch {
     }
-    try {
-      this._unshieldStudio?.();
-    } catch {
-    }
-    this._unshieldStudio = null;
   }
   closeSettings() {
+    try {
+      document.body?.classList?.remove("cs-studio-open");
+    } catch {
+    }
     this._unbindStudioKeys();
     try {
       this._overlay?.remove();

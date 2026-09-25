@@ -939,36 +939,24 @@ test("Escape is heard only while the Studio is open", async () => {
   }
 });
 
-test("the preview key shield is on window only while the Studio is open", async () => {
+test("the Studio does not install a window key shield", async () => {
   installMinimalDom();
   const win = globalThis.window;
   const origAdd = win.addEventListener;
-  const origRemove = win.removeEventListener;
   const shields = [];
   win.addEventListener = (type, fn, capture) => {
     if (type === "keydown" && capture === true) shields.push(fn);
-  };
-  win.removeEventListener = (type, fn, capture) => {
-    const idx = shields.indexOf(fn);
-    if (type === "keydown" && capture === true && idx >= 0) shields.splice(idx, 1);
+    origAdd?.(type, fn, capture);
   };
   const api = fakeExtensionApi();
   const cleanup = await extension.onload({ extensionAPI: api, extension: { version: VERSION } });
   const runtime = getRuntime();
-  const diag = globalThis.window.__ROAM_CARET_DIAG;
   try {
-    assert.equal(shields.length, 0);
     runtime.openSettings();
-    assert.equal(shields.length, 1);
-    diag.suspend();
-    assert.equal(shields.length, 0, "suspend drops it");
-    diag.resume();
-    assert.equal(shields.length, 1, "resume with the Studio open restores it");
+    assert.equal(shields.length, 0, "a window capture shield would swallow the key");
     document.dispatchKeydown({ key: "Escape", stopPropagation() {} });
-    assert.equal(shields.length, 0, "closing the Studio drops it");
   } finally {
     await cleanup();
     win.addEventListener = origAdd;
-    win.removeEventListener = origRemove;
   }
 });
