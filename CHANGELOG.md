@@ -4,6 +4,12 @@ All notable changes to this project follow [Keep a Changelog](https://keepachang
 
 ## [Unreleased]
 
+## [0.6.1] - 2026-09-24
+
+### Fixed
+- Typing in the Studio preview and in the preview on the Roam Caret tab works. Roam's key handler no longer swallows the keys. Escape still closes the Studio.
+- **Style name**, **Save style** and, when Look is Custom, **Saved styles** now sit directly under **Look** on the Roam Caret tab, above Shape and the colours.
+
 ## [0.6.0] - 2026-09-24
 
 ### Changed

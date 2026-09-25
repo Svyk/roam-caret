@@ -26,7 +26,7 @@ eyJfX25hbWUiOiJUZWFsIiwiY3Vyc29yU3R5bGUiOiJCZWFtIiwiY29sb3JEYXJrIjoiIzVlZWFkNCIs
 
 **Style name** is the name used by the next **Save style** and the next copied share code. **Save** stores the current look under that name and adds it to **Look**. An empty name saves under the shape (Beam, Line, Box, Underline). Saving an existing name updates that style. Built-in names, `Custom` and `Current` are refused.
 
-When **Look** is Custom, a **Saved styles** menu appears under it. Picking a style loads it and sets Look to its name. **Copy share code** uses the Look name, or Style name for a Custom look.
+**Style name** and **Save style** sit directly under **Look**. When **Look** is Custom, a **Saved styles** menu appears below them. Picking a style loads it and sets Look to its name. **Copy share code** uses the Look name, or Style name for a Custom look.
 
 While a caret field has focus, selected text is highlighted in the caret colour.
 

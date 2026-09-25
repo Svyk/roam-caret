@@ -3,11 +3,70 @@ import { readFile } from "node:fs/promises";
 import test from "node:test";
 
 import { CANVAS_EFFECT_KEYS, DEFAULTS } from "../src/cursor-smith.js";
-import { renderStudio, STUDIO_CSS } from "../src/studio.js";
+import { createPreviewComponent } from "../src/settings.js";
+import { installPreviewShield, renderStudio, STUDIO_CSS } from "../src/studio.js";
 
 function walk(el, fn) {
   fn(el);
   for (const child of el.children || []) walk(child, fn);
+}
+
+// Class selectors only, comma separated: enough for the shield.
+function closestIn(node, sel) {
+  const classes = sel.split(",").map((part) => part.trim().replace(/^\./, ""));
+  for (let n = node; n; n = n.parentNode) {
+    const own = String(n.className || "").split(/\s+/);
+    if (classes.some((cls) => own.includes(cls))) return n;
+  }
+  return null;
+}
+
+function listenerBag() {
+  const listeners = [];
+  return {
+    _listeners: listeners,
+    addEventListener(type, fn, capture) { listeners.push({ type, fn, capture: !!capture }); },
+    removeEventListener(type, fn, capture) {
+      const idx = listeners.findIndex((l) => l.type === type && l.fn === fn && l.capture === !!capture);
+      if (idx >= 0) listeners.splice(idx, 1);
+    },
+  };
+}
+
+// DOM order: window and document capture, the element's ancestors, the
+// target, then bubble back up. stopPropagation ends it after the current node.
+function dispatch(win, page, target, type, key) {
+  const path = [win, page];
+  const ancestors = [];
+  for (let n = target.parentNode; n; n = n.parentNode) ancestors.unshift(n);
+  path.push(...ancestors);
+  let stopped = false;
+  const ev = {
+    type,
+    key,
+    target,
+    defaultPrevented: false,
+    stopPropagation() { stopped = true; },
+    preventDefault() { this.defaultPrevented = true; },
+  };
+  const run = (node, phase) => {
+    for (const l of [...(node._listeners || [])]) {
+      if (l.type !== type) continue;
+      if (phase === "capture" && !l.capture) continue;
+      if (phase === "bubble" && l.capture) continue;
+      l.fn(ev);
+    }
+  };
+  for (const node of path) {
+    if (stopped) return ev;
+    run(node, "capture");
+  }
+  if (!stopped) run(target, "target");
+  for (const node of path.reverse()) {
+    if (stopped) return ev;
+    run(node, "bubble");
+  }
+  return ev;
 }
 
 function createFakeDoc() {
@@ -16,9 +75,10 @@ function createFakeDoc() {
     return { nodeType: 3, textContent: String(text), children: [] };
   }
   function createElement(tag) {
-    const listeners = new Map();
+    const bag = listenerBag();
     const children = [];
     const el = {
+      ...bag,
       tagName: String(tag).toUpperCase(),
       className: "",
       children,
@@ -33,8 +93,12 @@ function createFakeDoc() {
       ownerDocument: doc,
       setAttribute(name, value) { this.attributes[name] = value; },
       getAttribute(name) { return this.attributes[name] ?? null; },
-      addEventListener(type, fn) { listeners.set(type, fn); },
-      removeEventListener(type, fn) { if (listeners.get(type) === fn) listeners.delete(type); },
+      closest(sel) { return closestIn(this, sel); },
+      focus() { doc.activeElement = this; },
+      setSelectionRange(start, end) {
+        this.selectionStart = start;
+        this.selectionEnd = end;
+      },
       appendChild(child) {
         children.push(child);
         child.parentNode = this;
@@ -69,8 +133,9 @@ function createFakeDoc() {
         return out;
       },
       _fire(type, target) {
-        const fn = listeners.get(type);
-        if (fn) fn({ target: target || this });
+        for (const l of [...bag._listeners]) {
+          if (l.type === type) l.fn({ target: target || this });
+        }
       },
     };
     nodes.push(el);
@@ -214,4 +279,130 @@ test("a colour text field ignores a partial hex", () => {
 test("Studio CSS follows Roam's theme, not the OS", () => {
   assert.doesNotMatch(STUDIO_CSS, /color-scheme:light dark/);
   assert.match(STUDIO_CSS, /\.bp3-dark \.cs-studio-overlay/);
+});
+
+function findInput(root, type) {
+  let found = null;
+  walk(root, (node) => {
+    if (!found && node.tagName === "INPUT" && node.attributes.type === type) found = node;
+  });
+  return found;
+}
+
+test("the shield keeps a key in the Studio preview from Roam's document keydown listener", () => {
+  withFakeDoc((doc) => {
+    const ctl = makeCtl({ ...DEFAULTS });
+    let rerenders = 0;
+    ctl.rerender = () => { rerenders += 1; };
+    const root = doc.createElement("div");
+    root.className = "cs-studio";
+    renderStudio(root, ctl);
+    const demo = root.querySelector(".cs-demo");
+    const win = listenerBag();
+    const page = listenerBag();
+    const roam = [];
+    page.addEventListener("keydown", (ev) => roam.push(ev.key), true);
+
+    dispatch(win, page, demo, "keydown", "a");
+    assert.deepEqual(roam, ["a"], "without the shield Roam sees the key");
+
+    const off = installPreviewShield(win);
+    roam.length = 0;
+    const ev = dispatch(win, page, demo, "keydown", "b");
+    assert.deepEqual(roam, [], "Roam's listener did not run");
+    assert.equal(ev.defaultPrevented, false, "the character still lands");
+    dispatch(win, page, findInput(root, "number"), "keydown", "5");
+    assert.deepEqual(roam, [], "a field inside .cs-studio is shielded too");
+    dispatch(win, page, demo, "keydown", "Escape");
+    assert.deepEqual(roam, ["Escape"], "Escape still reaches the Studio's close handler");
+
+    off();
+    roam.length = 0;
+    dispatch(win, page, demo, "keydown", "c");
+    assert.deepEqual(roam, ["c"], "removing the shield restores Roam's listener");
+
+    for (const type of ["keydown", "keypress", "beforeinput", "input", "keyup"]) {
+      dispatch(win, page, demo, type, "d");
+    }
+    assert.equal(rerenders, 0, "typing never rerenders");
+    assert.equal(root.querySelector(".cs-demo"), demo, "typing never replaces the textarea");
+  });
+});
+
+test("the Studio textarea stops keydown and beforeinput on itself", () => {
+  withFakeDoc((doc) => {
+    const root = doc.createElement("div");
+    root.className = "cs-studio";
+    renderStudio(root, makeCtl({ ...DEFAULTS }));
+    const demo = root.querySelector(".cs-demo");
+    const win = listenerBag();
+    const page = listenerBag();
+    const bubbled = [];
+    for (const type of ["keydown", "beforeinput"]) {
+      page.addEventListener(type, (ev) => bubbled.push(ev.type), false);
+      const ev = dispatch(win, page, demo, type, "a");
+      assert.equal(ev.defaultPrevented, false);
+    }
+    assert.deepEqual(bubbled, [], "nothing bubbles to the document");
+  });
+});
+
+test("the Depot preview .cs-demo is covered by the same shield while it is mounted", () => {
+  const fakeReact = { createElement: (tag, props, ...children) => ({ tag, props, children }) };
+  const textarea = createPreviewComponent(fakeReact)().children[0];
+  assert.equal(textarea.tag, "textarea");
+  assert.equal(typeof textarea.props.ref, "function");
+
+  const win = listenerBag();
+  const page = listenerBag();
+  const dialog = { ...listenerBag(), className: "bp3-dialog", parentNode: null };
+  const el = {
+    ...listenerBag(),
+    className: textarea.props.className,
+    parentNode: dialog,
+    ownerDocument: { defaultView: win },
+    closest(sel) { return closestIn(this, sel); },
+  };
+  const roam = [];
+  page.addEventListener("keydown", (ev) => roam.push(ev.key), true);
+  page.addEventListener("keydown", (ev) => roam.push(ev.key), false);
+
+  textarea.props.ref(el);
+  const ev = dispatch(win, page, el, "keydown", "a");
+  assert.deepEqual(roam, [], "neither document listener ran");
+  assert.equal(ev.defaultPrevented, false);
+
+  textarea.props.ref(null);
+  assert.equal(win._listeners.length, 0, "unmount removes the window shield");
+  assert.equal(el._listeners.length, 0, "unmount removes the field listeners");
+  dispatch(win, page, el, "keydown", "b");
+  assert.deepEqual(roam, ["b", "b"]);
+});
+
+test("text and caret in the preview survive a toggle that rerenders", () => {
+  withFakeDoc((doc) => {
+    const ctl = makeCtl({ ...DEFAULTS, gradientEnabled: false });
+    const root = doc.createElement("div");
+    ctl.rerender = () => renderStudio(root, ctl);
+    renderStudio(root, ctl);
+    const demo = root.querySelector(".cs-demo");
+    demo.value = "hello";
+    demo.focus();
+    demo.setSelectionRange(2, 4);
+
+    let gradient = null;
+    walk(root, (node) => {
+      if (node.tagName === "LABEL" && node.children.some((c) => c.textContent === "Gradient")) {
+        gradient = node.children.find((c) => c.tagName === "INPUT");
+      }
+    });
+    gradient.checked = true;
+    gradient._fire("change", gradient);
+
+    const next = root.querySelector(".cs-demo");
+    assert.notEqual(next, demo, "the toggle rerendered");
+    assert.equal(next.value, "hello");
+    assert.equal(doc.activeElement, next);
+    assert.deepEqual([next.selectionStart, next.selectionEnd], [2, 4]);
+  });
 });

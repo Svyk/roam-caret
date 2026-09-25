@@ -2,6 +2,7 @@ import {
   DEFAULTS,
   BUILTIN_PRESETS,
 } from "./cursor-smith.js";
+import { shieldPreviewField } from "./studio.js";
 
 export function hexToRgba(hex, alpha) {
   let h = (hex || "#39ff14").replace("#", "");
@@ -78,8 +79,15 @@ export function createPreviewComponent(React = globalThis.window?.React) {
   if (typeof React?.createElement !== "function") return null;
   const h = React.createElement;
   return function RoamCaretPreview() {
+    // React calls the ref with the textarea on mount and with null on unmount.
+    let unshield = null;
+    const ref = (el) => {
+      unshield?.();
+      unshield = el ? shieldPreviewField(el) : null;
+    };
     return h("div", { className: "cs-demo-wrap" },
       h("textarea", {
+        ref,
         className: "cs-demo",
         rows: 4,
         spellCheck: false,
@@ -134,6 +142,26 @@ export function buildDepotPanel({
         type: "select",
         items: presetItems,
         onChange: (event) => onChange("cs-preset", event.target?.value ?? event),
+      },
+    },
+    {
+      id: STYLE_NAME_ID,
+      name: "Style name",
+      description: "Used by Save and by the next copied share code. Empty uses the shape.",
+      action: {
+        type: "input",
+        placeholder: "Teal",
+        onChange: (event) => onChange(STYLE_NAME_ID, event.target?.value ?? event),
+      },
+    },
+    {
+      id: "cs-save-style",
+      name: "Save style",
+      description: "Saves the current look under Style name and adds it to Look.",
+      action: {
+        type: "button",
+        content: "Save",
+        onClick: handlers.onSaveStyle,
       },
     },
     ...savedStylesRow,
@@ -213,26 +241,6 @@ export function buildDepotPanel({
       action: {
         type: "switch",
         onChange: (event) => onChange("cs-hide-blur", event.target.checked),
-      },
-    },
-    {
-      id: STYLE_NAME_ID,
-      name: "Style name",
-      description: "Used by Save and by the next copied share code. Empty uses the shape.",
-      action: {
-        type: "input",
-        placeholder: "Teal",
-        onChange: (event) => onChange(STYLE_NAME_ID, event.target?.value ?? event),
-      },
-    },
-    {
-      id: "cs-save-style",
-      name: "Save style",
-      description: "Saves the current look under Style name and adds it to Look.",
-      action: {
-        type: "button",
-        content: "Save",
-        onClick: handlers.onSaveStyle,
       },
     },
     {

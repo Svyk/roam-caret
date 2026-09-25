@@ -26,9 +26,9 @@ import {
   presetToCode,
   randomizeLook,
 } from "./cursor-smith.js";
-import { renderStudio, STUDIO_CSS } from "./studio.js";
+import { installPreviewShield, renderStudio, STUDIO_CSS } from "./studio.js";
 
-export const VERSION = "0.6.0";
+export const VERSION = "0.6.1";
 const CANVAS_Z_INDEX = 40; // PROVISIONAL
 const VERSION_FLAG = "__ROAM_CURSOR_SMITH_VERSION";
 const DIAG_FLAG = "__ROAM_CARET_DIAG";
@@ -157,13 +157,14 @@ class CursorSmithRuntime {
     this._suspended = false;
     this._escapeBound = false;
     this._onEscapeKey = (ev) => this.onEscape(ev);
+    this._unshieldStudio = null;
     this.pendingPresetName = "";
     this.lifecycle.add(() => this.teardown());
   }
 
   teardown() {
     this.closeSettings();
-    this._unbindEscape();
+    this._unbindStudioKeys();
     this._removePanelStyle();
     this.stopLite();
     this.stopNative();
@@ -431,7 +432,7 @@ class CursorSmithRuntime {
     this.stopNative();
     this.stopEngine();
     this.stopMeasurer();
-    this._unbindEscape();
+    this._unbindStudioKeys();
     this.applyBodyClasses();
     return true;
   }
@@ -439,7 +440,7 @@ class CursorSmithRuntime {
   resume() {
     if (!this._suspended) return false;
     this._suspended = false;
-    if (this._overlay?.isConnected) this._bindEscape();
+    if (this._overlay?.isConnected) this._bindStudioKeys();
     this.applySettings();
     return true;
   }
@@ -708,29 +709,35 @@ class CursorSmithRuntime {
     this._overlay = overlay;
     this._panelEl = panelRoot;
     this._toastEl = toastEl;
-    if (!this._suspended) this._bindEscape();
+    if (!this._suspended) this._bindStudioKeys();
     this.renderPanel();
   }
 
-  // Escape is heard only while the Studio is open: no keydown listener on
-  // the typing path.
-  _bindEscape() {
+  // Escape and the preview key shield are bound only while the Studio is
+  // open: no keydown listener on the typing path.
+  _bindStudioKeys() {
     if (this._escapeBound || typeof document === "undefined") return;
     document.addEventListener("keydown", this._onEscapeKey, true);
     this._escapeBound = true;
+    this._unshieldStudio = installPreviewShield(document.defaultView || globalThis);
   }
 
-  _unbindEscape() {
+  _unbindStudioKeys() {
     if (!this._escapeBound) return;
     this._escapeBound = false;
     try {
       document.removeEventListener("keydown", this._onEscapeKey, true);
     } catch {
     }
+    try {
+      this._unshieldStudio?.();
+    } catch {
+    }
+    this._unshieldStudio = null;
   }
 
   closeSettings() {
-    this._unbindEscape();
+    this._unbindStudioKeys();
     try {
       this._overlay?.remove();
     } catch {

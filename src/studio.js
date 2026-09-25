@@ -25,6 +25,48 @@ const RERENDER_KEYS = new Set([
 const PROP_ATTRS = new Set(["value", "checked", "selected"]);
 const HEX6 = /^#[0-9a-fA-F]{6}$/;
 
+// Roam's document key handler eats keys typed outside a block, so a preview
+// field never gets the character. The shield stops these events before they
+// reach Roam. It never calls preventDefault, so the character still lands.
+// Escape passes, so it still closes the Studio or the Depot dialog.
+const SHIELDED_KEYS = ["keydown", "keypress", "beforeinput"];
+const PREVIEW_FIELDS = ".cs-demo, .cs-studio";
+
+function isPreviewField(el) {
+  return typeof el?.closest === "function" && !!el.closest(PREVIEW_FIELDS);
+}
+
+function stopPreviewKey(ev) {
+  if (ev.key !== "Escape") ev.stopPropagation();
+}
+
+// Window capture runs before any document listener. Each call adds its own
+// listener, so the Studio and the Depot preview can each remove theirs.
+export function installPreviewShield(win) {
+  if (typeof win?.addEventListener !== "function") return () => {};
+  const shield = (ev) => {
+    if (isPreviewField(ev.target)) stopPreviewKey(ev);
+  };
+  for (const type of SHIELDED_KEYS) win.addEventListener(type, shield, true);
+  let installed = true;
+  return () => {
+    if (!installed) return;
+    installed = false;
+    for (const type of SHIELDED_KEYS) win.removeEventListener(type, shield, true);
+  };
+}
+
+// For a preview outside the Studio: its own listeners, plus the window
+// shield while it is mounted.
+export function shieldPreviewField(el) {
+  for (const type of SHIELDED_KEYS) el.addEventListener(type, stopPreviewKey);
+  const off = installPreviewShield(el.ownerDocument?.defaultView);
+  return () => {
+    off();
+    for (const type of SHIELDED_KEYS) el.removeEventListener(type, stopPreviewKey);
+  };
+}
+
 function h(tag, attrs, ...children) {
   const el = document.createElement(tag);
   if (attrs) {
@@ -163,6 +205,7 @@ export function renderStudio(root, ctl) {
     placeholder: "Type here to see your cursor…\nPress Enter for Thunderstrike.",
   });
   if (prevValue) demo.value = prevValue;
+  for (const type of SHIELDED_KEYS) demo.addEventListener(type, stopPreviewKey);
 
   const shapeItems = (ENUMS.cursorStyle.includes("Beam")
     ? ["Beam", "Line", "Box", "Underline"]

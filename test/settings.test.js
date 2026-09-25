@@ -16,6 +16,8 @@ import {
 const DEPOT_IDS = [
   "cs-enabled",
   "cs-preset",
+  "cs-style-name",
+  "cs-save-style",
   "cs-saved-styles",
   "cs-shape",
   "cs-color-light",
@@ -26,8 +28,6 @@ const DEPOT_IDS = [
   "cs-show-char",
   "cs-hide-native",
   "cs-hide-blur",
-  "cs-style-name",
-  "cs-save-style",
   "cs-copy-code",
   "cs-import-code",
   "cs-import",
@@ -123,7 +123,7 @@ test("Custom reveals the Saved styles select, listing every saved style", () => 
   const presets = { Teal: {}, Night: {} };
   const panel = buildDepotPanel({ settings: { activePreset: "", presets }, React: null });
   const ids = panel.settings.map((row) => row.id);
-  assert.equal(ids.indexOf(SAVED_STYLES_ID), ids.indexOf("cs-preset") + 1, "right under Look");
+  assert.equal(ids.indexOf(SAVED_STYLES_ID), ids.indexOf("cs-preset") + 3, "under Style name and Save");
   const row = panel.settings.find((r) => r.id === SAVED_STYLES_ID);
   assert.equal(row.name, "Saved styles");
   assert.equal(row.action.type, "select");
@@ -139,4 +139,22 @@ test("a named Look omits the Saved styles row", () => {
     assert.equal(panel.settings.some((row) => row.id === SAVED_STYLES_ID), false, activePreset);
     assert.ok(panel.settings.some((row) => row.id === "cs-style-name"), "Style name stays");
   }
+});
+
+test("Style name, Save style and Saved styles are the first rows after Look", () => {
+  const afterLook = (settings) => {
+    const ids = buildDepotPanel({ settings, React: null }).settings.map((row) => row.id);
+    const look = ids.indexOf("cs-preset");
+    assert.ok(look >= 0);
+    return ids.slice(look + 1, look + 4);
+  };
+  assert.deepEqual(
+    afterLook({ activePreset: "", presets: { Teal: {} } }),
+    ["cs-style-name", "cs-save-style", SAVED_STYLES_ID],
+  );
+  assert.deepEqual(
+    afterLook({ activePreset: "Fast", presets: { Teal: {} } }),
+    ["cs-style-name", "cs-save-style", "cs-shape"],
+    "a named Look has no Saved styles row",
+  );
 });
