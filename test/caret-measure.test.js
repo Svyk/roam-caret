@@ -286,18 +286,85 @@ test("a text input measures as one centred line; a textarea still wraps", () => 
   measurer.dispose();
 });
 
-test("a Blueprint input with line-height equal to its height gets a block-sized caret", () => {
+test("a padded input whose line-height is the field height keeps the 1.5em cap", () => {
   const { doc } = createFakeDoc();
   const win = {
-    getComputedStyle: () => ({ ...fakeComputed(), lineHeight: "40px" }),
+    getComputedStyle: () => ({
+      ...fakeComputed(),
+      lineHeight: "40px",
+      paddingTop: "6px",
+      paddingBottom: "6px",
+    }),
     addEventListener() {},
     removeEventListener() {},
   };
   const measurer = createCaretMeasurer({ doc, win });
   const input = fakeTextEl(doc, { tagName: "INPUT", getAttribute: () => null });
   const rect = measurer.measure(input);
-  assert.equal(rect.height, 24, "1.5 x the 16px font, not the 40px field");
+  assert.equal(rect.height, 24, "1.5 x the 16px font, not the 40px line");
   assert.equal(rect.lineHeight, "24px", "the Box letter uses the same line");
-  assert.equal(rect.y, 50 + 2 + (40 - 24) / 2, "centred in the field");
+  assert.equal(rect.y, 50 + 2 + (28 - 24) / 2, "centred in the 28px content box");
+  measurer.dispose();
+});
+
+// Find or Create Page, read live on 2026-09-24: 30px tall, line-height 30px,
+// 14px font, padding 0 10px 0 30px (the 30px is the search icon), no border.
+function findOrCreateComputed() {
+  return {
+    ...fakeComputed(),
+    width: "300px",
+    fontSize: "14px",
+    lineHeight: "30px",
+    paddingLeft: "30px",
+    paddingRight: "10px",
+  };
+}
+
+// The mirror lays out like Chrome: the marker starts at the padding edge and
+// moves 7px per character in front of it.
+function layOutMirror(body) {
+  const mirror = body.children[0];
+  const [prefix, marker] = mirror.children;
+  const at = (value) => Number.parseFloat(value) || 0;
+  Object.defineProperty(marker, "offsetLeft", {
+    get: () => at(mirror.style.paddingLeft) + prefix.textContent.length * 7,
+  });
+  Object.defineProperty(marker, "offsetTop", { get: () => at(mirror.style.paddingTop) });
+}
+
+test("Find or Create: an empty field puts the caret after the icon, centred on the 30px line", () => {
+  const { doc, body } = createFakeDoc();
+  const win = {
+    getComputedStyle: () => findOrCreateComputed(),
+    addEventListener() {},
+    removeEventListener() {},
+  };
+  const measurer = createCaretMeasurer({ doc, win });
+  layOutMirror(body);
+  const box = { left: 400, top: 10, width: 300, height: 30, right: 700, bottom: 40 };
+  const input = fakeTextEl(doc, {
+    tagName: "INPUT",
+    getAttribute: () => null,
+    value: "",
+    selectionStart: 0,
+    offsetWidth: 300,
+    offsetHeight: 30,
+    getBoundingClientRect: () => box,
+  });
+
+  const rect = measurer.measure(input);
+  assert.equal(rect.x, 400 + 30, "padding-left origin, not the middle of the bar");
+  assert.notEqual(rect.x, 400 + 300 / 2);
+  assert.ok(Math.abs(rect.y + rect.height / 2 - (10 + 30 / 2)) < 1e-9, "centre of the 30px line");
+  assert.ok(rect.height < 30, "not the whole field");
+  assert.ok(Math.abs(rect.height - 14 * 1.2) < 1e-9, "about the font size");
+  assert.equal(rect.lineHeight, `${rect.height}px`, "the Box letter uses the caret's own line");
+  assert.equal(rect.visible, true);
+
+  input.value = "why";
+  input.selectionStart = 3;
+  const typed = measurer.measure(input);
+  assert.equal(typed.x, 400 + 30 + 3 * 7);
+  assert.equal(typed.y, rect.y, "typing does not move the caret off the line");
   measurer.dispose();
 });

@@ -159,6 +159,15 @@ function observerClass(win) {
   return typeof MO === "function" ? MO : null;
 }
 
+function resizeObserverClass(win) {
+  const RO = win?.ResizeObserver || globalThis.ResizeObserver;
+  return typeof RO === "function" ? RO : null;
+}
+
+function sameSize(a, b) {
+  return Math.abs(a - b) < 0.5;
+}
+
 export function installNativeCaret({ doc, win, getSettings } = {}) {
   const documentRef = doc || globalThis.document;
   const windowRef = win || documentRef?.defaultView || globalThis;
@@ -250,6 +259,7 @@ export function installLiteCaret({ doc, win, measurer, lifecycle, getSettings, r
   let lastEl = null;
   let lastSig = "";
   let scrollRaf = 0;
+  let followRaf = 0;
   let paletteOpen = !!documentRef.querySelector?.(COMMAND_PALETTE_SELECTOR);
 
   const perf = windowRef?.performance || globalThis.performance;
@@ -585,11 +595,30 @@ export function installLiteCaret({ doc, win, measurer, lifecycle, getSettings, r
 
   let composing = false;
 
+  // One ResizeObserver on the focused host. A host that changes size after
+  // the key (Chief of Staff autosize) or after focus (Find or Create widening)
+  // is measured once more against its new box.
+  let followed = null;
+  let followedBox = null;
+  let resizeObserver = null;
+
+  const follow = (el) => {
+    if (el === followed) return;
+    try {
+      if (followed) resizeObserver?.unobserve(followed);
+      if (el) resizeObserver?.observe(el, { box: "border-box" });
+    } catch {
+    }
+    followed = el;
+    followedBox = null;
+  };
+
   const measureAndApply = (el, ping) => {
     if (disposed) return;
     const t0 = recordTiming && now ? now() : null;
     readSettings();
     const target = el || documentRef.activeElement;
+    if (!target || !isCaretHost(target)) follow(null);
     if (!target || !isCaretHost(target) || hasRangeSelection(target)) {
       hide();
       rememberTarget(target);
@@ -604,7 +633,9 @@ export function installLiteCaret({ doc, win, measurer, lifecycle, getSettings, r
       return;
     }
     active = target;
+    follow(target);
     const rect = measurer.measure(target);
+    followedBox = rect?.box || null;
     if (paint(rect, target)) {
       syncBlink(ping);
       hideNativeCaret(target);
@@ -620,6 +651,7 @@ export function installLiteCaret({ doc, win, measurer, lifecycle, getSettings, r
       active = null;
       lastEl = null;
       lastSig = "";
+      follow(null);
       hide();
       return;
     }
@@ -633,12 +665,48 @@ export function installLiteCaret({ doc, win, measurer, lifecycle, getSettings, r
     active = null;
     lastEl = null;
     lastSig = "";
+    follow(null);
     hide();
   };
+
+  const remeasureFollowed = () => {
+    if (disposed || composing || !followed || documentRef.activeElement !== followed) return;
+    measureAndApply(followed, false);
+  };
+
+  const onHostResize = (entries) => {
+    if (disposed || composing || !followed) return;
+    let entry = null;
+    for (const item of entries || []) if (item?.target === followed) entry = item;
+    if (!entry) return;
+    const size = entry.borderBoxSize?.[0] || entry.borderBoxSize;
+    const box = followedBox;
+    const widthSame = !!(size && box) && sameSize(size.inlineSize, box.width);
+    if (widthSame && sameSize(size.blockSize, box.height)) return;
+    // A new width can rewrap the mirror, so copy the host's style again.
+    if (!widthSame) measurer.invalidate?.();
+    remeasureFollowed();
+  };
+
+  const RO = resizeObserverClass(windowRef);
+  if (RO) {
+    try {
+      resizeObserver = new RO(onHostResize);
+    } catch {
+      resizeObserver = null;
+    }
+  }
 
   const onInput = (event) => {
     if (composing) return; // never measure mid-composition
     measureAndApply(event?.target || documentRef.activeElement, true);
+    // Without ResizeObserver, look once more after the host's own input
+    // handlers ran. The caret above is already painted.
+    if (resizeObserver || followRaf || typeof windowRef.requestAnimationFrame !== "function") return;
+    followRaf = windowRef.requestAnimationFrame(() => {
+      followRaf = 0;
+      remeasureFollowed();
+    });
   };
 
   const onCompositionStart = (event) => {
@@ -750,6 +818,7 @@ export function installLiteCaret({ doc, win, measurer, lifecycle, getSettings, r
           active = null;
           lastEl = null;
           lastSig = "";
+          follow(null);
           hide();
         }
         return;
@@ -791,6 +860,17 @@ export function installLiteCaret({ doc, win, measurer, lifecycle, getSettings, r
       windowRef.cancelAnimationFrame?.(scrollRaf);
       scrollRaf = 0;
     }
+    if (followRaf) {
+      windowRef.cancelAnimationFrame?.(followRaf);
+      followRaf = 0;
+    }
+    try {
+      resizeObserver?.disconnect();
+    } catch {
+    }
+    resizeObserver = null;
+    followed = null;
+    followedBox = null;
     try {
       paletteObserver?.disconnect();
     } catch {

@@ -1,5 +1,6 @@
 const MARKER_CHAR = "\u200b";
 const INPUT_LINE_EM = 1.5;
+const INPUT_TEXT_EM = 1.2;
 const SKIP_HOST_SELECTOR = ".rg-root, .pxd-root";
 
 export const MIRROR_PROPERTIES = Object.freeze([
@@ -112,6 +113,23 @@ function readMetrics(computed) {
   };
 }
 
+// Chrome centres an input's one line inside its content box. When the used
+// line-height fills that box (Blueprint sets it to the field height), the line
+// box is the content box: the caret is a text-high band in its middle. Any
+// other input line is capped at 1.5em and centred in the content box.
+function caretLine(metrics, offsetH) {
+  const lineHeightPx = metrics.lineHeightPx;
+  if (!metrics.singleLine) return { top: 0, height: lineHeightPx, css: metrics.lineHeight };
+  const contentH = offsetH
+    - metrics.borderTop - metrics.borderBottom - metrics.padTop - metrics.padBottom;
+  if (offsetH && Math.abs(lineHeightPx - contentH) <= 1) {
+    const height = Math.min(lineHeightPx, metrics.fontSizePx * INPUT_TEXT_EM);
+    return { top: (lineHeightPx - height) / 2, height, css: `${height}px` };
+  }
+  const height = Math.min(lineHeightPx, metrics.fontSizePx * INPUT_LINE_EM);
+  return { top: offsetH ? (contentH - height) / 2 : 0, height, css: `${height}px` };
+}
+
 function glyphAt(value, start) {
   const underCaret = value[start] && value[start] !== "\n" ? value[start] : "0";
   const hasGlyph = underCaret !== "0" || value[start] === "0";
@@ -209,13 +227,6 @@ export function createCaretMeasurer({ doc, win, lifecycle } = {}) {
       // A text input is one line that scrolls sideways; a textarea wraps.
       metrics.singleLine = el.tagName === "INPUT";
       style.whiteSpace = metrics.singleLine ? "pre" : "pre-wrap";
-      if (metrics.singleLine) {
-        // Blueprint inputs set line-height to the field height. Draw a caret
-        // as tall as a block line, not as tall as the field.
-        const lineHeightPx = Math.min(metrics.lineHeightPx, metrics.fontSizePx * INPUT_LINE_EM);
-        metrics.lineHeightPx = lineHeightPx;
-        metrics.lineHeight = `${lineHeightPx}px`;
-      }
       cachedEl = el;
     }
 
@@ -236,18 +247,14 @@ export function createCaretMeasurer({ doc, win, lifecycle } = {}) {
     const box = el.getBoundingClientRect();
     const glyphWidth = glyphEl.offsetWidth || metrics.fontSizePx * 0.6 || 8;
     const offsetH = el.offsetHeight || 0;
-    // Chrome centres an input's one line inside its content box.
-    const lineTop = metrics.singleLine && offsetH
-      ? (offsetH - metrics.borderTop - metrics.borderBottom - metrics.padTop - metrics.padBottom
-        - metrics.lineHeightPx) / 2
-      : 0;
+    const line = caretLine(metrics, offsetH);
     const rect = {
       ...projectCaretRect({
         box,
         offsetW: el.offsetWidth || 0,
         offsetH,
         markerLeft: marker.offsetLeft || 0,
-        markerTop: (marker.offsetTop || 0) + lineTop,
+        markerTop: (marker.offsetTop || 0) + line.top,
         scrollLeft: el.scrollLeft || 0,
         scrollTop: el.scrollTop || 0,
         borderLeft: metrics.borderLeft,
@@ -257,7 +264,7 @@ export function createCaretMeasurer({ doc, win, lifecycle } = {}) {
         padRight: metrics.padRight,
         padBottom: metrics.padBottom,
         glyphWidth,
-        lineHeightPx: metrics.lineHeightPx,
+        lineHeightPx: line.height,
         hasGlyph,
         glyph: underCaret,
       }),
@@ -265,7 +272,7 @@ export function createCaretMeasurer({ doc, win, lifecycle } = {}) {
       fontSize: metrics.fontSize,
       fontWeight: metrics.fontWeight,
       fontStyle: metrics.fontStyle,
-      lineHeight: metrics.lineHeight,
+      lineHeight: line.css,
       color: metrics.color,
       box,
       el,
@@ -285,6 +292,8 @@ export function createCaretMeasurer({ doc, win, lifecycle } = {}) {
       return () => subscribers.delete(fn);
     },
     isSkippedHost,
+    // Drop the cached style so the next measure copies the host's width again.
+    invalidate,
     dispose() {
       if (disposed) return;
       disposed = true;

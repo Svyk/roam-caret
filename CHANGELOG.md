@@ -4,6 +4,12 @@ All notable changes to this project follow [Keep a Changelog](https://keepachang
 
 ## [Unreleased]
 
+## [0.5.2] - 2026-09-24
+
+### Fixed
+- Find or Create puts the caret on the text line, after the search icon, instead of a short bar in the middle of the field.
+- A field that changes size after the keystroke (Chief of Staff grows its composer) is measured again, so the caret does not stay on the old box.
+
 ## [0.5.1] - 2026-09-23
 
 ### Changed

@@ -1187,3 +1187,282 @@ test("hide native caret off leaves the dialog field's browser caret alone", () =
   assert.notEqual(lite.overlay.style.display, "none");
   assert.equal(field.style.getPropertyValue("caret-color"), "");
 });
+
+// A ResizeObserver that records what it watches; the test delivers entries.
+function fakeResizeObserver() {
+  const log = { instances: [] };
+  log.Class = class {
+    constructor(callback) {
+      this.callback = callback;
+      this.targets = new Set();
+      this.observed = [];
+      this.disconnected = false;
+      log.instances.push(this);
+    }
+    observe(target, options) {
+      this.targets.add(target);
+      this.observed.push({ target, options });
+    }
+    unobserve(target) {
+      this.targets.delete(target);
+    }
+    disconnect() {
+      this.targets.clear();
+      this.disconnected = true;
+    }
+    fire(target, width, height) {
+      if (!this.targets.has(target)) return;
+      this.callback([{ target, borderBoxSize: [{ inlineSize: width, blockSize: height }] }], this);
+    }
+  };
+  return log;
+}
+
+// Real measurer on the fake document. The mirror marker starts at the padding
+// edge and wraps every `perLine` characters, like Chrome's layout would.
+function installMeasured(host, computed, settings = {}, { perLine = Infinity, charWidth = 7, win: winExtras = {} } = {}) {
+  const { doc, win, body, listeners, observers } = createFakeDoc();
+  Object.assign(win, winExtras);
+  let styleCalls = 0;
+  win.getComputedStyle = (el) => {
+    if (el === host) styleCalls += 1;
+    return { position: "static", overflowX: "visible", overflowY: "visible", ...computed };
+  };
+  const lifecycle = { node(node, parent = body) { parent.append(node); } };
+  const measurer = createCaretMeasurer({ doc, win, lifecycle });
+  const mirror = body.children[0];
+  const [prefix, marker] = mirror.children;
+  const at = (value) => Number.parseFloat(value) || 0;
+  Object.defineProperty(marker, "offsetLeft", {
+    get: () => at(mirror.style.paddingLeft) + (prefix.textContent.length % perLine) * charWidth,
+  });
+  Object.defineProperty(marker, "offsetTop", {
+    get: () => at(mirror.style.paddingTop)
+      + Math.floor(prefix.textContent.length / perLine) * at(mirror.style.lineHeight),
+  });
+  const lite = installLiteCaret({
+    doc,
+    win,
+    measurer,
+    lifecycle,
+    getSettings: () => ({
+      cursorStyle: "Box",
+      colorLight: "#333333",
+      blinkingEnabled: false,
+      showChar: false,
+      caretWidthPx: 2,
+      ...settings,
+    }),
+  });
+  doc.activeElement = host;
+  return { lite, doc, win, listeners, observers, measurer, styleCalls: () => styleCalls };
+}
+
+function translateOf(overlay) {
+  const match = /translate\(([-\d.]+)px, ([-\d.]+)px\)/.exec(String(overlay.style.transform));
+  return match ? { x: Number(match[1]), y: Number(match[2]) } : null;
+}
+
+const FIND_OR_CREATE_STYLE = {
+  boxSizing: "border-box",
+  width: "217px",
+  paddingTop: "0px",
+  paddingRight: "10px",
+  paddingBottom: "0px",
+  paddingLeft: "30px",
+  fontFamily: "sans-serif",
+  fontSize: "14px",
+  lineHeight: "30px",
+  color: "rgb(206, 217, 224)",
+};
+
+// The fake host's offset size tracks its box, like layout would.
+function trackBox(host, box) {
+  Object.defineProperty(host, "offsetWidth", { get: () => box.width });
+  Object.defineProperty(host, "offsetHeight", { get: () => box.height });
+  return host;
+}
+
+function findOrCreateInput(box) {
+  return trackBox(makeInput({
+    id: "find-or-create-input",
+    type: null,
+    value: "",
+    selectionStart: 0,
+    selectionEnd: 0,
+    getBoundingClientRect: () => ({ ...box, right: box.left + box.width, bottom: box.top + box.height }),
+  }), box);
+}
+
+test("Find or Create: the Box is about the font size and the Beam shares its centre", () => {
+  for (const cursorStyle of ["Box", "Beam"]) {
+    const box = { left: 20, top: 10, width: 570, height: 30 };
+    const input = findOrCreateInput(box);
+    const { lite, listeners } = installMeasured(input, FIND_OR_CREATE_STYLE, { cursorStyle });
+    listeners.get("focusin")({ target: input });
+    const at = translateOf(lite.overlay);
+    const height = Number.parseFloat(lite.overlay.style.height);
+    assert.ok(height < 17, `${cursorStyle} is not a 30px slab (${height}px)`);
+    assert.ok(Math.abs(at.y + height / 2 - 25) < 1e-9, `${cursorStyle} centre is the line centre`);
+    if (cursorStyle === "Box") assert.equal(at.x, 20 + 30, "after the search icon");
+    lite.dispose();
+  }
+});
+
+test("the Find or Create caret follows the bar as it widens after focus", () => {
+  const RO = fakeResizeObserver();
+  const box = { left: 348, top: 10, width: 217, height: 30 };
+  const input = findOrCreateInput(box);
+  const { lite, listeners, styleCalls } = installMeasured(input, FIND_OR_CREATE_STYLE, {}, {
+    win: { ResizeObserver: RO.Class },
+  });
+  const observer = RO.instances[0];
+
+  listeners.get("focusin")({ target: input });
+  assert.equal(translateOf(lite.overlay).x, 348 + 30);
+  const focusStyleCalls = styleCalls();
+
+  // The first notification reports the box the focus measure already used.
+  observer.fire(input, 217, 30);
+  assert.equal(styleCalls(), focusStyleCalls, "an unchanged box is not measured again");
+
+  box.left = 20;
+  box.width = 570;
+  observer.fire(input, 570, 30);
+  assert.equal(translateOf(lite.overlay).x, 20 + 30, "caret stays after the icon, not mid-bar");
+  assert.equal(styleCalls(), focusStyleCalls + 1, "a new width copies the field style again");
+  assert.notEqual(lite.overlay.style.display, "none");
+  lite.dispose();
+});
+
+test("a Chief of Staff composer that grows after the input handler is measured again at its new box", () => {
+  const RO = fakeResizeObserver();
+  // textarea[data-chief-chat-input]: 13px font, 21px lines, 8px padding.
+  const box = { left: 580, top: 360, width: 160, height: 37 };
+  let boxReads = 0;
+  const composer = trackBox(makeTextarea({
+    value: "thiws is test of ty",
+    selectionStart: 19,
+    selectionEnd: 19,
+    scrollTop: 0,
+    scrollLeft: 0,
+    getBoundingClientRect() {
+      boxReads += 1;
+      return { ...box, right: box.left + box.width, bottom: box.top + box.height };
+    },
+  }), box);
+  const { lite, listeners, styleCalls } = installMeasured(composer, {
+    boxSizing: "border-box",
+    width: "160px",
+    paddingTop: "8px",
+    paddingRight: "8px",
+    paddingBottom: "8px",
+    paddingLeft: "8px",
+    fontFamily: "sans-serif",
+    fontSize: "13px",
+    lineHeight: "21px",
+    color: "rgb(206, 217, 224)",
+  }, {}, { perLine: 20, win: { ResizeObserver: RO.Class } });
+  const observer = RO.instances[0];
+
+  listeners.get("focusin")({ target: composer });
+  assert.deepEqual(translateOf(lite.overlay), { x: 580 + 8 + 19 * 7, y: 360 + 8 });
+  const focusStyleCalls = styleCalls();
+
+  // Capture-phase input sees the wrapped text before autosize grows the box:
+  // the second line lies under the old box, so the caret drops out.
+  composer.value += "fx";
+  composer.selectionStart = composer.selectionEnd = composer.value.length;
+  boxReads = 0;
+  listeners.get("input")({ target: composer });
+  assert.equal(boxReads, 1, "the keystroke still paints synchronously with one box read");
+  assert.equal(lite.overlay.style.display, "none");
+
+  // autosizeChatInput: height auto, then scrollHeight px. The panel is pinned
+  // at the bottom, so the box grows upward.
+  box.top = 339;
+  box.height = 58;
+  observer.fire(composer, 160, 58);
+  assert.equal(boxReads, 2, "one more measure for the new box");
+  assert.equal(styleCalls(), focusStyleCalls, "same width: no style copy");
+  assert.notEqual(lite.overlay.style.display, "none");
+  assert.deepEqual(translateOf(lite.overlay), { x: 580 + 8 + 1 * 7, y: 339 + 8 + 21 });
+  lite.dispose();
+});
+
+test("the ResizeObserver watches only the focused host and stops on blur and unload", () => {
+  const RO = fakeResizeObserver();
+  const { doc: doc2, win, body, listeners: l2 } = createFakeDoc();
+  win.ResizeObserver = RO.Class;
+  const measurer = { measure: (el) => ({ x: 10, y: 20, width: 8, height: 19, visible: true, glyph: "h", box: el.getBoundingClientRect() }) };
+  const caret = installLiteCaret({
+    doc: doc2,
+    win,
+    measurer,
+    lifecycle: { node(node, parent = body) { parent.append(node); } },
+    getSettings: () => ({ cursorStyle: "Box", colorLight: "#333333" }),
+  });
+  assert.equal(RO.instances.length, 1, "one observer for the whole caret");
+  const observer = RO.instances[0];
+
+  const block = makeTextarea();
+  doc2.activeElement = block;
+  l2.get("focusin")({ target: block });
+  assert.deepEqual([...observer.targets], [block]);
+  assert.equal(observer.observed[0].options.box, "border-box");
+
+  const field = makeInput();
+  doc2.activeElement = field;
+  l2.get("focusin")({ target: field });
+  assert.deepEqual([...observer.targets], [field], "the block is no longer watched");
+  assert.ok(observer.observed.every(({ target }) => target !== doc2.body && target !== doc2.documentElement));
+
+  doc2.activeElement = doc2.body;
+  l2.get("focusout")({ target: field, relatedTarget: null });
+  assert.equal(observer.targets.size, 0);
+
+  doc2.activeElement = block;
+  l2.get("focusin")({ target: block });
+  caret.dispose();
+  assert.equal(observer.disconnected, true);
+});
+
+test("without ResizeObserver one frame after input remeasures; the key still paints first", () => {
+  const frames = [];
+  const box = { left: 0, top: 100, width: 600, height: 40 };
+  const composer = trackBox(makeTextarea({
+    scrollTop: 0,
+    scrollLeft: 0,
+    getBoundingClientRect: () => ({ ...box, right: box.left + box.width, bottom: box.top + box.height }),
+  }), box);
+  const { lite, listeners } = installMeasured(composer, {
+    boxSizing: "border-box",
+    width: "600px",
+    paddingTop: "0px",
+    paddingLeft: "0px",
+    fontSize: "16px",
+    lineHeight: "20px",
+  }, {}, {
+    win: {
+      requestAnimationFrame(fn) {
+        frames.push(fn);
+        return frames.length;
+      },
+      cancelAnimationFrame() {},
+    },
+  });
+  listeners.get("focusin")({ target: composer });
+  assert.equal(frames.length, 0, "focus does not schedule a frame");
+
+  composer.value += "x";
+  composer.selectionStart = composer.selectionEnd = composer.value.length;
+  listeners.get("input")({ target: composer });
+  assert.equal(translateOf(lite.overlay).y, 100, "painted in the key's own turn");
+  listeners.get("input")({ target: composer });
+  assert.equal(frames.length, 1, "one frame per burst, not per key");
+
+  box.top = 80;
+  frames.shift()();
+  assert.equal(translateOf(lite.overlay).y, 80, "the frame reads the box after the host's handlers");
+  lite.dispose();
+});

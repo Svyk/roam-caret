@@ -1,4 +1,4 @@
-/* Roam Caret v0.5.1 | MIT | generated; edit src/ */
+/* Roam Caret v0.5.2 | MIT | generated; edit src/ */
 
 // src/lifecycle.js
 function isPromiseLike(value) {
@@ -1063,6 +1063,7 @@ function buildDepotPanel({
 // src/caret-measure.js
 var MARKER_CHAR = "​";
 var INPUT_LINE_EM = 1.5;
+var INPUT_TEXT_EM = 1.2;
 var SKIP_HOST_SELECTOR = ".rg-root, .pxd-root";
 var MIRROR_PROPERTIES = Object.freeze([
   "boxSizing",
@@ -1164,6 +1165,17 @@ function readMetrics(computed) {
     fontSizePx
   };
 }
+function caretLine(metrics, offsetH) {
+  const lineHeightPx = metrics.lineHeightPx;
+  if (!metrics.singleLine) return { top: 0, height: lineHeightPx, css: metrics.lineHeight };
+  const contentH = offsetH - metrics.borderTop - metrics.borderBottom - metrics.padTop - metrics.padBottom;
+  if (offsetH && Math.abs(lineHeightPx - contentH) <= 1) {
+    const height2 = Math.min(lineHeightPx, metrics.fontSizePx * INPUT_TEXT_EM);
+    return { top: (lineHeightPx - height2) / 2, height: height2, css: `${height2}px` };
+  }
+  const height = Math.min(lineHeightPx, metrics.fontSizePx * INPUT_LINE_EM);
+  return { top: offsetH ? (contentH - height) / 2 : 0, height, css: `${height}px` };
+}
 function glyphAt(value, start) {
   const underCaret = value[start] && value[start] !== "\n" ? value[start] : "0";
   const hasGlyph = underCaret !== "0" || value[start] === "0";
@@ -1247,11 +1259,6 @@ function createCaretMeasurer({ doc, win, lifecycle } = {}) {
       metrics = readMetrics(computedStyle);
       metrics.singleLine = el.tagName === "INPUT";
       style.whiteSpace = metrics.singleLine ? "pre" : "pre-wrap";
-      if (metrics.singleLine) {
-        const lineHeightPx = Math.min(metrics.lineHeightPx, metrics.fontSizePx * INPUT_LINE_EM);
-        metrics.lineHeightPx = lineHeightPx;
-        metrics.lineHeight = `${lineHeightPx}px`;
-      }
       cachedEl = el;
     }
     const value = el.value ?? "";
@@ -1267,14 +1274,14 @@ function createCaretMeasurer({ doc, win, lifecycle } = {}) {
     const box = el.getBoundingClientRect();
     const glyphWidth = glyphEl.offsetWidth || metrics.fontSizePx * 0.6 || 8;
     const offsetH = el.offsetHeight || 0;
-    const lineTop = metrics.singleLine && offsetH ? (offsetH - metrics.borderTop - metrics.borderBottom - metrics.padTop - metrics.padBottom - metrics.lineHeightPx) / 2 : 0;
+    const line = caretLine(metrics, offsetH);
     const rect = {
       ...projectCaretRect({
         box,
         offsetW: el.offsetWidth || 0,
         offsetH,
         markerLeft: marker.offsetLeft || 0,
-        markerTop: (marker.offsetTop || 0) + lineTop,
+        markerTop: (marker.offsetTop || 0) + line.top,
         scrollLeft: el.scrollLeft || 0,
         scrollTop: el.scrollTop || 0,
         borderLeft: metrics.borderLeft,
@@ -1284,7 +1291,7 @@ function createCaretMeasurer({ doc, win, lifecycle } = {}) {
         padRight: metrics.padRight,
         padBottom: metrics.padBottom,
         glyphWidth,
-        lineHeightPx: metrics.lineHeightPx,
+        lineHeightPx: line.height,
         hasGlyph,
         glyph: underCaret
       }),
@@ -1292,7 +1299,7 @@ function createCaretMeasurer({ doc, win, lifecycle } = {}) {
       fontSize: metrics.fontSize,
       fontWeight: metrics.fontWeight,
       fontStyle: metrics.fontStyle,
-      lineHeight: metrics.lineHeight,
+      lineHeight: line.css,
       color: metrics.color,
       box,
       el
@@ -1311,6 +1318,8 @@ function createCaretMeasurer({ doc, win, lifecycle } = {}) {
       return () => subscribers.delete(fn);
     },
     isSkippedHost,
+    // Drop the cached style so the next measure copies the host's width again.
+    invalidate,
     dispose() {
       if (disposed) return;
       disposed = true;
@@ -1464,6 +1473,13 @@ function observerClass(win) {
   const MO = win?.MutationObserver || globalThis.MutationObserver;
   return typeof MO === "function" ? MO : null;
 }
+function resizeObserverClass(win) {
+  const RO = win?.ResizeObserver || globalThis.ResizeObserver;
+  return typeof RO === "function" ? RO : null;
+}
+function sameSize(a, b) {
+  return Math.abs(a - b) < 0.5;
+}
 function installNativeCaret({ doc, win, getSettings } = {}) {
   const documentRef = doc || globalThis.document;
   const windowRef = win || documentRef?.defaultView || globalThis;
@@ -1543,6 +1559,7 @@ function installLiteCaret({ doc, win, measurer, lifecycle, getSettings, recordTi
   let lastEl = null;
   let lastSig = "";
   let scrollRaf = 0;
+  let followRaf = 0;
   let paletteOpen = !!documentRef.querySelector?.(COMMAND_PALETTE_SELECTOR);
   const perf = windowRef?.performance || globalThis.performance;
   const now = typeof perf?.now === "function" ? () => perf.now() : null;
@@ -1831,11 +1848,25 @@ function installLiteCaret({ doc, win, measurer, lifecycle, getSettings, recordTi
     return true;
   };
   let composing = false;
+  let followed = null;
+  let followedBox = null;
+  let resizeObserver = null;
+  const follow = (el) => {
+    if (el === followed) return;
+    try {
+      if (followed) resizeObserver?.unobserve(followed);
+      if (el) resizeObserver?.observe(el, { box: "border-box" });
+    } catch {
+    }
+    followed = el;
+    followedBox = null;
+  };
   const measureAndApply = (el, ping) => {
     if (disposed) return;
     const t0 = recordTiming && now ? now() : null;
     readSettings();
     const target = el || documentRef.activeElement;
+    if (!target || !isCaretHost(target)) follow(null);
     if (!target || !isCaretHost(target) || hasRangeSelection(target)) {
       hide();
       rememberTarget(target);
@@ -1848,7 +1879,9 @@ function installLiteCaret({ doc, win, measurer, lifecycle, getSettings, recordTi
       return;
     }
     active = target;
+    follow(target);
     const rect = measurer.measure(target);
+    followedBox = rect?.box || null;
     if (paint(rect, target)) {
       syncBlink(ping);
       hideNativeCaret(target);
@@ -1863,6 +1896,7 @@ function installLiteCaret({ doc, win, measurer, lifecycle, getSettings, recordTi
       active = null;
       lastEl = null;
       lastSig = "";
+      follow(null);
       hide();
       return;
     }
@@ -1875,11 +1909,41 @@ function installLiteCaret({ doc, win, measurer, lifecycle, getSettings, recordTi
     active = null;
     lastEl = null;
     lastSig = "";
+    follow(null);
     hide();
   };
+  const remeasureFollowed = () => {
+    if (disposed || composing || !followed || documentRef.activeElement !== followed) return;
+    measureAndApply(followed, false);
+  };
+  const onHostResize = (entries) => {
+    if (disposed || composing || !followed) return;
+    let entry = null;
+    for (const item of entries || []) if (item?.target === followed) entry = item;
+    if (!entry) return;
+    const size = entry.borderBoxSize?.[0] || entry.borderBoxSize;
+    const box = followedBox;
+    const widthSame = !!(size && box) && sameSize(size.inlineSize, box.width);
+    if (widthSame && sameSize(size.blockSize, box.height)) return;
+    if (!widthSame) measurer.invalidate?.();
+    remeasureFollowed();
+  };
+  const RO = resizeObserverClass(windowRef);
+  if (RO) {
+    try {
+      resizeObserver = new RO(onHostResize);
+    } catch {
+      resizeObserver = null;
+    }
+  }
   const onInput = (event) => {
     if (composing) return;
     measureAndApply(event?.target || documentRef.activeElement, true);
+    if (resizeObserver || followRaf || typeof windowRef.requestAnimationFrame !== "function") return;
+    followRaf = windowRef.requestAnimationFrame(() => {
+      followRaf = 0;
+      remeasureFollowed();
+    });
   };
   const onCompositionStart = (event) => {
     const target = event?.target || documentRef.activeElement;
@@ -1966,6 +2030,7 @@ function installLiteCaret({ doc, win, measurer, lifecycle, getSettings, recordTi
           active = null;
           lastEl = null;
           lastSig = "";
+          follow(null);
           hide();
         }
         return;
@@ -2005,6 +2070,17 @@ function installLiteCaret({ doc, win, measurer, lifecycle, getSettings, recordTi
       windowRef.cancelAnimationFrame?.(scrollRaf);
       scrollRaf = 0;
     }
+    if (followRaf) {
+      windowRef.cancelAnimationFrame?.(followRaf);
+      followRaf = 0;
+    }
+    try {
+      resizeObserver?.disconnect();
+    } catch {
+    }
+    resizeObserver = null;
+    followed = null;
+    followedBox = null;
     try {
       paletteObserver?.disconnect();
     } catch {
@@ -2412,7 +2488,7 @@ function renderStudio(root, ctl) {
 }
 
 // src/extension.js
-var VERSION = "0.5.1";
+var VERSION = "0.5.2";
 var CANVAS_Z_INDEX = 40;
 var VERSION_FLAG = "__ROAM_CURSOR_SMITH_VERSION";
 var DIAG_FLAG = "__ROAM_CARET_DIAG";

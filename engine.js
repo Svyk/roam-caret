@@ -1,4 +1,4 @@
-/* Roam Caret v0.5.1 | MIT | generated; edit src/ */
+/* Roam Caret v0.5.2 | MIT | generated; edit src/ */
 
 // src/cursor-smith.js
 var __defProp = Object.defineProperty;
