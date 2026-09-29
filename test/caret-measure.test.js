@@ -4,6 +4,7 @@ import test from "node:test";
 import {
   createCaretMeasurer,
   isSkippedHost,
+  isTextTarget,
   projectCaretRect,
 } from "../src/caret-measure.js";
 
@@ -401,4 +402,11 @@ test("Find or Create: an empty field puts the caret after the icon, centred on t
   assert.equal(typed.x, 400 + 30 + 3 * 7);
   assert.equal(typed.y, rect.y, "typing does not move the caret off the line");
   measurer.dispose();
+});
+
+test("isTextTarget excludes input types without a selection API in Chrome", () => {
+  const input = (type) => ({ tagName: "INPUT", getAttribute: () => type });
+  for (const type of ["number", "email", "checkbox", "date"]) assert.equal(isTextTarget(input(type)), false, type);
+  for (const type of ["text", "search", "url", "tel"]) assert.equal(isTextTarget(input(type)), true, type);
+  assert.equal(isTextTarget({ tagName: "TEXTAREA" }), true);
 });

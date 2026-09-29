@@ -2,7 +2,7 @@
 
 body.cs-active.cs-hide-native .cs-demo { caret-color: transparent !important; }
 
-.cs-demo { caret-color: transparent !important; }
+body.cs-active .cs-demo { caret-color: transparent !important; }
 .cs-demo-wrap { width: 100%; min-width: 160px; }
 .cs-demo {
   display: block;

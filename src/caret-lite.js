@@ -27,9 +27,10 @@ const STUDIO_SELECTOR = ".cs-studio";
 export const STUDIO_OPEN_CLASS = "cs-studio-open";
 // Roam's Settings dialog, Roam Depot tabs included.
 const PANEL_SELECTOR = `${STUDIO_SELECTOR}, .rm-settings, .rm-modal-dialog--settings`;
-// Blueprint sets this on <body> only while a modal with a backdrop is open.
+// Blueprint sets this on <body> only while a modal with a backdrop is open,
+// so it says a modal is open, never that a field sits inside one.
 const MODAL_OPEN_CLASS = "bp3-overlay-open";
-const IN_MODAL_SELECTOR = `.${MODAL_OPEN_CLASS}, ${IN_PALETTE_SELECTOR}`;
+const IN_MODAL_SELECTOR = `.bp3-overlay-content, .bp3-dialog, ${IN_PALETTE_SELECTOR}`;
 
 function isDemo(el) {
   return String(el?.className || "").split(/\s+/).includes("cs-demo");
@@ -470,6 +471,7 @@ export function installLiteCaret({ doc, win, measurer, lifecycle, getSettings, r
 
   const hide = () => {
     writeStyle("display", "none");
+    stopBlink();
     restoreNativeCaret();
   };
 
@@ -710,6 +712,39 @@ export function installLiteCaret({ doc, win, measurer, lifecycle, getSettings, r
 
   let composing = false;
 
+  // The overlay is hidden while composing, so the browser caret has to show:
+  // an inline !important value beats the stylesheet's transparent rule.
+  let composeEl = null;
+  let composePrev = null;
+
+  const restoreComposeCaret = () => {
+    const el = composeEl;
+    if (!el) return;
+    const prev = composePrev;
+    composeEl = null;
+    composePrev = null;
+    try {
+      if (prev) el.style.setProperty("caret-color", prev.value, prev.priority);
+      else el.style.removeProperty("caret-color");
+    } catch {
+    }
+  };
+
+  const showComposeCaret = (el) => {
+    const color = caretColor();
+    if (!color || el === composeEl) return;
+    restoreComposeCaret();
+    try {
+      const st = el.style;
+      const value = st.getPropertyValue("caret-color");
+      composePrev = value ? { value, priority: st.getPropertyPriority("caret-color") } : null;
+      st.setProperty("caret-color", selectionColor(color), "important");
+      composeEl = el;
+    } catch {
+      composePrev = null;
+    }
+  };
+
   // One ResizeObserver on the focused host. A host that changes size after
   // the key (Chief of Staff autosize) or after focus (Find or Create widening)
   // is measured once more against its new box.
@@ -735,6 +770,7 @@ export function installLiteCaret({ doc, win, measurer, lifecycle, getSettings, r
     follow(null);
     stopSettle();
     hide();
+    restoreComposeCaret();
     selection.clear();
   };
 
@@ -749,6 +785,7 @@ export function installLiteCaret({ doc, win, measurer, lifecycle, getSettings, r
     const target = el || documentRef.activeElement;
     if (!target || target.isConnected === false || !isCaretHost(target)) {
       follow(null);
+      stopSettle();
       hide();
       selection.clear();
       rememberTarget(target);
@@ -756,12 +793,14 @@ export function installLiteCaret({ doc, win, measurer, lifecycle, getSettings, r
     }
     if (coveredByPanel(target, documentRef)) {
       follow(null);
+      stopSettle();
       hide();
       rememberTarget(target);
       return;
     }
     const color = caretColor();
     if (hasRangeSelection(target)) {
+      stopSettle();
       hide();
       const last = measurer.latest?.();
       selection.paint(target, selectionColor(color), last?.el === target ? last.color || "" : "");
@@ -833,6 +872,8 @@ export function installLiteCaret({ doc, win, measurer, lifecycle, getSettings, r
 
   const onFocusIn = (event) => {
     const target = event?.target;
+    composing = false;
+    restoreComposeCaret();
     layerFor = null;
     paletteFor = null;
     paletteOpen = readPaletteOpen();
@@ -846,6 +887,8 @@ export function installLiteCaret({ doc, win, measurer, lifecycle, getSettings, r
 
   const onFocusOut = (event) => {
     const target = event?.target;
+    composing = false;
+    restoreComposeCaret();
     if (target && target === nativeHiddenEl) restoreNativeCaret();
     const next = event?.relatedTarget || documentRef.activeElement;
     if (target && target === selection.host && next !== target) selection.clear();
@@ -943,11 +986,13 @@ export function installLiteCaret({ doc, win, measurer, lifecycle, getSettings, r
     if (!target || (!isCaretHost(target) && target !== active)) return;
     composing = true;
     hide();
+    showComposeCaret(target);
   };
 
   const onCompositionEnd = () => {
     if (!composing) return;
     composing = false;
+    restoreComposeCaret();
     schedule(true);
   };
 
@@ -1129,6 +1174,7 @@ export function installLiteCaret({ doc, win, measurer, lifecycle, getSettings, r
     visualViewport?.removeEventListener?.("resize", onScrollOrResize, PASSIVE_OPTS);
     motionQuery?.removeEventListener?.("change", onMotionChange);
     restoreNativeCaret();
+    restoreComposeCaret();
     selection.clear();
     overlay.remove();
     active = null;

@@ -48,6 +48,8 @@ function caretCoords(e) {
     })(),
     actualCharWidth: charWidth,
     char: rect.glyph || "",
+    pos: rect.pos ?? null,
+    el: rect.el || null,
     textColor: rect.color || "#ffffff",
     fontSize: parseFloat(rect.fontSize) || 14,
     fontFamily: rect.fontFamily || "inherit",
@@ -79,7 +81,7 @@ __name(releaseHostCaret, "releaseHostCaret");
  */
 function syncHostCaret(e, host) {
   let target = null;
-  if (host && e._caretSource === "generic" && e.lastActive && isTextCaretHost(host)) {
+  if (host && e.settings.hideNativeCaret !== false && e.lastActive && isTextCaretHost(host)) {
     const type = host.tagName === "INPUT" ? String(host.type || "").toLowerCase() : "";
     const isCmdpal = !!host.closest?.(".cmdpal--dialog, .rm-command-palette, .bp3-dialog, .rm-find-or-create-wrapper");
     if (type !== "password" && !isCmdpal) target = host;
@@ -218,6 +220,19 @@ function blinkAlphaAt(nowMs, speed, onOffBalance = 0.5) {
   return easeInOutSine((phase - p3) / fade);
 }
 __name(blinkAlphaAt, "blinkAlphaAt");
+function blinkWakeMs(nowMs, speed, onOffBalance = 0.5) {
+  if (speed <= 0) return 0;
+  const period = 2500 / speed;
+  const phase = nowMs % period / period;
+  const fade = 0.15;
+  const balance = Math.max(0.1, Math.min(0.9, onOffBalance));
+  const hold = 1 - fade * 2;
+  const p1 = hold * balance;
+  const p3 = p1 + fade + hold * (1 - balance);
+  const next = phase < p1 ? p1 : phase < p3 ? p3 : 1;
+  return Math.max(16, Math.ceil((next - phase) * period) + 4);
+}
+__name(blinkWakeMs, "blinkWakeMs");
 function heatColor(heat, baseHex) {
   const h2 = Math.max(0, Math.min(1, heat));
   const [br, bg, bb] = hexToRgbTuple(baseHex);
@@ -1412,7 +1427,7 @@ function getCaretClipRect(e, doc) {
   return { top, bottom, left, right, width: right - left, height: bottom - top };
 }
 __name(getCaretClipRect, "getCaretClipRect");
-function currentClipRect(e, _fromThymerCaret) {
+function currentClipRect(e) {
   const doc = e._doc || document;
   return getCaretClipRect(e, doc) || getFullViewportRect(e, doc);
 }
@@ -1802,7 +1817,6 @@ var CursorEngine = class {
     this._clipChain = [];
     this._chromeCache = null;
     this._modalOpen = false;
-    this._caretSource = "generic";
     this._rowType = "text";
     this._selectionActive = false;
     this._ghost = null;
@@ -1883,7 +1897,15 @@ var CursorEngine = class {
     let active = false;
     try {
       const sel = (doc.defaultView || window).getSelection();
-      active = !!(sel && !sel.isCollapsed && String(sel).length > 0);
+      if (sel && sel.isCollapsed) {
+        this._selKey = null;
+        this._selectionActive = false;
+        return;
+      }
+      const k = this._selKey;
+      if (sel && k && k.a === sel.anchorNode && k.ao === sel.anchorOffset && k.f === sel.focusNode && k.fo === sel.focusOffset) return;
+      active = !!(sel && String(sel).length > 0);
+      this._selKey = sel ? { a: sel.anchorNode, ao: sel.anchorOffset, f: sel.focusNode, fo: sel.focusOffset } : null;
     } catch {
     }
     this._selectionActive = active;
@@ -1976,7 +1998,7 @@ var CursorEngine = class {
       if (!this.pending) this.lastActive = caret;
       return;
     }
-    if (caret.pos !== null && caret.pos === this.lastActive.pos) {
+    if (caret.pos !== null && caret.pos === this.lastActive.pos && caret.el === this.lastActive.el) {
       const dx = caret.x - this.lastActive.x;
       const dy = caret.top - this.lastActive.top;
       this.lastActive = caret;
@@ -2491,6 +2513,17 @@ var CursorEngine = class {
       if (!this.active) return;
       const plan = nextSchedule(this._canvasGear || "hot");
       if (plan.type === "park") {
+        if (this.settings.blinkingEnabled && this.lastActive && !this._suspendCleared) {
+          const ms = blinkWakeMs(performance.now(), Math.max(0, this.settings.blinkSpeed), this.settings.blinkOnOffBalance ?? 0.5);
+          if (ms > 0) {
+            this._parked = false;
+            this._canvasIdleT = setTimeout(() => {
+              this._canvasIdleT = 0;
+              if (this.active) this.canvasRaf = requestAnimationFrame(tick);
+            }, ms);
+            return;
+          }
+        }
         this._parked = true;
         return;
       }
@@ -2553,7 +2586,7 @@ var CursorEngine = class {
     }
     this._suspendCleared = false;
     ensureCanvas(this);
-    const r = currentClipRect(this, this._caretSource === "thymer");
+    const r = currentClipRect(this);
     if (r) {
       const prev = this._lastWrapperRect;
       this._clipTop = Math.round(r.top);
@@ -2701,6 +2734,7 @@ export {
   drawBeamCaret,
   getCaretClipRect,
   nextSchedule,
+  blinkWakeMs,
   isTextCaretHost,
   hexToRgba,
 };

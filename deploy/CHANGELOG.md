@@ -4,6 +4,25 @@ All notable changes to this project follow [Keep a Changelog](https://keepachang
 
 ## [Unreleased]
 
+## [0.6.5] - 2026-09-28
+
+### Fixed
+- Canvas effects load when installed from Roam Depot. The engine was a second file loaded by a relative import, which Depot cannot serve. It is now inside `extension.js` and still starts only when an effect needs it.
+- Canvas effects fire again. Every caret move was treated as the field moving, so trail, flame, thunderstrike, pop letters, move delay, typing blink-hold and newline snap never ran, and Smooth jumped instead of easing.
+- The canvas caret keeps blinking when idle. After about a second without input the loop stopped during a blink hold, leaving the caret stuck invisible or solid.
+- Unloading or suspending Roam Caret while the canvas engine was still loading no longer brings the lite caret back with no way to remove it.
+- A field under a Roam dialog or the command palette no longer draws its caret on top of it.
+- Typing with an input method (Japanese, Chinese, Korean, dead-key accents) shows the caret during composition.
+- Number and email fields keep the browser's own caret; the custom one could not follow their cursor.
+- The Settings preview keeps a caret while Roam Caret is disabled.
+- In canvas mode, **Hide Roam's caret** off now leaves Roam's caret visible.
+
+### Changed
+- The hidden lite caret stops its blink animation, so reading costs no idle frames.
+- Canvas mode measures once per frame while typing instead of on every input, selection and key event.
+- Drag-selecting text no longer keeps the position follow running.
+- README: install from Roam Depot, a settings table, and the Studio effects list.
+
 ## [0.6.4] - 2026-09-28
 
 ### Fixed

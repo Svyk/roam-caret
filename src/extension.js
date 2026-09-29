@@ -34,7 +34,7 @@ import {
 } from "./cursor-smith.js";
 import { renderStudio, STUDIO_CSS } from "./studio.js";
 
-export const VERSION = "0.6.4";
+export const VERSION = "0.6.5";
 const CANVAS_Z_INDEX = 40; // PROVISIONAL
 const VERSION_FLAG = "__ROAM_CURSOR_SMITH_VERSION";
 const DIAG_FLAG = "__ROAM_CARET_DIAG";
@@ -300,13 +300,25 @@ class CursorSmithRuntime {
       } catch {
       }
     };
+    const win = document.defaultView || globalThis;
+    // Typing bursts (input, selectionchange, keyup) share one frame.
+    const schedule = () => {
+      if (this._pumpFrame != null) return;
+      if (typeof win.requestAnimationFrame !== "function") {
+        pump();
+        return;
+      }
+      this._pumpFrame = win.requestAnimationFrame(() => {
+        this._pumpFrame = null;
+        pump();
+      });
+    };
     this._pumpInstalled = true;
     this._pump = pump;
     this._bindPumpListener(document, "focusin", pump, true);
-    this._bindPumpListener(document, "input", pump, true);
-    this._bindPumpListener(document, "selectionchange", pump, false);
-    this._bindPumpListener(document, "keyup", pump, true);
-    const win = document.defaultView || globalThis;
+    this._bindPumpListener(document, "input", schedule, true);
+    this._bindPumpListener(document, "selectionchange", schedule, false);
+    this._bindPumpListener(document, "keyup", schedule, true);
     if (typeof win?.addEventListener === "function") {
       this._bindPumpListener(win, "scroll", pump, true);
       this._bindPumpListener(win, "resize", pump, false);
@@ -322,12 +334,19 @@ class CursorSmithRuntime {
       }
     }
     this._pumpListeners = [];
+    if (this._pumpFrame != null) {
+      try {
+        (document.defaultView || globalThis).cancelAnimationFrame?.(this._pumpFrame);
+      } catch {
+      }
+      this._pumpFrame = null;
+    }
     this._pumpInstalled = false;
     this._pump = null;
   }
 
   startLite() {
-    if (this.mobile || !this._settings.enabled || this._lite || !canStartLite()) return;
+    if (this.lifecycle.disposed || this._suspended || this.mobile || !this._settings.enabled || this._lite || !canStartLite()) return;
     this.ensureMeasurer();
     if (!this._measurer) return;
     try {
@@ -361,7 +380,7 @@ class CursorSmithRuntime {
   }
 
   startNative() {
-    if (this.mobile || !this._settings.enabled || this._native || !canStartLite()) return;
+    if (this.lifecycle.disposed || this._suspended || this.mobile || !this._settings.enabled || this._native || !canStartLite()) return;
     try {
       this._native = installNativeCaret({
         doc: document,
@@ -482,8 +501,13 @@ class CursorSmithRuntime {
       this.stopLite();
       this.stopNative();
       if (!this._engine) {
-        this._engineStart = this.startEngine().then((ok) => {
-          if (!ok && needsCanvas(this._settings) && !this._engine) {
+        const start = this.startEngine();
+        const ticket = this._engineTicket;
+        this._engineStart = start.then((ok) => {
+          if (
+            !ok && needsCanvas(this._settings) && !this._engine
+            && ticket === this._engineTicket && !this.lifecycle.disposed && !this._suspended
+          ) {
             this._mode = "lite";
             this.startLite();
           }

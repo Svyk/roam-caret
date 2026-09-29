@@ -4,15 +4,30 @@ Lite CSS caret for Roam Research. Canvas only when an effect needs it. A plain L
 
 Saved options use a JSON blob (`options`) as source of truth; selected fields mirror to `cs-*` keys for Roam Depot. Roam Grid and Plexus diagram textareas (`.rg-root`, `.pxd-root`) keep the native caret.
 
-## Install and update
+## Install
 
-Standing path is GitHub Pages. In Roam: **Settings → Roam Depot → Developer mode → Developer Extensions → URL**. Enter:
+In Roam: **Settings → Roam Depot → Browse**, search for **Roam Caret**, and install. Settings are under **Settings → Roam Depot → Roam Caret**.
 
-`https://svyk.github.io/roam-caret`
+## Settings
 
-Include `https://`. Do not append `/extension.js`. Confirm `/README.md` and `/extension.js` both resolve publicly.
+| Setting | What it does |
+|---|---|
+| Enabled | Turns the custom caret on or off. Off restores Roam's own caret. |
+| Look | A built-in look, a saved style, or Custom. |
+| Styles / Save as | Your saved and imported styles. See [Styles](#styles). |
+| Shape | Line, Beam, Box or Underline. |
+| Color (light) / Color (dark) | Caret colour for each Roam theme. Dark is used when Roam is dark, not when only the OS is. |
+| Width (px) | Line and Beam width. |
+| Glow | Soft halo around the caret. |
+| Blink | Blink on or off. Speed, balance and delay are in the Studio. |
+| Show letter in Box | Draws the letter under a solid Box caret. |
+| Hide Roam's caret | Hides the browser caret while the custom one shows. |
+| Hide when window unfocused | Hides the caret when Roam is not the focused window. |
+| Copy share code / Share code to import / Import | Share a look as a code, or import one. |
+| Open Studio | Every option with a live preview. |
+| Preview | A field to try the current look. |
 
-Developer extensions are per client, not graph-synced. After a push to `main`, wait for Pages, then `Ctrl-D` then `Ctrl-R`. If `window.__ROAM_CURSOR_SMITH_VERSION` stays old, remove that exact URL entry and re-add it. Do not graph-hard-reload.
+The **Studio** adds the canvas effects: smooth movement, smear, trail, flame trail, pop letters, backspace disintegrate, thunderstrike on Enter, stardust, speed sparks, energy, CRT, torch overlay, idle fade, selection colour, row tint, ghost caret, combo, screen shake and typing sounds, plus gradient colours and blink timing. Canvas mode loads only when one of these is on.
 
 ## Example share code
 
@@ -47,3 +62,7 @@ While a caret field has focus, selected text is highlighted in the caret colour.
 ## License
 
 [MIT](LICENSE).
+
+## Development
+
+`npm ci --ignore-scripts --no-audit --no-fund`, then `npm run check` (build, secret scan, tests, generated-file drift). Source is `src/`; `extension.js` and `extension.css` are generated. To test a build before release, add `https://svyk.github.io/roam-caret` under **Settings → Roam Depot → Developer mode → Developer Extensions → URL** (no `/extension.js`). The running version is `window.__ROAM_CURSOR_SMITH_VERSION`.

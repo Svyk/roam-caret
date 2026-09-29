@@ -6,7 +6,9 @@ import { createCaretMeasurer } from "../src/caret-measure.js";
 import {
   glyphColorOn,
   installLiteCaret,
+  coveredByPanel,
   installNativeCaret,
+  isCaretHost,
   isPlainLine,
 } from "../src/caret-lite.js";
 import { isRoamDark } from "../src/theme.js";
@@ -926,7 +928,7 @@ test("a block left focused under the Studio or Roam's Settings dialog draws noth
   assert.equal(measured, 0, "a covered block is never measured");
 
   body.classList.add("bp3-overlay-open");
-  const dialogField = makeTextarea({ id: "", className: "cs-demo", closest: under("bp3-overlay-open", "rm-settings") });
+  const dialogField = makeTextarea({ id: "", className: "cs-demo", closest: under("bp3-dialog", "rm-settings") });
   doc.activeElement = dialogField;
   listeners.get("focusin")({ target: dialogField });
   assert.notEqual(lite.overlay.style.display, "none", "a field inside the open dialog draws");
@@ -1948,4 +1950,141 @@ test("a transition on an ancestor or a modifier hotkey follows the host again af
   raf.flush();
   assert.deepEqual(translateOf(lite.overlay), { x: 45, y: 205 });
   lite.dispose();
+});
+
+test("hide() stops the blink; the next paint restarts it", () => {
+  const { lite, listeners, textarea, win } = installHarness({}, {}, { blinkingEnabled: true });
+  listeners.get("focusin")({ target: textarea });
+  const [anim] = lite.overlay._animations;
+  assert.equal(anim.cancelled, 0);
+  win.prefersDark = false;
+  listeners.get("blur")();
+  assert.equal(lite.overlay.style.display, "none");
+  assert.equal(anim.cancelled, 1, "no WAAPI blink ticking on a hidden overlay");
+  listeners.get("focus")();
+  assert.equal(anim.played, 1, "the next paint plays it again");
+  assert.equal(lite.overlay._animations.length, 1);
+});
+
+// A closest() that walks a real ancestor chain, matching each comma part as a
+// single class selector.
+function chainNode(classes, parent = null, extras = {}) {
+  const node = {
+    classes,
+    parent,
+    closest(sel) {
+      const wanted = sel.split(",").map((part) => part.trim().replace(/^\./, ""));
+      for (let cur = node; cur; cur = cur.parent) if (cur.classes.some((c) => wanted.includes(c))) return cur;
+      return null;
+    },
+    ...extras,
+  };
+  return node;
+}
+
+test("coveredByPanel: body.bp3-overlay-open does not cover a field inside the dialog", () => {
+  const body = { classes: ["bp3-overlay-open"], parent: null };
+  body.closest = chainNode(["bp3-overlay-open"]).closest.bind(body);
+  const doc = { body: { classList: makeClassList() } };
+  doc.body.classList.add("bp3-overlay-open");
+
+  const outside = chainNode(["rm-block-input"], chainNode(["roam-article"], body));
+  const inside = chainNode(["rm-input"], chainNode(["bp3-dialog"], chainNode(["bp3-overlay-content"], body)));
+  assert.equal(coveredByPanel(outside, doc), true, "a block outside the dialog is covered");
+  assert.equal(coveredByPanel(inside, doc), false, "a field inside the dialog is not");
+  const palette = chainNode(["rm-command-palette"], body);
+  assert.equal(coveredByPanel(palette, doc), false, "the palette is not covered");
+});
+
+test("IME composition shows the browser caret with an inline !important colour and restores it", () => {
+  const style = makeStyle({ "caret-color": "red" });
+  const { lite, listeners, textarea } = installHarness({}, { style });
+  listeners.get("focusin")({ target: textarea });
+  assert.equal(style.getPropertyValue("caret-color"), "transparent", "overlay shows: native hidden");
+
+  listeners.get("compositionstart")({ target: textarea });
+  assert.equal(style.getPropertyValue("caret-color"), "#333333");
+  assert.equal(style.getPropertyPriority("caret-color"), "important");
+
+  listeners.get("compositionend")({ target: textarea });
+  assert.equal(style.getPropertyValue("caret-color"), "transparent", "overlay repainted");
+  assert.equal(lite.overlay.style.display, "");
+});
+
+test("IME caret colour is restored on focusout, release and dispose, and composing resets", () => {
+  for (const how of ["focusout", "dispose"]) {
+    const style = makeStyle({ "caret-color": "red" });
+    const { lite, doc, listeners, textarea, measurer } = installHarness({}, { style });
+    listeners.get("focusin")({ target: textarea });
+    listeners.get("compositionstart")({ target: textarea });
+    assert.equal(style.getPropertyValue("caret-color"), "#333333", how);
+    if (how === "focusout") {
+      doc.activeElement = null;
+      listeners.get("focusout")({ target: textarea, relatedTarget: null });
+    } else lite.dispose();
+    assert.equal(style.getPropertyValue("caret-color"), "red", how);
+    assert.equal(style.getPropertyPriority("caret-color"), "", how);
+    if (how === "focusout") {
+      let measured = 0;
+      const base = measurer.measure.bind(measurer);
+      measurer.measure = (el) => {
+        measured += 1;
+        return base(el);
+      };
+      doc.activeElement = textarea;
+      listeners.get("focusin")({ target: textarea });
+      listeners.get("input")({ target: textarea });
+      assert.ok(measured > 0, "composing was reset by focusout, typing measures again");
+    }
+  }
+  const style = makeStyle();
+  const { doc, listeners, textarea } = installHarness({}, { style });
+  listeners.get("focusin")({ target: textarea });
+  listeners.get("compositionstart")({ target: textarea });
+  const other = makeInput();
+  doc.activeElement = other;
+  listeners.get("focusin")({ target: other });
+  assert.equal(style.getPropertyValue("caret-color"), "", "release/focusin restores an unset value");
+});
+
+test("isCaretHost: inputs without selection APIs keep the browser caret", () => {
+  for (const type of ["number", "email", "checkbox", "date"]) {
+    assert.equal(isCaretHost(makeInput({ type })), false, type);
+  }
+  for (const type of ["text", "search", "url", "tel"]) {
+    assert.equal(isCaretHost(makeInput({ type })), true, type);
+  }
+});
+
+test("a range selection, or a covered or non-host field, stops the settle loop", () => {
+  const { doc, win, body, listeners, textarea } = installHarness();
+  const raf = rafQueue(win);
+  listeners.get("focusin")({ target: textarea });
+  raf.flush();
+  assert.ok(raf.frames.length > 0, "settle is running after focus");
+
+  textarea.selectionStart = 0;
+  textarea.selectionEnd = 3;
+  listeners.get("selectionchange")({ target: textarea });
+  raf.flush();
+  assert.equal(raf.frames.length, 0, "range selection: no further frames");
+
+  textarea.selectionEnd = 0;
+  listeners.get("focusin")({ target: textarea });
+  raf.flush();
+  assert.ok(raf.frames.length > 0);
+  body.classList.add("bp3-overlay-open");
+  listeners.get("input")({ target: textarea });
+  raf.flush();
+  assert.equal(raf.frames.length, 0, "covered: no further frames");
+  body.classList.remove("bp3-overlay-open");
+
+  listeners.get("focusin")({ target: textarea });
+  raf.flush();
+  assert.ok(raf.frames.length > 0);
+  const number = makeInput({ type: "number" });
+  doc.activeElement = number;
+  listeners.get("input")({ target: number });
+  raf.flush();
+  assert.equal(raf.frames.length, 0, "not a host: no further frames");
 });

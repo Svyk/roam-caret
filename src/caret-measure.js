@@ -32,7 +32,7 @@ export function isTextTarget(element) {
   if (element.tagName === "TEXTAREA") return true;
   if (element.tagName !== "INPUT") return false;
   const type = (element.getAttribute?.("type") || "text").toLowerCase();
-  return ["text", "search", "url", "tel", "email", "number"].includes(type);
+  return ["text", "search", "url", "tel"].includes(type);
 }
 
 export function isSkippedHost(el) {
@@ -336,6 +336,7 @@ export function createCaretMeasurer({ doc, win, lifecycle } = {}) {
       color: metrics.color,
       box,
       el,
+      pos: start,
     };
     latestRect = rect;
     notify(rect);

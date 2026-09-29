@@ -7,7 +7,7 @@ import { pathToFileURL, fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 import test from "node:test";
 
-import { bundleEntry, externalCursorEngine, verifyGeneratedArtifacts } from "../build.mjs";
+import { bundleEntry, verifyGeneratedArtifacts } from "../build.mjs";
 
 const run = promisify(execFile);
 const root = new URL("../", import.meta.url);
@@ -41,29 +41,26 @@ test("build emits deterministic, matching browser ESM artifacts with a default e
   const rebuilt = await bundleEntry({
     rootDirectory: rootPath,
     banner: `/* Roam Caret v${packageMetadata.version} | MIT | generated; edit src/ */`,
-    plugins: [externalCursorEngine],
   });
   assert.equal(rebuilt, rootJs);
 
   await run(process.execPath, ["--check", resolve(rootPath, "extension.js")]);
-  await run(process.execPath, ["--check", resolve(rootPath, "engine.js")]);
   const loaded = await import(`${pathToFileURL(resolve(rootPath, "extension.js")).href}?test=${Date.now()}`);
   assert.equal(typeof loaded.default.onload, "function");
   assert.equal(typeof loaded.default.onunload, "function");
 
-  assert.doesNotMatch(rootJs, /drawBeamCaret/);
-  assert.doesNotMatch(rootJs, /class CursorEngine/);
-
-  const [rootEngine, pagesEngine] = await Promise.all([
-    readFile(new URL("../engine.js", import.meta.url), "utf8"),
-    readFile(new URL("../deploy/engine.js", import.meta.url), "utf8"),
-  ]);
-  assert.equal(pagesEngine, rootEngine);
-  assert.match(rootEngine, /drawBeamCaret/);
-  assert.match(rootEngine, /CursorEngine/);
+  // Depot evals extension.js with no URL: a relative import cannot resolve there.
+  assert.doesNotMatch(rootJs, /import\(\s*["'`]\.{1,2}\//);
+  assert.doesNotMatch(rootJs, /^import\s/m);
+  // The engine is inlined as a lazily initialised module, not run at load.
+  assert.match(rootJs, /var init_cursor_engine = __esm\(/);
+  assert.match(rootJs, /init_cursor_engine\(\), cursor_engine_exports/);
+  assert.match(rootJs, /drawBeamCaret/);
+  await assert.rejects(access(new URL("../engine.js", import.meta.url)));
+  await assert.rejects(access(new URL("../deploy/engine.js", import.meta.url)));
 
   const { size } = await stat(new URL("../extension.js", import.meta.url));
-  assert.ok(size < 200_000, `extension.js is ${size} bytes (expected < 200000)`);
+  assert.ok(size < 400_000, `extension.js is ${size} bytes (expected < 400000)`);
 });
 
 test("esbuild bundles legitimate relative source modules", async () => {
@@ -128,7 +125,7 @@ test("build.sh performs a clean locked install and builds from another working d
       cwd: elsewhere,
       timeout: 60_000,
     });
-    assert.match(stdout, /Built extension\.js, engine\.js/);
+    assert.match(stdout, /Built extension\.js, extension\.css/);
     await access(resolve(checkout, "node_modules/esbuild/package.json"));
     await verifyGeneratedArtifacts(checkout);
   } finally {

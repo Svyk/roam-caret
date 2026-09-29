@@ -1162,3 +1162,73 @@ test("canvas pump: no caret field, or a block under the Studio, clears the last 
     await cleanup();
   }
 });
+
+test("unload while the engine import is pending starts no lite caret and leaves no body classes", async () => {
+  installMinimalDom();
+  const api = fakeExtensionApi();
+  await extension.onload({ extensionAPI: api, extension: { version: VERSION } });
+  const runtime = getRuntime();
+  runtime._set({ smear: true });
+  const pending = runtime._engineStart;
+  // Unload cancels the pending start synchronously (ticket bump) before the async dispose finishes.
+  runtime.stopEngine();
+  await extension.onunload();
+  const ok = await pending;
+  assert.equal(ok, false);
+  assert.equal(runtime._lite, null);
+  assert.equal(runtime._native, null);
+  assert.equal(runtime._engine, null);
+  assert.equal(document._docListeners.length, 0);
+  assert.equal(document.body.classList.contains(BODY_ACTIVE_CLASS), false);
+  assert.equal(document.body.classList.contains(BODY_HIDE_NATIVE_CLASS), false);
+  runtime.startLite();
+  runtime.startNative();
+  assert.equal(runtime._lite, null, "startLite is a no-op after dispose");
+  assert.equal(runtime._native, null);
+});
+
+test("startLite and startNative do nothing while suspended", async () => {
+  installMinimalDom();
+  const api = fakeExtensionApi();
+  const cleanup = await extension.onload({ extensionAPI: api, extension: { version: VERSION } });
+  const runtime = getRuntime();
+  runtime.suspend();
+  runtime.startLite();
+  runtime.startNative();
+  assert.equal(runtime._lite, null);
+  assert.equal(runtime._native, null);
+  assert.equal(document.body.classList.contains(BODY_ACTIVE_CLASS), false);
+  await cleanup();
+});
+
+test("canvas pump coalesces input, selectionchange and keyup into one frame", async () => {
+  installMinimalDom();
+  const api = fakeExtensionApi();
+  const cleanup = await extension.onload({ extensionAPI: api, extension: { version: VERSION } });
+  const runtime = getRuntime();
+  const savedRaf = globalThis.requestAnimationFrame;
+  const frames = [];
+  globalThis.requestAnimationFrame = (fn) => frames.push(fn);
+  const block = styledBlock();
+  try {
+    runtime.ensureMeasurer();
+    runtime.ensurePump();
+    document.activeElement = block;
+    const before = runtime._measureCount;
+    const fire = (type) => {
+      for (const l of runtime._pumpListeners) if (l.type === type) l.fn({ type });
+    };
+    for (const type of ["input", "selectionchange", "keyup"]) fire(type);
+    assert.equal(runtime._measureCount, before, "no measure during dispatch");
+    assert.equal(frames.length, 1, "one frame for the burst");
+    frames.shift()();
+    assert.equal(runtime._measureCount, before + 1, "one measure after the frame");
+    fire("input");
+    assert.equal(frames.length, 1, "a later burst schedules a new frame");
+  } finally {
+    globalThis.requestAnimationFrame = savedRaf;
+    document.activeElement = document.body;
+    runtime.stopPump();
+    await cleanup();
+  }
+});
