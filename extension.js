@@ -1,4 +1,4 @@
-/* Roam Caret v0.6.3 | MIT | generated; edit src/ */
+/* Roam Caret v0.6.4 | MIT | generated; edit src/ */
 
 // src/lifecycle.js
 function isPromiseLike(value) {
@@ -1940,6 +1940,9 @@ var COMMAND_PALETTE_SELECTOR = `.${COMMAND_PALETTE_CLASS}`;
 var PALETTE_PORTAL_CLASS = "rm-modal-portal--command-palette";
 var IN_PALETTE_SELECTOR = `${COMMAND_PALETTE_SELECTOR}, .${PALETTE_PORTAL_CLASS}`;
 var CARET_BOX_MARGIN_PX = 8;
+var SETTLE_STABLE_FRAMES = 4;
+var SETTLE_MAX_MS = 1e3;
+var MOVING_KEYS = /* @__PURE__ */ new Set(["Alt", "Control", "Meta", "Enter", "Escape"]);
 var BASE_Z_INDEX = 40;
 var DEMO_CLASS = "cs-lite-demo";
 var SELECTION_CLASS = "cs-sel";
@@ -2202,6 +2205,7 @@ function installLiteCaret({ doc, win, measurer, lifecycle, getSettings, recordTi
   let lastSig = "";
   let frame = 0;
   let framePing = false;
+  let dirty = false;
   const readPaletteOpen = () => !!documentRef.querySelector?.(COMMAND_PALETTE_SELECTOR);
   let paletteOpen = readPaletteOpen();
   const perf = windowRef?.performance || globalThis.performance;
@@ -2526,6 +2530,7 @@ function installLiteCaret({ doc, win, measurer, lifecycle, getSettings, recordTi
     lastEl = null;
     lastSig = "";
     follow(null);
+    stopSettle();
     hide();
     selection.clear();
   };
@@ -2577,19 +2582,27 @@ function installLiteCaret({ doc, win, measurer, lifecycle, getSettings, recordTi
   const flush = () => {
     frame = 0;
     const ping = framePing;
+    const wasDirty = dirty;
     framePing = false;
+    dirty = false;
     if (disposed || composing) return;
-    measureAndApply(documentRef.activeElement, ping);
+    if (wasDirty) measureAndApply(documentRef.activeElement, ping);
+    else settleCheck();
+    continueSettle();
   };
+  function requestFrame() {
+    frame = windowRef.requestAnimationFrame(flush);
+  }
   const schedule = (ping) => {
     if (disposed) return;
     if (ping) framePing = true;
+    dirty = true;
     if (frame) return;
     if (typeof windowRef.requestAnimationFrame !== "function") {
       flush();
       return;
     }
-    frame = windowRef.requestAnimationFrame(flush);
+    requestFrame();
   };
   const cancelFrame = () => {
     if (!frame) return;
@@ -2599,6 +2612,7 @@ function installLiteCaret({ doc, win, measurer, lifecycle, getSettings, recordTi
     }
     frame = 0;
     framePing = false;
+    dirty = false;
   };
   const onFocusIn = (event) => {
     const target = event?.target;
@@ -2610,6 +2624,7 @@ function installLiteCaret({ doc, win, measurer, lifecycle, getSettings, recordTi
       return;
     }
     schedule(true);
+    settle();
   };
   const onFocusOut = (event) => {
     const target = event?.target;
@@ -2637,6 +2652,44 @@ function installLiteCaret({ doc, win, measurer, lifecycle, getSettings, recordTi
     if (documentRef.activeElement !== followed) return;
     measureAndApply(followed, false);
   };
+  const clock = () => typeof perf?.now === "function" ? perf.now() : Date.now();
+  let settleUntil = 0;
+  let settleStable = 0;
+  const sameBox = (a, b) => !!(a && b) && a.left === b.left && a.top === b.top && a.width === b.width && a.height === b.height;
+  const stopSettle = () => {
+    settleUntil = 0;
+    settleStable = 0;
+  };
+  const settleCheck = () => {
+    if (!followed || documentRef.activeElement !== followed) {
+      stopSettle();
+      return;
+    }
+    if (followed.isConnected === false) {
+      release();
+      return;
+    }
+    if (sameBox(followed.getBoundingClientRect(), followedBox)) {
+      settleStable += 1;
+      return;
+    }
+    settleStable = 0;
+    measureAndApply(followed, false);
+  };
+  const continueSettle = () => {
+    if (!settleUntil || disposed) return;
+    if (!followed || settleStable >= SETTLE_STABLE_FRAMES || clock() > settleUntil) {
+      stopSettle();
+      return;
+    }
+    requestFrame();
+  };
+  const settle = () => {
+    if (disposed || typeof windowRef.requestAnimationFrame !== "function") return;
+    settleUntil = clock() + SETTLE_MAX_MS;
+    settleStable = 0;
+    if (!frame) requestFrame();
+  };
   const RO = resizeObserverClass(windowRef);
   if (RO) {
     try {
@@ -2662,7 +2715,10 @@ function installLiteCaret({ doc, win, measurer, lifecycle, getSettings, recordTi
   };
   const onRefreshEvent = (event) => {
     if (composing) return;
-    if (frame) {
+    if (event?.type === "keyup" && (event.altKey || event.ctrlKey || event.metaKey || MOVING_KEYS.has(event.key))) {
+      settle();
+    }
+    if (frame && dirty) {
       framePing = true;
       return;
     }
@@ -2686,6 +2742,17 @@ function installLiteCaret({ doc, win, measurer, lifecycle, getSettings, recordTi
       if (!contains) return;
     }
     schedule(false);
+  };
+  const onMotionStart = (event) => {
+    const source = event?.target;
+    if (!followed || !source || typeof source.contains !== "function") return;
+    if (source.contains(followed)) settle();
+  };
+  const onPointerMove = (event) => {
+    if (followed && event?.buttons) settle();
+  };
+  const onPointerUp = () => {
+    if (followed) settle();
   };
   const onWindowBlur = () => {
     readSettings();
@@ -2727,6 +2794,7 @@ function installLiteCaret({ doc, win, measurer, lifecycle, getSettings, recordTi
         release();
         return;
       }
+      if (followed) settle();
       if (!changed) return;
       const target = documentRef.activeElement;
       if (!composing && target && isCaretHost(target)) schedule(true);
@@ -2742,7 +2810,11 @@ function installLiteCaret({ doc, win, measurer, lifecycle, getSettings, recordTi
     ["compositionend", onCompositionEnd, true],
     ["selectionchange", onRefreshEvent, false],
     ["keyup", onRefreshEvent, true],
-    ["mouseup", onRefreshEvent, true]
+    ["mouseup", onRefreshEvent, true],
+    ["transitionrun", onMotionStart, true],
+    ["animationstart", onMotionStart, true],
+    ["pointermove", onPointerMove, true],
+    ["pointerup", onPointerUp, true]
   ];
   for (const [type, fn, capture] of docListeners) {
     documentRef.addEventListener(type, fn, capture);
@@ -2760,6 +2832,7 @@ function installLiteCaret({ doc, win, measurer, lifecycle, getSettings, recordTi
     disposed = true;
     composing = false;
     cancelFrame();
+    stopSettle();
     try {
       resizeObserver?.disconnect();
     } catch {
@@ -2807,7 +2880,7 @@ function installLiteCaret({ doc, win, measurer, lifecycle, getSettings, recordTi
 }
 
 // src/extension.js
-var VERSION = "0.6.3";
+var VERSION = "0.6.4";
 var CANVAS_Z_INDEX = 40;
 var VERSION_FLAG = "__ROAM_CURSOR_SMITH_VERSION";
 var DIAG_FLAG = "__ROAM_CARET_DIAG";

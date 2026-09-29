@@ -34,7 +34,7 @@ import {
 } from "./cursor-smith.js";
 import { renderStudio, STUDIO_CSS } from "./studio.js";
 
-export const VERSION = "0.6.3";
+export const VERSION = "0.6.4";
 const CANVAS_Z_INDEX = 40; // PROVISIONAL
 const VERSION_FLAG = "__ROAM_CURSOR_SMITH_VERSION";
 const DIAG_FLAG = "__ROAM_CARET_DIAG";

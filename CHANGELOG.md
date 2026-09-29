@@ -4,6 +4,11 @@ All notable changes to this project follow [Keep a Changelog](https://keepachang
 
 ## [Unreleased]
 
+## [0.6.4] - 2026-09-28
+
+### Fixed
+- The caret no longer stays behind when the field it sits in moves without changing size. The command palette zooms in from half scale, so the caret was measured once at the small first frame and left floating over the list while the field's own caret stayed hidden. A dragged or reflowing Chief of Staff panel, or a hotkey such as Alt-J that shifts the page, did the same. After focus, a palette or panel mount, a transition or animation on the field or a parent, a modifier hotkey, Enter, Escape or a pointer drag, the caret now reads the field's box once per frame until it holds still for four frames, one second at most. Plain typing adds no frame.
+
 ## [0.6.3] - 2026-09-24
 
 ### Fixed

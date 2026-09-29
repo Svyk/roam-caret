@@ -14,6 +14,10 @@ const COMMAND_PALETTE_SELECTOR = `.${COMMAND_PALETTE_CLASS}`;
 const PALETTE_PORTAL_CLASS = "rm-modal-portal--command-palette";
 const IN_PALETTE_SELECTOR = `${COMMAND_PALETTE_SELECTOR}, .${PALETTE_PORTAL_CLASS}`;
 const CARET_BOX_MARGIN_PX = 8;
+const SETTLE_STABLE_FRAMES = 4;
+const SETTLE_MAX_MS = 1000;
+// Keys that commonly move a focused field without typing into it.
+const MOVING_KEYS = new Set(["Alt", "Control", "Meta", "Enter", "Escape"]);
 const BASE_Z_INDEX = 40;
 const DEMO_CLASS = "cs-lite-demo";
 export const SELECTION_CLASS = "cs-sel";
@@ -344,6 +348,7 @@ export function installLiteCaret({ doc, win, measurer, lifecycle, getSettings, r
   let lastSig = "";
   let frame = 0;
   let framePing = false;
+  let dirty = false;
   // One document query per focus change, never per key.
   const readPaletteOpen = () => !!documentRef.querySelector?.(COMMAND_PALETTE_SELECTOR);
   let paletteOpen = readPaletteOpen();
@@ -728,6 +733,7 @@ export function installLiteCaret({ doc, win, measurer, lifecycle, getSettings, r
     lastEl = null;
     lastSig = "";
     follow(null);
+    stopSettle();
     hide();
     selection.clear();
   };
@@ -789,20 +795,29 @@ export function installLiteCaret({ doc, win, measurer, lifecycle, getSettings, r
   const flush = () => {
     frame = 0;
     const ping = framePing;
+    const wasDirty = dirty;
     framePing = false;
+    dirty = false;
     if (disposed || composing) return;
-    measureAndApply(documentRef.activeElement, ping);
+    if (wasDirty) measureAndApply(documentRef.activeElement, ping);
+    else settleCheck();
+    continueSettle();
   };
+
+  function requestFrame() {
+    frame = windowRef.requestAnimationFrame(flush);
+  }
 
   const schedule = (ping) => {
     if (disposed) return;
     if (ping) framePing = true;
+    dirty = true;
     if (frame) return;
     if (typeof windowRef.requestAnimationFrame !== "function") {
       flush();
       return;
     }
-    frame = windowRef.requestAnimationFrame(flush);
+    requestFrame();
   };
 
   const cancelFrame = () => {
@@ -813,6 +828,7 @@ export function installLiteCaret({ doc, win, measurer, lifecycle, getSettings, r
     }
     frame = 0;
     framePing = false;
+    dirty = false;
   };
 
   const onFocusIn = (event) => {
@@ -825,6 +841,7 @@ export function installLiteCaret({ doc, win, measurer, lifecycle, getSettings, r
       return;
     }
     schedule(true);
+    settle();
   };
 
   const onFocusOut = (event) => {
@@ -856,6 +873,55 @@ export function installLiteCaret({ doc, win, measurer, lifecycle, getSettings, r
     if (!widthSame) measurer.invalidate?.();
     if (documentRef.activeElement !== followed) return;
     measureAndApply(followed, false);
+  };
+
+  // A host can move without changing size: Blueprint zooms the palette in
+  // from half scale, a panel is dragged or reflows, a hotkey shifts the page.
+  // No resize, scroll or key event follows, so after anything that can move
+  // it the frame keeps running, one box read each, until the host holds still.
+  const clock = () => (typeof perf?.now === "function" ? perf.now() : Date.now());
+  let settleUntil = 0;
+  let settleStable = 0;
+
+  const sameBox = (a, b) =>
+    !!(a && b) && a.left === b.left && a.top === b.top && a.width === b.width && a.height === b.height;
+
+  const stopSettle = () => {
+    settleUntil = 0;
+    settleStable = 0;
+  };
+
+  const settleCheck = () => {
+    if (!followed || documentRef.activeElement !== followed) {
+      stopSettle();
+      return;
+    }
+    if (followed.isConnected === false) {
+      release();
+      return;
+    }
+    if (sameBox(followed.getBoundingClientRect(), followedBox)) {
+      settleStable += 1;
+      return;
+    }
+    settleStable = 0;
+    measureAndApply(followed, false);
+  };
+
+  const continueSettle = () => {
+    if (!settleUntil || disposed) return;
+    if (!followed || settleStable >= SETTLE_STABLE_FRAMES || clock() > settleUntil) {
+      stopSettle();
+      return;
+    }
+    requestFrame();
+  };
+
+  const settle = () => {
+    if (disposed || typeof windowRef.requestAnimationFrame !== "function") return;
+    settleUntil = clock() + SETTLE_MAX_MS;
+    settleStable = 0;
+    if (!frame) requestFrame();
   };
 
   const RO = resizeObserverClass(windowRef);
@@ -890,7 +956,10 @@ export function installLiteCaret({ doc, win, measurer, lifecycle, getSettings, r
   // The signature is value length and selection: no geometry read.
   const onRefreshEvent = (event) => {
     if (composing) return;
-    if (frame) {
+    if (event?.type === "keyup" && (event.altKey || event.ctrlKey || event.metaKey || MOVING_KEYS.has(event.key))) {
+      settle();
+    }
+    if (frame && dirty) {
       framePing = true;
       return;
     }
@@ -925,6 +994,23 @@ export function installLiteCaret({ doc, win, measurer, lifecycle, getSettings, r
       if (!contains) return;
     }
     schedule(false);
+  };
+
+  // A transition or animation on the host or any ancestor (the palette's
+  // zoom, a sliding panel) can carry the caret with it.
+  const onMotionStart = (event) => {
+    const source = event?.target;
+    if (!followed || !source || typeof source.contains !== "function") return;
+    if (source.contains(followed)) settle();
+  };
+
+  // A drag (panel header, resize grip) moves the host under a held pointer.
+  const onPointerMove = (event) => {
+    if (followed && event?.buttons) settle();
+  };
+
+  const onPointerUp = () => {
+    if (followed) settle();
   };
 
   const onWindowBlur = () => {
@@ -974,6 +1060,7 @@ export function installLiteCaret({ doc, win, measurer, lifecycle, getSettings, r
         release();
         return;
       }
+      if (followed) settle();
       if (!changed) return;
       const target = documentRef.activeElement;
       if (!composing && target && isCaretHost(target)) schedule(true);
@@ -991,6 +1078,10 @@ export function installLiteCaret({ doc, win, measurer, lifecycle, getSettings, r
     ["selectionchange", onRefreshEvent, false],
     ["keyup", onRefreshEvent, true],
     ["mouseup", onRefreshEvent, true],
+    ["transitionrun", onMotionStart, true],
+    ["animationstart", onMotionStart, true],
+    ["pointermove", onPointerMove, true],
+    ["pointerup", onPointerUp, true],
   ];
   for (const [type, fn, capture] of docListeners) {
     documentRef.addEventListener(type, fn, capture);
@@ -1009,6 +1100,7 @@ export function installLiteCaret({ doc, win, measurer, lifecycle, getSettings, r
     disposed = true;
     composing = false;
     cancelFrame();
+    stopSettle();
     try {
       resizeObserver?.disconnect();
     } catch {

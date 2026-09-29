@@ -191,6 +191,15 @@ function rafQueue(win) {
       for (const fn of run) fn();
       return run.length;
     },
+    // Runs frames until the post-focus settle follow stops asking for more.
+    drain(max = 20) {
+      let n = 0;
+      while (frames.length && n < max) {
+        frames.splice(0).forEach((fn) => fn());
+        n += 1;
+      }
+      return n;
+    },
   };
 }
 
@@ -1482,6 +1491,7 @@ test("a Chief of Staff composer that grows after the input handler is measured a
 
   listeners.get("focusin")({ target: composer });
   raf.flush();
+  raf.drain();
   assert.deepEqual(translateOf(lite.overlay), { x: 580 + 8 + 19 * 7, y: 360 + 8 });
   const focusStyleCalls = styleCalls();
 
@@ -1662,6 +1672,7 @@ test("input, keyup and selectionchange read no geometry; five events and one fra
   });
   listeners.get("focusin")({ target: textarea });
   raf.flush();
+  raf.drain();
   assert.equal(measures, 1);
 
   counting = true;
@@ -1869,4 +1880,72 @@ test("selection CSS: one class-keyed rule, no descendant or universal selector",
   assert.equal(selector, ".cs-sel::selection");
   assert.match(rules[0], /background:\s*var\(--cs-selection\)/);
   assert.match(rules[0], /color:\s*var\(--cs-selection-text\)/);
+});
+
+test("a host that moves without resizing (the palette zoom) is followed until it holds still", () => {
+  const box = { left: 714, top: 243, width: 300, height: 20 };
+  const field = makeTextarea({
+    getBoundingClientRect: () => ({ ...box, right: box.left + box.width, bottom: box.top + box.height }),
+  });
+  const { lite, win, doc, listeners, measurer } = installHarness();
+  doc.activeElement = field;
+  measurer.measure = (el) => {
+    const b = el.getBoundingClientRect();
+    return { x: b.left + 5, y: b.top + 5, width: 8, height: b.height / 2, visible: true, glyph: "", box: b };
+  };
+  const raf = rafQueue(win);
+
+  listeners.get("focusin")({ target: field });
+  raf.flush();
+  assert.deepEqual(translateOf(lite.overlay), { x: 719, y: 248 });
+  assert.equal(raf.frames.length, 1, "focus keeps following the box");
+
+  // Blueprint's enter transition: same host, new box, no resize or key event.
+  Object.assign(box, { left: 564, top: 100, width: 600, height: 41 });
+  raf.flush();
+  assert.deepEqual(translateOf(lite.overlay), { x: 569, y: 105 });
+
+  const ran = raf.drain();
+  assert.ok(ran <= 5, `stops once the box holds still (ran ${ran})`);
+  assert.equal(raf.frames.length, 0);
+  lite.dispose();
+});
+
+test("a transition on an ancestor or a modifier hotkey follows the host again after it settled", () => {
+  const box = { left: 100, top: 400, width: 300, height: 40 };
+  const field = makeTextarea({
+    getBoundingClientRect: () => ({ ...box, right: box.left + box.width, bottom: box.top + box.height }),
+  });
+  const { lite, win, doc, listeners, measurer } = installHarness();
+  doc.activeElement = field;
+  measurer.measure = (el) => {
+    const b = el.getBoundingClientRect();
+    return { x: b.left + 5, y: b.top + 5, width: 8, height: 19, visible: true, glyph: "", box: b };
+  };
+  const raf = rafQueue(win);
+  listeners.get("focusin")({ target: field });
+  raf.drain();
+  assert.equal(raf.frames.length, 0);
+
+  const panel = { contains: (node) => node === field };
+  listeners.get("transitionrun")({ target: panel });
+  Object.assign(box, { top: 320 });
+  raf.flush();
+  assert.deepEqual(translateOf(lite.overlay), { x: 105, y: 325 });
+  raf.drain();
+
+  listeners.get("transitionrun")({ target: { contains: () => false } });
+  assert.equal(raf.frames.length, 0, "an unrelated transition asks for no frame");
+
+  listeners.get("keyup")({ type: "keyup", key: "j", altKey: true, target: field });
+  Object.assign(box, { left: 40 });
+  raf.flush();
+  assert.deepEqual(translateOf(lite.overlay), { x: 45, y: 325 });
+  raf.drain();
+
+  listeners.get("pointermove")({ buttons: 1 });
+  Object.assign(box, { top: 200 });
+  raf.flush();
+  assert.deepEqual(translateOf(lite.overlay), { x: 45, y: 205 });
+  lite.dispose();
 });
