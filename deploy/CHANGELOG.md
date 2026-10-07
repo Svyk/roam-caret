@@ -4,6 +4,16 @@ All notable changes to this project follow [Keep a Changelog](https://keepachang
 
 ## [Unreleased]
 
+## [0.6.7] - 2026-10-06
+
+### Fixed
+- Inside a zoomed Plexus card the box shows the character after the caret, or nothing at the end of a line, instead of a ghost letter.
+- The caret height follows the board's zoom (a page card scales with the board; a counter-scaled note editor stays at 1), so it no longer stands a full line taller than the text when zoomed out.
+- A caret at the end of a full line stays on that line instead of dropping to an empty row below.
+
+### Changed
+- The caret hides while the board pans or zooms and paints once when it stops; the first focus in a card pulses it briefly so you can see where it landed.
+
 ## [0.6.6] - 2026-10-06
 
 ### Added
