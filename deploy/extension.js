@@ -725,6 +725,85 @@ function scaledCaretWidth(cssPx, scale, devicePixelRatio) {
   const width = (Number.isFinite(base) ? base : 0) * (Number.isFinite(factor) && factor > 0 ? factor : 1);
   return Math.max(deviceMinPx(devicePixelRatio), width);
 }
+function renderedScale(boxSize, offsetSize) {
+  const box = Number(boxSize);
+  const offset = Number(offsetSize);
+  if (!(box > 0) || !(offset > 0) || !Number.isFinite(box) || !Number.isFinite(offset)) return 1;
+  return box / offset;
+}
+function caretScale(boxSize, offsetSize, ancestorScale = 1, ancestorKnown = false) {
+  const ratio = renderedScale(boxSize, offsetSize);
+  if (!ancestorKnown) return ratio;
+  const ancestor = Number(ancestorScale);
+  const anc = Number.isFinite(ancestor) && ancestor > 0 ? ancestor : 1;
+  if (Math.abs(anc - 1) <= 0.02) return 1;
+  return anc;
+}
+function parseTransformScale(transform) {
+  if (!transform || transform === "none") return null;
+  const text = String(transform);
+  const matrix = text.match(/matrix\(\s*([eE0-9.+-]+)[,\s]+([eE0-9.+-]+)[,\s]+([eE0-9.+-]+)[,\s]+([eE0-9.+-]+)/);
+  const matrix3d = text.match(/matrix3d\(\s*([eE0-9.+-]+)[,\s]+([eE0-9.+-]+)(?:[,\s]+[eE0-9.+-]+){2}[,\s]+([eE0-9.+-]+)[,\s]+([eE0-9.+-]+)/);
+  const hit = matrix || matrix3d;
+  if (hit) {
+    const a = Number(hit[1]);
+    const b = Number(hit[2]);
+    const c = Number(hit[3]);
+    const d = Number(hit[4]);
+    if ([a, b, c, d].every(Number.isFinite)) {
+      const sx2 = Math.hypot(a, b);
+      const sy2 = Math.hypot(c, d);
+      if (sx2 > 0 && sy2 > 0) return { sx: sx2, sy: sy2 };
+    }
+  }
+  let sx = 1;
+  let sy = 1;
+  let saw = false;
+  const re = /scale\(\s*([eE0-9.+-]+)(?:[,\s]+([eE0-9.+-]+))?\s*\)/g;
+  let match;
+  while (match = re.exec(text)) {
+    const x = Number(match[1]);
+    const y = match[2] == null ? x : Number(match[2]);
+    if (!(x > 0) || !(y > 0)) continue;
+    sx *= x;
+    sy *= y;
+    saw = true;
+  }
+  return saw ? { sx, sy } : null;
+}
+function nextCaretGlyph(value, index) {
+  const text = value == null ? "" : String(value);
+  const at = Number(index);
+  const i = Number.isFinite(at) ? Math.max(0, Math.min(at, text.length)) : text.length;
+  if (i >= text.length) return { glyph: "", hasGlyph: false, atEndOfLine: true };
+  const ch = text[i];
+  if (ch === "\n" || ch === "\r") return { glyph: "", hasGlyph: false, atEndOfLine: true };
+  return { glyph: ch, hasGlyph: true, atEndOfLine: false };
+}
+function endOfLineMarker({
+  markerLeft,
+  markerTop,
+  lineHeight,
+  padLeft,
+  padTop,
+  contentRight,
+  atEndOfLine,
+  hasLineText
+}) {
+  const left = Number(markerLeft) || 0;
+  const top = Number(markerTop) || 0;
+  const line = Number(lineHeight) || 0;
+  const start = Number(padLeft) || 0;
+  const top0 = Number(padTop) || 0;
+  const right = Number(contentRight);
+  if (atEndOfLine && hasLineText && line > 0 && left <= start + 0.5 && top >= top0 + line * 0.5) {
+    return {
+      left: Number.isFinite(right) ? right : left,
+      top: Math.max(top0, top - line)
+    };
+  }
+  return { left, top };
+}
 function isTextTarget(element) {
   if (!element || !element.tagName) return false;
   if (element.tagName === "TEXTAREA") return true;
@@ -757,10 +836,13 @@ function projectCaretRect({
   lineHeightPx,
   hasGlyph,
   glyph,
-  devicePixelRatio
+  devicePixelRatio,
+  ancestorScaleX = 1,
+  ancestorScaleY = 1,
+  ancestorKnown = false
 }) {
-  const scaleX = offsetW ? box.width / offsetW : 1;
-  const scaleY = offsetH ? box.height / offsetH : 1;
+  const scaleX = caretScale(box.width, offsetW, ancestorScaleX, ancestorKnown);
+  const scaleY = caretScale(box.height, offsetH, ancestorScaleY, ancestorKnown);
   const x = box.left + (borderLeft + markerLeft - scrollLeft) * scaleX;
   const y = box.top + (borderTop + markerTop - scrollTop) * scaleY;
   const width = Math.max(deviceMinPx(devicePixelRatio), glyphWidth * scaleX);
@@ -789,6 +871,7 @@ function readMetrics(computed) {
   const fontSizePx = px(computed.fontSize, 16);
   return {
     borderLeft: px(computed.borderLeftWidth),
+    borderRight: px(computed.borderRightWidth),
     borderTop: px(computed.borderTopWidth),
     borderBottom: px(computed.borderBottomWidth),
     padLeft: px(computed.paddingLeft),
@@ -816,10 +899,29 @@ function caretLine(metrics, offsetH) {
   const height = Math.min(lineHeightPx, metrics.fontSizePx * INPUT_LINE_EM);
   return { top: offsetH ? (contentH - height) / 2 : 0, height, css: `${height}px` };
 }
-function glyphAt(value, start) {
-  const underCaret = value[start] && value[start] !== "\n" ? value[start] : "0";
-  const hasGlyph = underCaret !== "0" || value[start] === "0";
-  return { underCaret, hasGlyph };
+function inlineProp(el, name) {
+  const st = el?.style;
+  if (!st) return "";
+  if (typeof st.getPropertyValue === "function") {
+    const value = st.getPropertyValue(name);
+    if (value) return value;
+  }
+  const camel = name.replace(/-([a-z])/g, (_, c) => c.toUpperCase());
+  return st[camel] || "";
+}
+function plexusScale(el) {
+  const world = el?.closest?.(".pxd-world") || null;
+  const editor = el?.closest?.(".pxd-item__editor") || null;
+  if (!world && !editor) return { sx: 1, sy: 1, known: false };
+  let sx = 1;
+  let sy = 1;
+  for (const node of [editor, world]) {
+    const part = parseTransformScale(inlineProp(node, "transform"));
+    if (!part) continue;
+    sx *= part.sx;
+    sy *= part.sy;
+  }
+  return { sx, sy, known: true };
 }
 function editableText(documentRef, element) {
   const node = typeof documentRef.createTextNode === "function" ? documentRef.createTextNode("") : null;
@@ -850,6 +952,8 @@ function createCaretMeasurer({ doc, win, lifecycle } = {}) {
   const windowRef = win || documentRef?.defaultView || globalThis;
   const subscribers = /* @__PURE__ */ new Set();
   let cachedEl = null;
+  let cachedFont = "";
+  let cachedSize = null;
   let metrics = null;
   let latestRect = null;
   let markerHeight = "";
@@ -874,6 +978,10 @@ function createCaretMeasurer({ doc, win, lifecycle } = {}) {
   marker.style.verticalAlign = "top";
   marker.textContent = MARKER_CHAR;
   const glyphEl = documentRef.createElement("span");
+  glyphEl.style.position = "absolute";
+  glyphEl.style.whiteSpace = "pre";
+  glyphEl.style.top = "0";
+  glyphEl.style.left = "0";
   lineBlock.appendChild(prefixNode);
   lineBlock.appendChild(marker);
   lineBlock.appendChild(glyphEl);
@@ -888,6 +996,8 @@ function createCaretMeasurer({ doc, win, lifecycle } = {}) {
   else parent.append(mirror);
   const invalidate = () => {
     cachedEl = null;
+    cachedFont = "";
+    cachedSize = null;
     metrics = null;
   };
   const themeListeners = [];
@@ -922,67 +1032,113 @@ function createCaretMeasurer({ doc, win, lifecycle } = {}) {
   const notify = (rect) => {
     for (const fn of subscribers) fn(rect);
   };
+  const applyHostStyle = (el) => {
+    const computedStyle = windowRef.getComputedStyle(el);
+    const copied = MIRROR_PROPERTIES.map((name) => computedStyle[name]);
+    metrics = readMetrics(computedStyle);
+    MIRROR_PROPERTIES.forEach((name, index) => {
+      style[name] = copied[index];
+    });
+    if (computedStyle.overflowWrap) style.overflowWrap = computedStyle.overflowWrap;
+    if (computedStyle.wordBreak) style.wordBreak = computedStyle.wordBreak;
+    metrics.singleLine = el.tagName === "INPUT";
+    style.whiteSpace = metrics.singleLine ? "pre" : "pre-wrap";
+    cachedEl = el;
+  };
+  const syncMarkerHeight = () => {
+    const nextMarkerHeight = `${metrics.lineHeightPx}px`;
+    if (nextMarkerHeight === markerHeight) return;
+    markerHeight = nextMarkerHeight;
+    marker.style.height = nextMarkerHeight;
+  };
   const measure = (el) => {
     if (disposed) return null;
     if (!isTextTarget(el) || isSkippedHost(el)) return null;
-    if (el !== cachedEl) {
-      const computedStyle = windowRef.getComputedStyle(el);
-      const copied = MIRROR_PROPERTIES.map((name) => computedStyle[name]);
-      metrics = readMetrics(computedStyle);
-      MIRROR_PROPERTIES.forEach((name, index) => {
-        style[name] = copied[index];
-      });
-      metrics.singleLine = el.tagName === "INPUT";
-      style.whiteSpace = metrics.singleLine ? "pre" : "pre-wrap";
-      cachedEl = el;
+    const fontStamp = `${inlineProp(el, "font-size")}|${inlineProp(el, "line-height")}`;
+    if (el !== cachedEl || fontStamp !== cachedFont) {
+      applyHostStyle(el);
+      cachedFont = fontStamp;
+      cachedSize = null;
     }
     const value = el.value ?? "";
     const start = Math.min(el.selectionStart ?? value.length, value.length);
-    const { underCaret, hasGlyph } = glyphAt(value, start);
+    const glyphInfo = nextCaretGlyph(value, start);
     const split = !metrics.singleLine && start > 0 ? value.lastIndexOf("\n", start - 1) : -1;
+    let linePrefix;
     if (split < 0) {
       setBefore("");
-      setLine(value.slice(0, start));
+      linePrefix = value.slice(0, start);
+      setLine(linePrefix);
     } else {
       const before = value.slice(0, split);
       setBefore(before === "" || before.endsWith("\n") ? before + MARKER_CHAR : before);
-      setLine(value.slice(split + 1, start));
+      linePrefix = value.slice(split + 1, start);
+      setLine(linePrefix);
     }
     const indent = split < 0 ? "" : "0px";
     if (indent !== lineIndent) {
       lineIndent = indent;
       lineBlock.style.textIndent = indent;
     }
-    const nextMarkerHeight = `${metrics.lineHeightPx}px`;
-    if (nextMarkerHeight !== markerHeight) {
-      markerHeight = nextMarkerHeight;
-      marker.style.height = nextMarkerHeight;
+    syncMarkerHeight();
+    setGlyph(glyphInfo.hasGlyph ? glyphInfo.glyph : "0");
+    const readGeom = () => ({
+      box: el.getBoundingClientRect(),
+      glyphWidth: glyphEl.offsetWidth || metrics.fontSizePx * 0.6 || 8,
+      offsetH: el.offsetHeight || 0,
+      offsetW: el.offsetWidth || 0,
+      rawLeft: marker.offsetLeft || 0,
+      rawTop: marker.offsetTop || 0,
+      scrollLeft: el.scrollLeft || 0,
+      scrollTop: el.scrollTop || 0,
+      lineClient: Number(lineBlock.clientWidth) || 0,
+      lineOrigin: Number(lineBlock.offsetLeft) || 0
+    });
+    let geom = readGeom();
+    const sizeStamp = `${Math.round(geom.offsetW)}`;
+    if (cachedSize != null && sizeStamp !== cachedSize) {
+      applyHostStyle(el);
+      cachedFont = fontStamp;
+      syncMarkerHeight();
+      geom = readGeom();
     }
-    setGlyph(underCaret);
-    const box = el.getBoundingClientRect();
-    const glyphWidth = glyphEl.offsetWidth || metrics.fontSizePx * 0.6 || 8;
-    const offsetH = el.offsetHeight || 0;
-    const line = caretLine(metrics, offsetH);
+    cachedSize = `${Math.round(geom.offsetW)}`;
+    const contentRight = geom.lineClient > 0 ? geom.lineOrigin + geom.lineClient : geom.offsetW - metrics.borderLeft - metrics.borderRight - metrics.padRight;
+    const placed = endOfLineMarker({
+      markerLeft: geom.rawLeft,
+      markerTop: geom.rawTop,
+      lineHeight: metrics.lineHeightPx,
+      padLeft: metrics.padLeft,
+      padTop: metrics.padTop,
+      contentRight,
+      atEndOfLine: glyphInfo.atEndOfLine,
+      hasLineText: linePrefix.length > 0
+    });
+    const line = caretLine(metrics, geom.offsetH);
+    const ancestor = plexusScale(el);
     const rect = {
       ...projectCaretRect({
-        box,
-        offsetW: el.offsetWidth || 0,
-        offsetH,
-        markerLeft: marker.offsetLeft || 0,
-        markerTop: (marker.offsetTop || 0) + line.top,
-        scrollLeft: el.scrollLeft || 0,
-        scrollTop: el.scrollTop || 0,
+        box: geom.box,
+        offsetW: geom.offsetW,
+        offsetH: geom.offsetH,
+        markerLeft: placed.left,
+        markerTop: placed.top + line.top,
+        scrollLeft: geom.scrollLeft,
+        scrollTop: geom.scrollTop,
         borderLeft: metrics.borderLeft,
         borderTop: metrics.borderTop,
         padLeft: metrics.padLeft,
         padTop: metrics.padTop,
         padRight: metrics.padRight,
         padBottom: metrics.padBottom,
-        glyphWidth,
+        glyphWidth: geom.glyphWidth,
         lineHeightPx: line.height,
-        hasGlyph,
-        glyph: underCaret,
-        devicePixelRatio: windowRef.devicePixelRatio
+        hasGlyph: glyphInfo.hasGlyph,
+        glyph: glyphInfo.glyph,
+        devicePixelRatio: windowRef.devicePixelRatio,
+        ancestorScaleX: ancestor.sx,
+        ancestorScaleY: ancestor.sy,
+        ancestorKnown: ancestor.known
       }),
       fontFamily: metrics.fontFamily,
       fontSize: metrics.fontSize,
@@ -990,7 +1146,7 @@ function createCaretMeasurer({ doc, win, lifecycle } = {}) {
       fontStyle: metrics.fontStyle,
       lineHeight: line.css,
       color: metrics.color,
-      box,
+      box: geom.box,
       el,
       pos: start
     };
@@ -5340,6 +5496,7 @@ function installLiteCaret({ doc, win, measurer, lifecycle, getSettings, recordTi
     active = null;
     lastEl = null;
     lastSig = "";
+    focusPulse = false;
     follow(null);
     stopSettle();
     hide();
@@ -5388,11 +5545,25 @@ function installLiteCaret({ doc, win, measurer, lifecycle, getSettings, recordTi
     followedBox = rect?.box || null;
     if (paint(rect, target, color)) {
       syncBlink(ping);
+      pulseCard(target);
       hideNativeCaret(target);
     }
     selection.paint(target, selectionColor(color), rect?.color || "");
     rememberTarget(target);
     if (t0 != null) recordTiming(now() - t0);
+  };
+  let focusPulse = false;
+  const pulseCard = (el) => {
+    if (!focusPulse) return;
+    focusPulse = false;
+    if (reducedMotion || !canAnimate || !el?.closest?.(".pxd-root")) return;
+    try {
+      overlay.animate(
+        [{ filter: "brightness(1.8)" }, { filter: "brightness(1)" }],
+        { duration: 420, easing: "ease-out" }
+      );
+    } catch {
+    }
   };
   const flush = () => {
     frame = 0;
@@ -5440,6 +5611,7 @@ function installLiteCaret({ doc, win, measurer, lifecycle, getSettings, recordTi
       release();
       return;
     }
+    focusPulse = true;
     schedule(true);
     settle();
   };
@@ -5644,6 +5816,8 @@ function installLiteCaret({ doc, win, measurer, lifecycle, getSettings, recordTi
     if (disposed) return;
     const target = documentRef.activeElement || active;
     if (!target || !isCaretHost(target) || !target.closest?.(".pxd-root")) return;
+    measurer.invalidate?.();
+    hide();
     schedule(false);
     settle();
   };
@@ -5931,7 +6105,7 @@ var CursorSmithRuntime = class {
   ensurePump() {
     if (this._pumpInstalled || typeof document === "undefined") return;
     const now = globalThis.performance?.now?.bind(globalThis.performance);
-    const pump = () => {
+    const pump = (event) => {
       try {
         const el = document.activeElement;
         if (!this._measurer) return;
@@ -5939,6 +6113,7 @@ var CursorSmithRuntime = class {
           this._measurer.clear();
           return;
         }
+        if (event?.type === CAMERA_EVENT) this._measurer.invalidate?.();
         const start = now ? now() : null;
         this._measurer.measure(el);
         if (start != null) this.recordTiming(now() - start);

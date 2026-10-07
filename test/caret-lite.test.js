@@ -2233,16 +2233,23 @@ test("plexus-diagram:camera remeasures a focused Plexus field and then stops", (
   });
   listeners.get("focusin")({ target: textarea });
   let measures = 0;
+  let invalidations = 0;
   const base = measurer.measure.bind(measurer);
   measurer.measure = (el) => {
     measures += 1;
     return base(el);
   };
+  measurer.invalidate = () => {
+    invalidations += 1;
+  };
   const raf = rafQueue(win);
   listeners.get(CAMERA_EVENT)();
   assert.equal(measures, 0, "the camera event only queues a frame");
+  assert.equal(invalidations, 1, "the camera drops the cached font before the frame");
+  assert.equal(lite.overlay.style.display, "none", "the caret hides while the camera moves");
   const rounds = raf.drain();
   assert.equal(measures, 1, "one measure for a still board");
+  assert.notEqual(lite.overlay.style.display, "none", "the frame's paint brings the caret back");
   assert.ok(rounds < 10, `settle stops (ran ${rounds})`);
   assert.equal(raf.frames.length, 0, "a still board does not keep polling");
   lite.dispose();
@@ -2250,14 +2257,34 @@ test("plexus-diagram:camera remeasures a focused Plexus field and then stops", (
 });
 
 test("plexus-diagram:camera ignores a field that is not on a Plexus board", () => {
-  const { listeners, textarea, measurer } = installHarness();
+  const { lite, listeners, textarea, measurer } = installHarness();
   listeners.get("focusin")({ target: textarea });
   let measures = 0;
+  let invalidations = 0;
   const base = measurer.measure.bind(measurer);
   measurer.measure = (el) => {
     measures += 1;
     return base(el);
   };
+  measurer.invalidate = () => {
+    invalidations += 1;
+  };
   listeners.get(CAMERA_EVENT)();
   assert.equal(measures, 0);
+  assert.equal(invalidations, 0);
+  assert.notEqual(lite.overlay.style.display, "none");
+});
+
+test("focus in a Plexus card pulses the caret once", () => {
+  const { lite, listeners, textarea } = installHarness({}, {
+    closest: (sel) => (sel === ".pxd-root" ? { className: "pxd-root" } : null),
+  }, { blinkingEnabled: true });
+  listeners.get("focusin")({ target: textarea });
+  assert.equal(lite.overlay._animations.length, 2, "the blink plus one finite pulse");
+  const pulse = lite.overlay._animations[1];
+  assert.equal(pulse.options.duration, 420);
+  assert.equal(pulse.options.easing, "ease-out");
+  assert.equal(pulse.options.iterations, undefined);
+  listeners.get("input")({ target: textarea });
+  assert.equal(lite.overlay._animations.length, 2, "typing does not pulse again");
 });

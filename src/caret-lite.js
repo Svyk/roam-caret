@@ -791,6 +791,7 @@ export function installLiteCaret({ doc, win, measurer, lifecycle, getSettings, r
     active = null;
     lastEl = null;
     lastSig = "";
+    focusPulse = false;
     follow(null);
     stopSettle();
     hide();
@@ -845,11 +846,27 @@ export function installLiteCaret({ doc, win, measurer, lifecycle, getSettings, r
     followedBox = rect?.box || null;
     if (paint(rect, target, color)) {
       syncBlink(ping);
+      pulseCard(target);
       hideNativeCaret(target);
     }
     selection.paint(target, selectionColor(color), rect?.color || "");
     rememberTarget(target);
     if (t0 != null) recordTiming(now() - t0);
+  };
+
+  // First paint after focus lands in a card. Ordinary fields already blink.
+  let focusPulse = false;
+  const pulseCard = (el) => {
+    if (!focusPulse) return;
+    focusPulse = false;
+    if (reducedMotion || !canAnimate || !el?.closest?.(".pxd-root")) return;
+    try {
+      overlay.animate(
+        [{ filter: "brightness(1.8)" }, { filter: "brightness(1)" }],
+        { duration: 420, easing: "ease-out" },
+      );
+    } catch {
+    }
   };
 
   // Caret events only mark the frame dirty. One rAF measures the focused host
@@ -905,6 +922,7 @@ export function installLiteCaret({ doc, win, measurer, lifecycle, getSettings, r
       release();
       return;
     }
+    focusPulse = true;
     schedule(true);
     settle();
   };
@@ -1162,6 +1180,10 @@ export function installLiteCaret({ doc, win, measurer, lifecycle, getSettings, r
     if (disposed) return;
     const target = documentRef.activeElement || active;
     if (!target || !isCaretHost(target) || !target.closest?.(".pxd-root")) return;
+    // The world's transform changed. Drop the cached font, hide until this
+    // frame's paint, then measure once. A still board does not keep polling.
+    measurer.invalidate?.();
+    hide();
     schedule(false);
     settle();
   };

@@ -18,6 +18,107 @@ export function scaledCaretWidth(cssPx, scale, devicePixelRatio) {
   return Math.max(deviceMinPx(devicePixelRatio), width);
 }
 
+// Border-box CSS px over layout px. 1 when the field is not transformed.
+export function renderedScale(boxSize, offsetSize) {
+  const box = Number(boxSize);
+  const offset = Number(offsetSize);
+  if (!(box > 0) || !(offset > 0) || !Number.isFinite(box) || !Number.isFinite(offset)) return 1;
+  return box / offset;
+}
+
+// A Plexus page card lays out in world px under the world's scale(). A note
+// editor counter-scales, so the world's scale and the editor's scale(1/zoom)
+// cancel and the font is already in screen px. The border-box ratio misses
+// that: a textarea often reports the same rect and offset under an ancestor
+// transform, and a counter-scaled editor can report 1/zoom.
+export function caretScale(boxSize, offsetSize, ancestorScale = 1, ancestorKnown = false) {
+  const ratio = renderedScale(boxSize, offsetSize);
+  if (!ancestorKnown) return ratio;
+  const ancestor = Number(ancestorScale);
+  const anc = Number.isFinite(ancestor) && ancestor > 0 ? ancestor : 1;
+  if (Math.abs(anc - 1) <= 0.02) return 1;
+  return anc;
+}
+
+// scale(n) / scale(x, y) as specified, or the 2×2 part of matrix() / matrix3d().
+export function parseTransformScale(transform) {
+  if (!transform || transform === "none") return null;
+  const text = String(transform);
+  const matrix = text.match(/matrix\(\s*([eE0-9.+-]+)[,\s]+([eE0-9.+-]+)[,\s]+([eE0-9.+-]+)[,\s]+([eE0-9.+-]+)/);
+  const matrix3d = text.match(/matrix3d\(\s*([eE0-9.+-]+)[,\s]+([eE0-9.+-]+)(?:[,\s]+[eE0-9.+-]+){2}[,\s]+([eE0-9.+-]+)[,\s]+([eE0-9.+-]+)/);
+  const hit = matrix || matrix3d;
+  if (hit) {
+    const a = Number(hit[1]);
+    const b = Number(hit[2]);
+    const c = Number(hit[3]);
+    const d = Number(hit[4]);
+    if ([a, b, c, d].every(Number.isFinite)) {
+      const sx = Math.hypot(a, b);
+      const sy = Math.hypot(c, d);
+      if (sx > 0 && sy > 0) return { sx, sy };
+    }
+  }
+  let sx = 1;
+  let sy = 1;
+  let saw = false;
+  const re = /scale\(\s*([eE0-9.+-]+)(?:[,\s]+([eE0-9.+-]+))?\s*\)/g;
+  let match;
+  while ((match = re.exec(text))) {
+    const x = Number(match[1]);
+    const y = match[2] == null ? x : Number(match[2]);
+    if (!(x > 0) || !(y > 0)) continue;
+    sx *= x;
+    sy *= y;
+    saw = true;
+  }
+  return saw ? { sx, sy } : null;
+}
+
+// The letter in the box is the character after the caret. End of text and
+// end of line have none: a width probe must not be drawn as a letter.
+export function nextCaretGlyph(value, index) {
+  const text = value == null ? "" : String(value);
+  const at = Number(index);
+  const i = Number.isFinite(at) ? Math.max(0, Math.min(at, text.length)) : text.length;
+  if (i >= text.length) return { glyph: "", hasGlyph: false, atEndOfLine: true };
+  const ch = text[i];
+  if (ch === "\n" || ch === "\r") return { glyph: "", hasGlyph: false, atEndOfLine: true };
+  return { glyph: ch, hasGlyph: true, atEndOfLine: false };
+}
+
+// A zero-width marker at the end of a full line wraps onto a row the textarea
+// does not paint. Pull it back to the end of the previous row.
+export function endOfLineMarker({
+  markerLeft,
+  markerTop,
+  lineHeight,
+  padLeft,
+  padTop,
+  contentRight,
+  atEndOfLine,
+  hasLineText,
+}) {
+  const left = Number(markerLeft) || 0;
+  const top = Number(markerTop) || 0;
+  const line = Number(lineHeight) || 0;
+  const start = Number(padLeft) || 0;
+  const top0 = Number(padTop) || 0;
+  const right = Number(contentRight);
+  if (
+    atEndOfLine
+    && hasLineText
+    && line > 0
+    && left <= start + 0.5
+    && top >= top0 + line * 0.5
+  ) {
+    return {
+      left: Number.isFinite(right) ? right : left,
+      top: Math.max(top0, top - line),
+    };
+  }
+  return { left, top };
+}
+
 export const MIRROR_PROPERTIES = Object.freeze([
   "boxSizing",
   "width",
@@ -78,11 +179,16 @@ export function projectCaretRect({
   hasGlyph,
   glyph,
   devicePixelRatio,
+  ancestorScaleX = 1,
+  ancestorScaleY = 1,
+  ancestorKnown = false,
 }) {
   // Ancestor transform (Plexus world scale): the border box is the screen
   // size, offsetWidth/offsetHeight stay layout px. The mirror is layout px.
-  const scaleX = offsetW ? box.width / offsetW : 1;
-  const scaleY = offsetH ? box.height / offsetH : 1;
+  // Inside a board, the world's scale (cancelled by a note editor's
+  // counter-scale) wins over that ratio.
+  const scaleX = caretScale(box.width, offsetW, ancestorScaleX, ancestorKnown);
+  const scaleY = caretScale(box.height, offsetH, ancestorScaleY, ancestorKnown);
   const x = box.left + (borderLeft + markerLeft - scrollLeft) * scaleX;
   const y = box.top + (borderTop + markerTop - scrollTop) * scaleY;
   const width = Math.max(deviceMinPx(devicePixelRatio), glyphWidth * scaleX);
@@ -116,6 +222,7 @@ function readMetrics(computed) {
   const fontSizePx = px(computed.fontSize, 16);
   return {
     borderLeft: px(computed.borderLeftWidth),
+    borderRight: px(computed.borderRightWidth),
     borderTop: px(computed.borderTopWidth),
     borderBottom: px(computed.borderBottomWidth),
     padLeft: px(computed.paddingLeft),
@@ -150,10 +257,32 @@ function caretLine(metrics, offsetH) {
   return { top: offsetH ? (contentH - height) / 2 : 0, height, css: `${height}px` };
 }
 
-function glyphAt(value, start) {
-  const underCaret = value[start] && value[start] !== "\n" ? value[start] : "0";
-  const hasGlyph = underCaret !== "0" || value[start] === "0";
-  return { underCaret, hasGlyph };
+function inlineProp(el, name) {
+  const st = el?.style;
+  if (!st) return "";
+  if (typeof st.getPropertyValue === "function") {
+    const value = st.getPropertyValue(name);
+    if (value) return value;
+  }
+  const camel = name.replace(/-([a-z])/g, (_, c) => c.toUpperCase());
+  return st[camel] || "";
+}
+
+// Inline transforms only: Plexus writes the world and the editor that way.
+// No computed style, so a keystroke does not restyle the board.
+function plexusScale(el) {
+  const world = el?.closest?.(".pxd-world") || null;
+  const editor = el?.closest?.(".pxd-item__editor") || null;
+  if (!world && !editor) return { sx: 1, sy: 1, known: false };
+  let sx = 1;
+  let sy = 1;
+  for (const node of [editor, world]) {
+    const part = parseTransformScale(inlineProp(node, "transform"));
+    if (!part) continue;
+    sx *= part.sx;
+    sy *= part.sy;
+  }
+  return { sx, sy, known: true };
 }
 
 // One Text node per mirror block, edited in place: only the changed tail is
@@ -188,6 +317,8 @@ export function createCaretMeasurer({ doc, win, lifecycle } = {}) {
   const windowRef = win || documentRef?.defaultView || globalThis;
   const subscribers = new Set();
   let cachedEl = null;
+  let cachedFont = "";
+  let cachedSize = null;
   let metrics = null;
   let latestRect = null;
   let markerHeight = "";
@@ -218,6 +349,11 @@ export function createCaretMeasurer({ doc, win, lifecycle } = {}) {
   marker.style.verticalAlign = "top";
   marker.textContent = MARKER_CHAR;
   const glyphEl = documentRef.createElement("span");
+  // Out of flow: a width probe at the end of a full line must not wrap the marker.
+  glyphEl.style.position = "absolute";
+  glyphEl.style.whiteSpace = "pre";
+  glyphEl.style.top = "0";
+  glyphEl.style.left = "0";
   lineBlock.appendChild(prefixNode);
   lineBlock.appendChild(marker);
   lineBlock.appendChild(glyphEl);
@@ -235,6 +371,8 @@ export function createCaretMeasurer({ doc, win, lifecycle } = {}) {
 
   const invalidate = () => {
     cachedEl = null;
+    cachedFont = "";
+    cachedSize = null;
     metrics = null;
   };
 
@@ -276,38 +414,59 @@ export function createCaretMeasurer({ doc, win, lifecycle } = {}) {
     for (const fn of subscribers) fn(rect);
   };
 
+  // Copy the host's used style onto the mirror. Page cards wrap with
+  // overflow-wrap:anywhere; note cards use word-break. Forcing break-word
+  // measured a different line than the textarea.
+  const applyHostStyle = (el) => {
+    const computedStyle = windowRef.getComputedStyle(el);
+    const copied = MIRROR_PROPERTIES.map((name) => computedStyle[name]);
+    metrics = readMetrics(computedStyle);
+    MIRROR_PROPERTIES.forEach((name, index) => {
+      style[name] = copied[index];
+    });
+    if (computedStyle.overflowWrap) style.overflowWrap = computedStyle.overflowWrap;
+    if (computedStyle.wordBreak) style.wordBreak = computedStyle.wordBreak;
+    metrics.singleLine = el.tagName === "INPUT";
+    style.whiteSpace = metrics.singleLine ? "pre" : "pre-wrap";
+    cachedEl = el;
+  };
+
+  const syncMarkerHeight = () => {
+    const nextMarkerHeight = `${metrics.lineHeightPx}px`;
+    if (nextMarkerHeight === markerHeight) return;
+    markerHeight = nextMarkerHeight;
+    marker.style.height = nextMarkerHeight;
+  };
+
   const measure = (el) => {
     if (disposed) return null;
     if (!isTextTarget(el) || isSkippedHost(el)) return null;
 
-    if (el !== cachedEl) {
-      // Read every value before the first mirror write, so the copy costs
-      // one style resolve, not one per property.
-      const computedStyle = windowRef.getComputedStyle(el);
-      const copied = MIRROR_PROPERTIES.map((name) => computedStyle[name]);
-      metrics = readMetrics(computedStyle);
-      MIRROR_PROPERTIES.forEach((name, index) => {
-        style[name] = copied[index];
-      });
-      // A text input is one line that scrolls sideways; a textarea wraps.
-      metrics.singleLine = el.tagName === "INPUT";
-      style.whiteSpace = metrics.singleLine ? "pre" : "pre-wrap";
-      cachedEl = el;
+    // Inline font and line-height are a style-attribute read, not a layout.
+    // A counter-scaled card changes them without changing width.
+    const fontStamp = `${inlineProp(el, "font-size")}|${inlineProp(el, "line-height")}`;
+    if (el !== cachedEl || fontStamp !== cachedFont) {
+      applyHostStyle(el);
+      cachedFont = fontStamp;
+      cachedSize = null;
     }
 
     const value = el.value ?? "";
     const start = Math.min(el.selectionStart ?? value.length, value.length);
-    const { underCaret, hasGlyph } = glyphAt(value, start);
+    const glyphInfo = nextCaretGlyph(value, start);
 
     const split = !metrics.singleLine && start > 0 ? value.lastIndexOf("\n", start - 1) : -1;
+    let linePrefix;
     if (split < 0) {
       setBefore("");
-      setLine(value.slice(0, start));
+      linePrefix = value.slice(0, start);
+      setLine(linePrefix);
     } else {
       const before = value.slice(0, split);
       // An empty last paragraph still takes a line in the textarea.
       setBefore(before === "" || before.endsWith("\n") ? before + MARKER_CHAR : before);
-      setLine(value.slice(split + 1, start));
+      linePrefix = value.slice(split + 1, start);
+      setLine(linePrefix);
     }
     // text-indent belongs to the first line of the whole value only.
     const indent = split < 0 ? "" : "0px";
@@ -315,39 +474,75 @@ export function createCaretMeasurer({ doc, win, lifecycle } = {}) {
       lineIndent = indent;
       lineBlock.style.textIndent = indent;
     }
-    const nextMarkerHeight = `${metrics.lineHeightPx}px`;
-    if (nextMarkerHeight !== markerHeight) {
-      markerHeight = nextMarkerHeight;
-      marker.style.height = nextMarkerHeight;
-    }
-    setGlyph(underCaret);
+    syncMarkerHeight();
+    // The drawn letter is the next character. End of text still needs a
+    // width, and that probe must not be painted.
+    setGlyph(glyphInfo.hasGlyph ? glyphInfo.glyph : "0");
 
-    // The one forced layout per measure: every geometry read below runs
-    // against the layout this call produces, with no writes in between.
-    const box = el.getBoundingClientRect();
-    const glyphWidth = glyphEl.offsetWidth || metrics.fontSizePx * 0.6 || 8;
-    const offsetH = el.offsetHeight || 0;
-    const line = caretLine(metrics, offsetH);
+    const readGeom = () => ({
+      box: el.getBoundingClientRect(),
+      glyphWidth: glyphEl.offsetWidth || metrics.fontSizePx * 0.6 || 8,
+      offsetH: el.offsetHeight || 0,
+      offsetW: el.offsetWidth || 0,
+      rawLeft: marker.offsetLeft || 0,
+      rawTop: marker.offsetTop || 0,
+      scrollLeft: el.scrollLeft || 0,
+      scrollTop: el.scrollTop || 0,
+      lineClient: Number(lineBlock.clientWidth) || 0,
+      lineOrigin: Number(lineBlock.offsetLeft) || 0,
+    });
+
+    // Cache hit: one layout. A width or height change copies style again
+    // and reads the mirror once more, so a resize rewraps in this frame.
+    let geom = readGeom();
+    // Width rewraps the mirror. Height alone (an autosize composer) does not.
+    const sizeStamp = `${Math.round(geom.offsetW)}`;
+    if (cachedSize != null && sizeStamp !== cachedSize) {
+      applyHostStyle(el);
+      cachedFont = fontStamp;
+      syncMarkerHeight();
+      geom = readGeom();
+    }
+    cachedSize = `${Math.round(geom.offsetW)}`;
+
+    const contentRight = geom.lineClient > 0
+      ? geom.lineOrigin + geom.lineClient
+      : geom.offsetW - metrics.borderLeft - metrics.borderRight - metrics.padRight;
+    const placed = endOfLineMarker({
+      markerLeft: geom.rawLeft,
+      markerTop: geom.rawTop,
+      lineHeight: metrics.lineHeightPx,
+      padLeft: metrics.padLeft,
+      padTop: metrics.padTop,
+      contentRight,
+      atEndOfLine: glyphInfo.atEndOfLine,
+      hasLineText: linePrefix.length > 0,
+    });
+    const line = caretLine(metrics, geom.offsetH);
+    const ancestor = plexusScale(el);
     const rect = {
       ...projectCaretRect({
-        box,
-        offsetW: el.offsetWidth || 0,
-        offsetH,
-        markerLeft: marker.offsetLeft || 0,
-        markerTop: (marker.offsetTop || 0) + line.top,
-        scrollLeft: el.scrollLeft || 0,
-        scrollTop: el.scrollTop || 0,
+        box: geom.box,
+        offsetW: geom.offsetW,
+        offsetH: geom.offsetH,
+        markerLeft: placed.left,
+        markerTop: placed.top + line.top,
+        scrollLeft: geom.scrollLeft,
+        scrollTop: geom.scrollTop,
         borderLeft: metrics.borderLeft,
         borderTop: metrics.borderTop,
         padLeft: metrics.padLeft,
         padTop: metrics.padTop,
         padRight: metrics.padRight,
         padBottom: metrics.padBottom,
-        glyphWidth,
+        glyphWidth: geom.glyphWidth,
         lineHeightPx: line.height,
-        hasGlyph,
-        glyph: underCaret,
+        hasGlyph: glyphInfo.hasGlyph,
+        glyph: glyphInfo.glyph,
         devicePixelRatio: windowRef.devicePixelRatio,
+        ancestorScaleX: ancestor.sx,
+        ancestorScaleY: ancestor.sy,
+        ancestorKnown: ancestor.known,
       }),
       fontFamily: metrics.fontFamily,
       fontSize: metrics.fontSize,
@@ -355,7 +550,7 @@ export function createCaretMeasurer({ doc, win, lifecycle } = {}) {
       fontStyle: metrics.fontStyle,
       lineHeight: line.css,
       color: metrics.color,
-      box,
+      box: geom.box,
       el,
       pos: start,
     };

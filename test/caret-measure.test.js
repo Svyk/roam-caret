@@ -2,9 +2,13 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import {
+  caretScale,
   createCaretMeasurer,
+  endOfLineMarker,
   isSkippedHost,
   isTextTarget,
+  nextCaretGlyph,
+  parseTransformScale,
   projectCaretRect,
 } from "../src/caret-measure.js";
 
@@ -493,6 +497,192 @@ test("a scaled Plexus textarea measures in layout px and paints in screen px", (
     closest: (sel) => (sel === ".rg-root" ? { className: "rg-root" } : null),
   });
   assert.equal(measurer.measure(grid), null, "a Roam Grid host is not measured");
+  measurer.dispose();
+});
+
+test("caretScale uses the border-box ratio until a Plexus transform is known", () => {
+  assert.equal(caretScale(100, 200, 0.5, false), 0.5);
+  assert.equal(caretScale(400, 200), 2);
+  // Page card: rect and offset agree, so the ratio is 1. The world scale is the line.
+  assert.equal(caretScale(200, 200, 0.54, true), 0.54);
+  // Do not multiply the ratio by the ancestor. That paints at zoom squared.
+  assert.equal(caretScale(100, 200, 0.5, true), 0.5);
+  // Note card: world scale(z) times editor scale(1/z) is 1, and the font is
+  // already screen px. A border box that still reports 1/zoom must not win.
+  assert.equal(caretScale(370, 200, 1, true), 1);
+  assert.equal(caretScale(74, 40, 1.01, true), 1);
+});
+
+test("parseTransformScale reads scale() and matrix(), and ignores translate()", () => {
+  assert.equal(parseTransformScale("none"), null);
+  assert.equal(parseTransformScale("translate(10px, 20px)"), null);
+  assert.deepEqual(parseTransformScale("translate(10px, 20px) scale(0.54)"), { sx: 0.54, sy: 0.54 });
+  assert.deepEqual(parseTransformScale("scale(2, 0.5)"), { sx: 2, sy: 0.5 });
+  assert.deepEqual(parseTransformScale("matrix(0.5, 0, 0, 2, 10, 20)"), { sx: 0.5, sy: 2 });
+  const cancelled = parseTransformScale("scale(2)");
+  const world = parseTransformScale("scale(0.5)");
+  assert.equal(cancelled.sx * world.sx, 1);
+});
+
+test("nextCaretGlyph is the character after the caret, and nothing at end of line", () => {
+  assert.deepEqual(nextCaretGlyph("awake.", 0), { glyph: "a", hasGlyph: true, atEndOfLine: false });
+  assert.deepEqual(nextCaretGlyph("awake.", 6), { glyph: "", hasGlyph: false, atEndOfLine: true });
+  assert.deepEqual(nextCaretGlyph("awake.\nnext", 6), { glyph: "", hasGlyph: false, atEndOfLine: true });
+  assert.deepEqual(nextCaretGlyph("ab", 1), { glyph: "b", hasGlyph: true, atEndOfLine: false });
+  assert.equal(nextCaretGlyph("is", 0).glyph, "i");
+});
+
+test("endOfLineMarker pulls a wrapped end back one line and leaves a real line start", () => {
+  const wrapped = endOfLineMarker({
+    markerLeft: 16,
+    markerTop: 19,
+    lineHeight: 19,
+    padLeft: 16,
+    padTop: 0,
+    contentRight: 184,
+    atEndOfLine: true,
+    hasLineText: true,
+  });
+  assert.deepEqual(wrapped, { left: 184, top: 0 });
+
+  const midLine = endOfLineMarker({
+    markerLeft: 16,
+    markerTop: 19,
+    lineHeight: 19,
+    padLeft: 16,
+    padTop: 0,
+    contentRight: 184,
+    atEndOfLine: false,
+    hasLineText: true,
+  });
+  assert.deepEqual(midLine, { left: 16, top: 19 });
+
+  const emptyLine = endOfLineMarker({
+    markerLeft: 16,
+    markerTop: 19,
+    lineHeight: 19,
+    padLeft: 16,
+    padTop: 0,
+    contentRight: 184,
+    atEndOfLine: true,
+    hasLineText: false,
+  });
+  assert.deepEqual(emptyLine, { left: 16, top: 19 });
+});
+
+test("end of text paints no letter and stays on the last real line", () => {
+  const { doc, body } = createFakeDoc();
+  const win = {
+    getComputedStyle: () => ({
+      ...fakeComputed(),
+      paddingLeft: "16px",
+      paddingRight: "16px",
+      overflowWrap: "anywhere",
+    }),
+    addEventListener() {},
+    removeEventListener() {},
+  };
+  const measurer = createCaretMeasurer({ doc, win });
+  const marker = body.children[0].children[1].children[1];
+  Object.defineProperty(marker, "offsetLeft", { configurable: true, get: () => 16 });
+  Object.defineProperty(marker, "offsetTop", { configurable: true, get: () => 19 });
+
+  const end = fakeTextEl(doc, { value: "awake.", selectionStart: 6 });
+  const rect = measurer.measure(end);
+  assert.equal(rect.glyph, "");
+  assert.equal(rect.x, 100 + (200 - 16), "the caret sits at the end of the line, not the wrapped padding edge");
+  assert.equal(rect.y, 50, "a wrapped end marker is pulled up off the phantom line");
+  assert.equal(body.children[0].style.overflowWrap, "anywhere");
+
+  const middle = fakeTextEl(doc, { value: "awake.", selectionStart: 2 });
+  const mid = measurer.measure(middle);
+  assert.equal(mid.glyph, "a");
+  assert.equal(mid.x, 100 + 16);
+  assert.equal(mid.y, 50 + 19, "a real line start is not pulled back");
+
+  const blank = fakeTextEl(doc, { value: "awake.\n", selectionStart: 7 });
+  const next = measurer.measure(blank);
+  assert.equal(next.glyph, "");
+  assert.equal(next.y, 50 + 19, "an empty line after a newline stays on that line");
+  measurer.dispose();
+});
+
+test("a Plexus page card scales by the world transform, a note card stays at 1", () => {
+  const { doc, body } = createFakeDoc();
+  const win = {
+    getComputedStyle: () => fakeComputed(),
+    addEventListener() {},
+    removeEventListener() {},
+  };
+  const measurer = createCaretMeasurer({ doc, win });
+  const field = (editorTransform, worldTransform, box, offsetWidth, offsetHeight) => fakeTextEl(doc, {
+    offsetWidth,
+    offsetHeight,
+    getBoundingClientRect: () => box,
+    closest(sel) {
+      if (sel === ".pxd-item__editor") return { style: { transform: editorTransform } };
+      if (sel === ".pxd-world") return { style: { transform: worldTransform } };
+      return null;
+    },
+  });
+
+  const page = field(
+    "",
+    "translate(10px, 20px) scale(0.5)",
+    { left: 100, top: 50, width: 200, height: 40, right: 300, bottom: 90 },
+    200,
+    40,
+  );
+  const pageRect = measurer.measure(page);
+  assert.equal(pageRect.scaleX, 0.5);
+  assert.equal(pageRect.scaleY, 0.5);
+  assert.equal(pageRect.x, 105);
+  assert.equal(pageRect.y, 51);
+  assert.equal(pageRect.height, 9.5);
+  assert.equal(pageRect.width, 4);
+  assert.equal(pageRect.glyph, "l");
+
+  const note = field(
+    "scale(2)",
+    "scale(0.5)",
+    { left: 100, top: 50, width: 370, height: 74, right: 470, bottom: 124 },
+    200,
+    40,
+  );
+  const noteRect = measurer.measure(note);
+  assert.equal(noteRect.scaleX, 1, "counter-scale cancels the world; the ratio must not stretch the caret");
+  assert.equal(noteRect.scaleY, 1);
+  assert.equal(noteRect.height, 19);
+  assert.equal(noteRect.x, 110);
+  assert.equal(noteRect.y, 52);
+  assert.equal(body.children[0].style.width, "200px");
+  measurer.dispose();
+});
+
+test("an inline font-size change recopies style without a width change", () => {
+  const { doc } = createFakeDoc();
+  let styleCalls = 0;
+  const win = {
+    getComputedStyle() {
+      styleCalls += 1;
+      return fakeComputed();
+    },
+    addEventListener() {},
+    removeEventListener() {},
+  };
+  const measurer = createCaretMeasurer({ doc, win });
+  const el = fakeTextEl(doc, { style: { fontSize: "13px", lineHeight: "19.5px" } });
+  measurer.measure(el);
+  assert.equal(styleCalls, 1);
+  el.style.fontSize = "7px";
+  measurer.measure(el);
+  assert.equal(styleCalls, 2, "counter-scale rewrites the font without resizing the border box");
+  el.value = "hello!";
+  measurer.measure(el);
+  assert.equal(styleCalls, 2, "typing does not recopy style");
+  el.offsetWidth = 240;
+  measurer.measure(el);
+  assert.equal(styleCalls, 3, "a width change recopies style in the same measure");
   measurer.dispose();
 });
 

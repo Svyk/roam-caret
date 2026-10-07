@@ -285,7 +285,7 @@ class CursorSmithRuntime {
   ensurePump() {
     if (this._pumpInstalled || typeof document === "undefined") return;
     const now = globalThis.performance?.now?.bind(globalThis.performance);
-    const pump = () => {
+    const pump = (event) => {
       try {
         const el = document.activeElement;
         if (!this._measurer) return;
@@ -295,6 +295,7 @@ class CursorSmithRuntime {
           this._measurer.clear();
           return;
         }
+        if (event?.type === CAMERA_EVENT) this._measurer.invalidate?.();
         const start = now ? now() : null;
         this._measurer.measure(el);
         if (start != null) this.recordTiming(now() - start);
