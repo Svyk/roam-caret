@@ -4,6 +4,14 @@ All notable changes to this project follow [Keep a Changelog](https://keepachang
 
 ## [Unreleased]
 
+## [0.6.6] - 2026-10-06
+
+### Added
+- The caret draws inside Plexus Diagram cards: it is measured in the card's own size and scaled to the board's zoom (at least one device pixel wide), clipped to a scrolling page card, and re-placed on the `plexus-diagram:camera` event.
+
+### Fixed
+- A field the caret skips (Roam Grid) keeps the browser caret visible; before, inside a Plexus card the browser caret was hidden and nothing was drawn.
+
 ## [0.6.5] - 2026-09-28
 
 ### Fixed

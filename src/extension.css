@@ -28,10 +28,10 @@ body.cs-active.cs-hide-native textarea[id^="block-input-"],
 body.cs-active.cs-hide-native .rm-block__input
 { caret-color: transparent !important; }
 
+/* A skipped host keeps the browser caret. Roam Grid is the skip. A Plexus
+   board is drawn by the overlay, so its native caret stays hidden. */
 body.cs-active.cs-hide-native .rg-root .rm-block__input,
-body.cs-active.cs-hide-native .pxd-root .rm-block__input,
-body.cs-active.cs-hide-native .rg-root textarea[id^="block-input-"],
-body.cs-active.cs-hide-native .pxd-root textarea[id^="block-input-"]
+body.cs-active.cs-hide-native .rg-root textarea[id^="block-input-"]
 { caret-color: auto !important; }
 
 .cs-cursor-wrap {

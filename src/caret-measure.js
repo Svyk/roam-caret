@@ -1,7 +1,22 @@
 const MARKER_CHAR = "\u200b";
 const INPUT_LINE_EM = 1.5;
 const INPUT_TEXT_EM = 1.2;
-const SKIP_HOST_SELECTOR = ".rg-root, .pxd-root";
+// Roam Grid keeps the browser caret. A Plexus board (.pxd-root) is measured:
+// its transform is the textarea's border box divided by its layout size.
+const SKIP_HOST_SELECTOR = ".rg-root";
+
+// One physical pixel, in CSS px. A scaled caret must not vanish under it.
+export function deviceMinPx(devicePixelRatio) {
+  const dpr = Number(devicePixelRatio);
+  return 1 / (dpr > 0 ? dpr : 1);
+}
+
+export function scaledCaretWidth(cssPx, scale, devicePixelRatio) {
+  const base = Number(cssPx);
+  const factor = Number(scale);
+  const width = (Number.isFinite(base) ? base : 0) * (Number.isFinite(factor) && factor > 0 ? factor : 1);
+  return Math.max(deviceMinPx(devicePixelRatio), width);
+}
 
 export const MIRROR_PROPERTIES = Object.freeze([
   "boxSizing",
@@ -62,12 +77,15 @@ export function projectCaretRect({
   lineHeightPx,
   hasGlyph,
   glyph,
+  devicePixelRatio,
 }) {
+  // Ancestor transform (Plexus world scale): the border box is the screen
+  // size, offsetWidth/offsetHeight stay layout px. The mirror is layout px.
   const scaleX = offsetW ? box.width / offsetW : 1;
   const scaleY = offsetH ? box.height / offsetH : 1;
   const x = box.left + (borderLeft + markerLeft - scrollLeft) * scaleX;
   const y = box.top + (borderTop + markerTop - scrollTop) * scaleY;
-  const width = glyphWidth * scaleX;
+  const width = Math.max(deviceMinPx(devicePixelRatio), glyphWidth * scaleX);
   const height = lineHeightPx * scaleY;
   const boxRight = box.right ?? box.left + box.width;
   const boxBottom = box.bottom ?? box.top + box.height;
@@ -89,6 +107,8 @@ export function projectCaretRect({
     height,
     glyph: hasGlyph ? glyph : "",
     visible,
+    scaleX,
+    scaleY,
   };
 }
 
@@ -327,6 +347,7 @@ export function createCaretMeasurer({ doc, win, lifecycle } = {}) {
         lineHeightPx: line.height,
         hasGlyph,
         glyph: underCaret,
+        devicePixelRatio: windowRef.devicePixelRatio,
       }),
       fontFamily: metrics.fontFamily,
       fontSize: metrics.fontSize,

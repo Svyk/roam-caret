@@ -7,6 +7,7 @@ import {
   TORCH_CLASS,
   DEMO_Z_INDEX,
 } from "./cursor-smith.js";
+import { isSkippedHost, scaledCaretWidth } from "./caret-measure.js";
 import { isRoamDark } from "./theme.js";
 
 function isTextCaretHost(el2) {
@@ -37,6 +38,10 @@ function caretCoords(e) {
   if (!rect) return null;
   const h = rect.height;
   const charWidth = rect.width;
+  const scaleX = Number(rect.scaleX);
+  const scaleY = Number(rect.scaleY);
+  const sx = Number.isFinite(scaleX) && scaleX > 0 ? scaleX : 1;
+  const sy = Number.isFinite(scaleY) && scaleY > 0 ? scaleY : 1;
   return {
     x: rect.x,
     top: rect.y,
@@ -44,14 +49,16 @@ function caretCoords(e) {
     h,
     w: (() => {
       const style = e.styleFor("cursorStyle");
-      return style === "Line" || style === "Beam" ? e.styleFor("caretWidthPx") : charWidth;
+      return style === "Line" || style === "Beam"
+        ? scaledCaretWidth(e.styleFor("caretWidthPx"), sx, rect.devicePixelRatio)
+        : charWidth;
     })(),
     actualCharWidth: charWidth,
     char: rect.glyph || "",
     pos: rect.pos ?? null,
     el: rect.el || null,
     textColor: rect.color || "#ffffff",
-    fontSize: parseFloat(rect.fontSize) || 14,
+    fontSize: (parseFloat(rect.fontSize) || 14) * sy,
     fontFamily: rect.fontFamily || "inherit",
     focused: true
   };
@@ -84,7 +91,9 @@ function syncHostCaret(e, host) {
   if (host && e.settings.hideNativeCaret !== false && e.lastActive && isTextCaretHost(host)) {
     const type = host.tagName === "INPUT" ? String(host.type || "").toLowerCase() : "";
     const isCmdpal = !!host.closest?.(".cmdpal--dialog, .rm-command-palette, .bp3-dialog, .rm-find-or-create-wrapper");
-    if (type !== "password" && !isCmdpal) target = host;
+    // A skipped host (Roam Grid) keeps its browser caret. Blanking it here
+    // would hide the only caret that host has.
+    if (type !== "password" && !isCmdpal && !isSkippedHost(host)) target = host;
   }
   if (target === e._hostCaretEl) return;
   releaseHostCaret(e);
@@ -1120,8 +1129,10 @@ function drawBoxCaret(e) {
     }
   });
   const active = e.animActive;
-  if (!active) return;
-  if (active.w < 3 && active.h < 8) return;
+  if (!active || !(active.w > 0) || !(active.h > 0)) return;
+  // A zoomed-out board caret is smaller than this, and still has to paint.
+  // The letter is the part that needs a box big enough to read.
+  const showGlyph = active.w >= 3 || active.h >= 8;
   const alpha = blinkAlpha(e, now);
   const renderW = active.w;
   ctx.save();
@@ -1153,7 +1164,7 @@ function drawBoxCaret(e) {
   }
   ctx.restore();
   const displayChar = e.pending ? e.pending.holdChar : active.holdChar || active.char;
-  if (!hollow && settings.showChar && displayChar) {
+  if (showGlyph && !hollow && settings.showChar && displayChar) {
     ctx.save();
     ctx.globalAlpha = Math.min(1, 0.3 + alpha * 0.7);
     ctx.fillStyle = invertColor(active.textColor);
@@ -1369,6 +1380,8 @@ function getFullViewportRect(e, doc) {
   return { top, bottom, left: 0, right: win.innerWidth, width: win.innerWidth, height: bottom - top };
 }
 __name(getFullViewportRect, "getFullViewportRect");
+// A fixed container ends the walk. Scrollers inside it, including a page
+// card body on a fullscreen board, are recorded on the way there.
 function resolveClipChain(el2) {
   const chain = [];
   try {

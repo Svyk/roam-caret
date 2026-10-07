@@ -53,16 +53,64 @@ test("projectCaretRect visible is false when the marker is below the content bot
   assert.equal(rect.visible, false);
 });
 
-test("isSkippedHost uses closest for roam-grid and roam-pixel-drawer roots", () => {
-  const skipped = {
+test("isSkippedHost skips Roam Grid and measures a Plexus board", () => {
+  const grid = {
     closest(sel) {
-      return sel === ".rg-root, .pxd-root" ? { className: "rg-root" } : null;
+      return sel === ".rg-root" ? { className: "rg-root" } : null;
     },
   };
-  const other = { closest: () => null };
-  assert.equal(isSkippedHost(skipped), true);
-  assert.equal(isSkippedHost(other), false);
+  const board = {
+    closest(sel) {
+      return sel === ".pxd-root" ? { className: "pxd-root" } : null;
+    },
+  };
+  assert.equal(isSkippedHost(grid), true);
+  assert.equal(isSkippedHost(board), false);
+  assert.equal(isSkippedHost({ closest: () => null }), false);
   assert.equal(isSkippedHost(null), false);
+});
+
+test("projectCaretRect scale 0.5 maps the unscaled marker onto the screen box", () => {
+  const rect = projectCaretRect(zeros({
+    box: { left: 80, top: 40, width: 100, height: 20 },
+    offsetW: 200,
+    offsetH: 40,
+  }));
+  assert.equal(rect.x, 85);
+  assert.equal(rect.y, 41);
+  assert.equal(rect.width, 4);
+  assert.equal(rect.height, 9.5);
+  assert.equal(rect.scaleX, 0.5);
+  assert.equal(rect.scaleY, 0.5);
+});
+
+test("projectCaretRect scale 2 maps the unscaled marker onto the screen box", () => {
+  const rect = projectCaretRect(zeros({
+    box: { left: 40, top: 20, width: 400, height: 80 },
+    offsetW: 200,
+    offsetH: 40,
+  }));
+  assert.equal(rect.x, 60);
+  assert.equal(rect.y, 24);
+  assert.equal(rect.width, 16);
+  assert.equal(rect.height, 38);
+  assert.equal(rect.scaleX, 2);
+  assert.equal(rect.scaleY, 2);
+});
+
+test("projectCaretRect keeps the caret at least one device pixel wide", () => {
+  const rect = projectCaretRect(zeros({
+    box: { left: 10, top: 20, width: 20, height: 4 },
+    offsetW: 200,
+    offsetH: 40,
+    glyphWidth: 2,
+    devicePixelRatio: 2,
+  }));
+  assert.equal(rect.scaleX, 0.1);
+  assert.equal(rect.width, 0.5);
+  assert.equal(rect.height, 19 * 0.1);
+  assert.equal(rect.x, 11);
+  assert.equal(rect.y, 20.2);
 });
 
 function createFakeDoc() {
@@ -401,6 +449,50 @@ test("Find or Create: an empty field puts the caret after the icon, centred on t
   const typed = measurer.measure(input);
   assert.equal(typed.x, 400 + 30 + 3 * 7);
   assert.equal(typed.y, rect.y, "typing does not move the caret off the line");
+  measurer.dispose();
+});
+
+test("a scaled Plexus textarea measures in layout px and paints in screen px", () => {
+  const { doc, body } = createFakeDoc();
+  const win = {
+    getComputedStyle: () => fakeComputed(),
+    addEventListener() {},
+    removeEventListener() {},
+  };
+  const measurer = createCaretMeasurer({ doc, win });
+  const cases = [
+    {
+      box: { left: 80, top: 40, width: 100, height: 20, right: 180, bottom: 60 },
+      x: 85,
+      y: 41,
+      width: 4,
+      height: 9.5,
+      scale: 0.5,
+    },
+    {
+      box: { left: 40, top: 20, width: 400, height: 80, right: 440, bottom: 100 },
+      x: 60,
+      y: 24,
+      width: 16,
+      height: 38,
+      scale: 2,
+    },
+  ];
+  for (const item of cases) {
+    const el = fakeTextEl(doc, { getBoundingClientRect: () => item.box });
+    const rect = measurer.measure(el);
+    assert.equal(rect.x, item.x, `scale ${item.scale} x`);
+    assert.equal(rect.y, item.y, `scale ${item.scale} y`);
+    assert.equal(rect.width, item.width, `scale ${item.scale} width`);
+    assert.equal(rect.height, item.height, `scale ${item.scale} height`);
+    assert.equal(rect.scaleX, item.scale);
+    assert.equal(rect.scaleY, item.scale);
+    assert.equal(body.children[0].style.width, "200px", "the mirror stays in layout px");
+  }
+  const grid = fakeTextEl(doc, {
+    closest: (sel) => (sel === ".rg-root" ? { className: "rg-root" } : null),
+  });
+  assert.equal(measurer.measure(grid), null, "a Roam Grid host is not measured");
   measurer.dispose();
 });
 

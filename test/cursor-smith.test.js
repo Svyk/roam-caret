@@ -377,6 +377,32 @@ test("caretCoords uses caretWidthPx for Beam", () => {
   assert.equal(coords.w, 3);
 });
 
+test("caretCoords scales a Beam with the board and keeps one device pixel", () => {
+  const engine = (scaleX, dpr, caretWidthPx) => ({
+    measurer: {
+      latest: () => ({
+        x: 60,
+        y: 24,
+        width: 16,
+        height: 38,
+        scaleX,
+        scaleY: scaleX,
+        fontSize: "15px",
+        devicePixelRatio: dpr,
+        glyph: "",
+      }),
+    },
+    styleFor(key) {
+      const values = { cursorStyle: "Beam", caretWidthPx };
+      return values[key];
+    },
+  });
+  assert.equal(caretCoords(engine(2, 1, 2)).w, 4);
+  assert.equal(caretCoords(engine(2, 1, 2)).fontSize, 30);
+  assert.equal(caretCoords(engine(0.5, 1, 2)).w, 1);
+  assert.equal(caretCoords(engine(0.1, 2, 2)).w, 0.5);
+});
+
 test("drawBeamCaret paints a centered rounded beam", () => {
   const { engine, ops } = makeBeamEngineStub();
   drawBeamCaret(engine);
@@ -466,4 +492,60 @@ test("canvas: a focused preview clips the caret and its effects to the preview b
   doc.activeElement = field(false);
   const block = getCaretClipRect({}, doc);
   assert.deepEqual([block.top, block.left, block.bottom, block.right], [50, 50, 700, 600], "a block clips to its scroller");
+});
+
+test("canvas: a page card clips to its scrolling body under a fixed board", () => {
+  const styles = new Map();
+  const doc = {
+    body: {},
+    documentElement: {},
+    querySelector: () => null,
+    defaultView: {
+      innerWidth: 1000,
+      innerHeight: 800,
+      getComputedStyle: (el) => styles.get(el) || { position: "static", overflowX: "visible", overflowY: "visible" },
+    },
+  };
+  const root = {
+    parentElement: doc.body,
+    isConnected: true,
+    getBoundingClientRect: () => ({ top: 0, left: 0, bottom: 700, right: 900 }),
+  };
+  const world = {
+    parentElement: root,
+    isConnected: true,
+    getBoundingClientRect: () => ({ top: -400, left: -400, bottom: 2000, right: 2000 }),
+  };
+  const item = {
+    parentElement: world,
+    isConnected: true,
+    getBoundingClientRect: () => ({ top: 80, left: 80, bottom: 500, right: 500 }),
+  };
+  const itemBody = {
+    parentElement: item,
+    isConnected: true,
+    getBoundingClientRect: () => ({ top: 100, left: 90, bottom: 480, right: 480 }),
+  };
+  const pageEdit = {
+    parentElement: itemBody,
+    isConnected: true,
+    getBoundingClientRect: () => ({ top: 120, left: 110, bottom: 260, right: 330 }),
+  };
+  styles.set(root, { position: "fixed", overflowX: "hidden", overflowY: "hidden" });
+  styles.set(world, { position: "absolute", overflowX: "visible", overflowY: "visible" });
+  styles.set(item, { position: "absolute", overflowX: "hidden", overflowY: "hidden" });
+  styles.set(itemBody, { position: "static", overflowX: "hidden", overflowY: "hidden" });
+  styles.set(pageEdit, { position: "relative", overflowX: "auto", overflowY: "auto" });
+  const field = {
+    ownerDocument: doc,
+    parentElement: pageEdit,
+    isConnected: true,
+    classList: { contains: () => false },
+    getBoundingClientRect: () => ({ top: 120, left: 110, bottom: 420, right: 330 }),
+  };
+  styles.set(field, { position: "static", overflowX: "visible", overflowY: "visible" });
+  doc.activeElement = field;
+  const clip = getCaretClipRect({}, doc);
+  assert.deepEqual([clip.top, clip.left, clip.bottom, clip.right], [120, 110, 260, 330]);
+  assert.notEqual(clip.bottom, 700, "the fixed board is not the clip");
 });

@@ -2,7 +2,7 @@
 
 Lite CSS caret for Roam Research. Canvas only when an effect needs it. A plain Line (glow and letter off, no effects) colours the browser's own caret and runs no code per keystroke. Native settings live under **Settings → Roam Depot → Roam Caret**. Command palette: Open settings / Studio / Toggle / Random look / Cycle preset / Diagnose.
 
-Saved options use a JSON blob (`options`) as source of truth; selected fields mirror to `cs-*` keys for Roam Depot. Roam Grid and Plexus diagram textareas (`.rg-root`, `.pxd-root`) keep the native caret.
+Saved options use a JSON blob (`options`) as source of truth; selected fields mirror to `cs-*` keys for Roam Depot. Roam Grid textareas (`.rg-root`) keep the native caret. Inside a Plexus Diagram board (`.pxd-root`) the caret follows the board's zoom and is clipped to the card; Plexus sends `plexus-diagram:camera` when it pans or zooms.
 
 ## Install
 

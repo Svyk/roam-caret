@@ -13,6 +13,7 @@ import { createCaretMeasurer } from "./caret-measure.js";
 import {
   STUDIO_OPEN_CLASS,
   coveredByPanel,
+  CAMERA_EVENT,
   installLiteCaret,
   installNativeCaret,
   isCaretHost,
@@ -322,6 +323,9 @@ class CursorSmithRuntime {
     if (typeof win?.addEventListener === "function") {
       this._bindPumpListener(win, "scroll", pump, true);
       this._bindPumpListener(win, "resize", pump, false);
+      // Pan/zoom is a transform. The canvas reads the measurer, so the pump
+      // has to measure on the same event the lite caret listens for.
+      this._bindPumpListener(win, CAMERA_EVENT, pump, false);
     }
   }
 

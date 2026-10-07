@@ -1,4 +1,4 @@
-import { isSkippedHost, isTextTarget } from "./caret-measure.js";
+import { deviceMinPx, isSkippedHost, isTextTarget, scaledCaretWidth } from "./caret-measure.js";
 import { DEMO_Z_INDEX, needsCanvas } from "./cursor-smith.js";
 import { hexToRgba } from "./settings.js";
 import { isRoamDark } from "./theme.js";
@@ -19,6 +19,9 @@ const SETTLE_MAX_MS = 1000;
 // Keys that commonly move a focused field without typing into it.
 const MOVING_KEYS = new Set(["Alt", "Control", "Meta", "Enter", "Escape"]);
 const BASE_Z_INDEX = 40;
+// Plexus dispatches this on pan and zoom. The board moves by transform, so
+// no scroll event follows. Not a window global.
+export const CAMERA_EVENT = "plexus-diagram:camera";
 const DEMO_CLASS = "cs-lite-demo";
 export const SELECTION_CLASS = "cs-sel";
 const SELECTION_BG = "--cs-selection";
@@ -92,6 +95,11 @@ export function isPlainLine(settings) {
     && !needsCanvas(settings);
 }
 
+function axisScale(value) {
+  const n = Number(value);
+  return Number.isFinite(n) && n > 0 ? n : 1;
+}
+
 function opacityOf(settings) {
   const value = Number(settings?.cursorOpacity);
   return Number.isFinite(value) ? Math.min(1, Math.max(0, value)) : 1;
@@ -122,7 +130,10 @@ function caretOutsideTextarea(rect, strict) {
 }
 
 // Same walk as the canvas engine's resolveClipChain: every overflow ancestor
-// that can clip the textarea, stopping at a fixed-position container.
+// that can clip the textarea. A fixed container (a fullscreen .pxd-root)
+// ends the walk — ancestors outside it do not clip — but scrollers inside
+// it are already recorded. A page card scrolls in its own body, so that
+// body stays in the chain even when the board is position:fixed.
 function resolveClipChain(el, doc, win) {
   const chain = [];
   if (typeof win?.getComputedStyle !== "function") return chain;
@@ -623,13 +634,24 @@ export function installLiteCaret({ doc, win, measurer, lifecycle, getSettings, r
     writeGlyph("display", "block");
     writeGlyph("color", glyphColor);
     writeGlyph("fontFamily", rect.fontFamily || "");
-    writeGlyph("fontSize", rect.fontSize || "");
+    writeGlyph("fontSize", scaleCssLength(rect.fontSize, axisScale(rect.scaleY)));
     writeGlyph("fontWeight", rect.fontWeight || "");
     writeGlyph("fontStyle", rect.fontStyle || "");
     writeGlyph(
       "lineHeight",
-      rect.lineHeight && rect.lineHeight !== "normal" ? rect.lineHeight : `${height}px`,
+      rect.lineHeight && rect.lineHeight !== "normal"
+        ? scaleCssLength(rect.lineHeight, axisScale(rect.scaleY))
+        : `${height}px`,
     );
+  };
+
+  // A px length on the mirror is layout px. On screen it takes the board scale.
+  // Scale 1 keeps the original string so an unscaled field writes nothing new.
+  const scaleCssLength = (value, scale) => {
+    const text = value == null ? "" : String(value);
+    if (!(scale > 0) || scale === 1 || !text.endsWith("px")) return text;
+    const n = Number.parseFloat(text);
+    return Number.isFinite(n) ? `${n * scale}px` : text;
   };
 
   // The glow string is built once per colour, not once per key.
@@ -664,15 +686,17 @@ export function installLiteCaret({ doc, win, measurer, lifecycle, getSettings, r
     let y = rect.y;
     let width = rect.width;
     let height = rect.height;
+    const dpr = windowRef.devicePixelRatio;
+    const stroke = (cssPx) => scaledCaretWidth(cssPx, axisScale(rect.scaleX), dpr);
 
     if (cursorStyle === "Line") {
-      width = settings.caretWidthPx ?? 2;
+      width = stroke(settings.caretWidthPx ?? 2);
       height = rect.height;
       writeStyle("borderRadius", "");
       writeStyle("border", "");
       writeStyle("background", color);
     } else if (cursorStyle === "Underline") {
-      const bar = settings.underlineWidthPx || 2;
+      const bar = stroke(settings.underlineWidthPx || 2);
       width = rect.width;
       height = bar;
       y = rect.y + rect.height - bar;
@@ -680,8 +704,8 @@ export function installLiteCaret({ doc, win, measurer, lifecycle, getSettings, r
       writeStyle("border", "");
       writeStyle("background", color);
     } else if (cursorStyle === "Beam") {
-      width = settings.caretWidthPx ?? 3;
-      height = Math.max(2, rect.height * 0.82);
+      width = stroke(settings.caretWidthPx ?? 3);
+      height = Math.max(deviceMinPx(dpr), rect.height * 0.82);
       y = rect.y + (rect.height - height) / 2;
       x = rect.x - width / 2;
       writeStyle("borderRadius", "3px");
@@ -691,7 +715,7 @@ export function installLiteCaret({ doc, win, measurer, lifecycle, getSettings, r
       writeStyle("borderRadius", "1px");
       if (settings.boxHollow) {
         writeStyle("background", "transparent");
-        writeStyle("border", `${settings.boxHollowWidth || 2}px solid ${color}`);
+        writeStyle("border", `${stroke(settings.boxHollowWidth || 2)}px solid ${color}`);
       } else {
         writeStyle("border", "");
         writeStyle("background", color);
@@ -1131,8 +1155,20 @@ export function installLiteCaret({ doc, win, measurer, lifecycle, getSettings, r
   for (const [type, fn, capture] of docListeners) {
     documentRef.addEventListener(type, fn, capture);
   }
+  // The board pans and zooms by transform. Scroll does not fire. Plexus
+  // dispatches CAMERA_EVENT; one measure per event, then the same settle
+  // follow a moving field already uses. Nothing polls while the box is still.
+  const onCamera = () => {
+    if (disposed) return;
+    const target = documentRef.activeElement || active;
+    if (!target || !isCaretHost(target) || !target.closest?.(".pxd-root")) return;
+    schedule(false);
+    settle();
+  };
+
   windowRef.addEventListener("scroll", onScrollOrResize, SCROLL_OPTS);
   windowRef.addEventListener("resize", onScrollOrResize, PASSIVE_OPTS);
+  windowRef.addEventListener(CAMERA_EVENT, onCamera);
   windowRef.addEventListener("blur", onWindowBlur, PASSIVE_OPTS);
   windowRef.addEventListener("focus", onWindowFocus, PASSIVE_OPTS);
   const visualViewport = windowRef.visualViewport;
@@ -1168,6 +1204,7 @@ export function installLiteCaret({ doc, win, measurer, lifecycle, getSettings, r
     }
     windowRef.removeEventListener("scroll", onScrollOrResize, SCROLL_OPTS);
     windowRef.removeEventListener("resize", onScrollOrResize, PASSIVE_OPTS);
+    windowRef.removeEventListener(CAMERA_EVENT, onCamera);
     windowRef.removeEventListener("blur", onWindowBlur, PASSIVE_OPTS);
     windowRef.removeEventListener("focus", onWindowFocus, PASSIVE_OPTS);
     visualViewport?.removeEventListener?.("scroll", onScrollOrResize, PASSIVE_OPTS);

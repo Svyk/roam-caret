@@ -1,4 +1,4 @@
-/* Roam Caret v0.6.5 | MIT | generated; edit src/ */
+/* Roam Caret v0.6.6 | MIT | generated; edit src/ */
 var __defProp = Object.defineProperty;
 var __getOwnPropNames = Object.getOwnPropertyNames;
 var __esm = (fn, res, err) => function __init() {
@@ -714,6 +714,362 @@ body.${BODY_ACTIVE_CLASS} .${ROOT_CLASS}-panel .cs-demo {
   }
 });
 
+// src/caret-measure.js
+function deviceMinPx(devicePixelRatio) {
+  const dpr = Number(devicePixelRatio);
+  return 1 / (dpr > 0 ? dpr : 1);
+}
+function scaledCaretWidth(cssPx, scale, devicePixelRatio) {
+  const base = Number(cssPx);
+  const factor = Number(scale);
+  const width = (Number.isFinite(base) ? base : 0) * (Number.isFinite(factor) && factor > 0 ? factor : 1);
+  return Math.max(deviceMinPx(devicePixelRatio), width);
+}
+function isTextTarget(element) {
+  if (!element || !element.tagName) return false;
+  if (element.tagName === "TEXTAREA") return true;
+  if (element.tagName !== "INPUT") return false;
+  const type = (element.getAttribute?.("type") || "text").toLowerCase();
+  return ["text", "search", "url", "tel"].includes(type);
+}
+function isSkippedHost(el) {
+  return !!el?.closest?.(SKIP_HOST_SELECTOR);
+}
+function px(value, fallback = 0) {
+  const parsed = Number.parseFloat(value);
+  return Number.isFinite(parsed) ? parsed : fallback;
+}
+function projectCaretRect({
+  box,
+  offsetW,
+  offsetH,
+  markerLeft,
+  markerTop,
+  scrollLeft,
+  scrollTop,
+  borderLeft,
+  borderTop,
+  padLeft,
+  padTop,
+  padRight,
+  padBottom,
+  glyphWidth,
+  lineHeightPx,
+  hasGlyph,
+  glyph,
+  devicePixelRatio
+}) {
+  const scaleX = offsetW ? box.width / offsetW : 1;
+  const scaleY = offsetH ? box.height / offsetH : 1;
+  const x = box.left + (borderLeft + markerLeft - scrollLeft) * scaleX;
+  const y = box.top + (borderTop + markerTop - scrollTop) * scaleY;
+  const width = Math.max(deviceMinPx(devicePixelRatio), glyphWidth * scaleX);
+  const height = lineHeightPx * scaleY;
+  const boxRight = box.right ?? box.left + box.width;
+  const boxBottom = box.bottom ?? box.top + box.height;
+  const content = {
+    left: box.left + (borderLeft + padLeft) * scaleX,
+    top: box.top + (borderTop + padTop) * scaleY,
+    right: boxRight - (borderLeft + padRight) * scaleX,
+    bottom: boxBottom - (borderTop + padBottom) * scaleY
+  };
+  const visible = x + width > content.left && x < content.right && y + height > content.top && y < content.bottom;
+  return {
+    x,
+    y,
+    width,
+    height,
+    glyph: hasGlyph ? glyph : "",
+    visible,
+    scaleX,
+    scaleY
+  };
+}
+function readMetrics(computed) {
+  const fontSizePx = px(computed.fontSize, 16);
+  return {
+    borderLeft: px(computed.borderLeftWidth),
+    borderTop: px(computed.borderTopWidth),
+    borderBottom: px(computed.borderBottomWidth),
+    padLeft: px(computed.paddingLeft),
+    padTop: px(computed.paddingTop),
+    padRight: px(computed.paddingRight),
+    padBottom: px(computed.paddingBottom),
+    lineHeightPx: px(computed.lineHeight) || fontSizePx * 1.2 || 19,
+    fontFamily: computed.fontFamily || "",
+    fontSize: computed.fontSize || "",
+    fontWeight: computed.fontWeight || "",
+    fontStyle: computed.fontStyle || "",
+    lineHeight: computed.lineHeight || "",
+    color: computed.color || "",
+    fontSizePx
+  };
+}
+function caretLine(metrics, offsetH) {
+  const lineHeightPx = metrics.lineHeightPx;
+  if (!metrics.singleLine) return { top: 0, height: lineHeightPx, css: metrics.lineHeight };
+  const contentH = offsetH - metrics.borderTop - metrics.borderBottom - metrics.padTop - metrics.padBottom;
+  if (offsetH && Math.abs(lineHeightPx - contentH) <= 1) {
+    const height2 = Math.min(lineHeightPx, metrics.fontSizePx * INPUT_TEXT_EM);
+    return { top: (lineHeightPx - height2) / 2, height: height2, css: `${height2}px` };
+  }
+  const height = Math.min(lineHeightPx, metrics.fontSizePx * INPUT_LINE_EM);
+  return { top: offsetH ? (contentH - height) / 2 : 0, height, css: `${height}px` };
+}
+function glyphAt(value, start) {
+  const underCaret = value[start] && value[start] !== "\n" ? value[start] : "0";
+  const hasGlyph = underCaret !== "0" || value[start] === "0";
+  return { underCaret, hasGlyph };
+}
+function editableText(documentRef, element) {
+  const node = typeof documentRef.createTextNode === "function" ? documentRef.createTextNode("") : null;
+  const canEdit = typeof node?.replaceData === "function";
+  if (canEdit) element.appendChild(node);
+  let current = "";
+  return (next) => {
+    const prev = current;
+    if (next === prev) return;
+    current = next;
+    if (!canEdit) {
+      element.textContent = next;
+      return;
+    }
+    let same;
+    if (next.length >= prev.length && next.startsWith(prev)) same = prev.length;
+    else if (prev.startsWith(next)) same = next.length;
+    else {
+      same = 0;
+      const limit = Math.min(prev.length, next.length);
+      while (same < limit && prev.charCodeAt(same) === next.charCodeAt(same)) same += 1;
+    }
+    node.replaceData(same, prev.length - same, next.slice(same));
+  };
+}
+function createCaretMeasurer({ doc, win, lifecycle } = {}) {
+  const documentRef = doc || globalThis.document;
+  const windowRef = win || documentRef?.defaultView || globalThis;
+  const subscribers = /* @__PURE__ */ new Set();
+  let cachedEl = null;
+  let metrics = null;
+  let latestRect = null;
+  let markerHeight = "";
+  let disposed = false;
+  const mirror = documentRef.createElement("div");
+  const style = mirror.style;
+  style.position = "absolute";
+  style.top = "0";
+  style.left = "-99999px";
+  style.visibility = "hidden";
+  style.height = "auto";
+  style.whiteSpace = "pre-wrap";
+  style.overflowWrap = "break-word";
+  style.contain = "layout style";
+  mirror.setAttribute("aria-hidden", "true");
+  const beforeBlock = documentRef.createElement("div");
+  const lineBlock = documentRef.createElement("div");
+  const prefixNode = documentRef.createElement("span");
+  const marker = documentRef.createElement("span");
+  marker.style.display = "inline-block";
+  marker.style.width = "0";
+  marker.style.verticalAlign = "top";
+  marker.textContent = MARKER_CHAR;
+  const glyphEl = documentRef.createElement("span");
+  lineBlock.appendChild(prefixNode);
+  lineBlock.appendChild(marker);
+  lineBlock.appendChild(glyphEl);
+  mirror.appendChild(beforeBlock);
+  mirror.appendChild(lineBlock);
+  const setBefore = editableText(documentRef, beforeBlock);
+  const setLine = editableText(documentRef, prefixNode);
+  const setGlyph = editableText(documentRef, glyphEl);
+  let lineIndent = "";
+  const parent = documentRef.body || documentRef.documentElement || globalThis.document?.body;
+  if (lifecycle) lifecycle.node(mirror, parent);
+  else parent.append(mirror);
+  const invalidate = () => {
+    cachedEl = null;
+    metrics = null;
+  };
+  const themeListeners = [];
+  const bindThemeListener = (target, type, fn, options) => {
+    target?.addEventListener?.(type, fn, options);
+    themeListeners.push({ target, type, fn, options });
+  };
+  if (windowRef?.addEventListener) {
+    bindThemeListener(windowRef, "resize", invalidate);
+  }
+  const colorSchemeMq = windowRef?.matchMedia?.("(prefers-color-scheme: dark)");
+  bindThemeListener(colorSchemeMq, "change", invalidate);
+  const visualViewport = windowRef.visualViewport;
+  bindThemeListener(visualViewport, "resize", invalidate);
+  let themeObserver = null;
+  if (typeof MutationObserver === "function") {
+    themeObserver = new MutationObserver((mutations) => {
+      for (const mutation of mutations) {
+        if (mutation.type === "attributes" && mutation.attributeName === "class") {
+          invalidate();
+          return;
+        }
+      }
+    });
+    const observeClass = (node) => {
+      if (!node) return;
+      themeObserver.observe(node, { attributes: true, attributeFilter: ["class"] });
+    };
+    observeClass(documentRef.documentElement);
+    observeClass(documentRef.body);
+  }
+  const notify = (rect) => {
+    for (const fn of subscribers) fn(rect);
+  };
+  const measure = (el) => {
+    if (disposed) return null;
+    if (!isTextTarget(el) || isSkippedHost(el)) return null;
+    if (el !== cachedEl) {
+      const computedStyle = windowRef.getComputedStyle(el);
+      const copied = MIRROR_PROPERTIES.map((name) => computedStyle[name]);
+      metrics = readMetrics(computedStyle);
+      MIRROR_PROPERTIES.forEach((name, index) => {
+        style[name] = copied[index];
+      });
+      metrics.singleLine = el.tagName === "INPUT";
+      style.whiteSpace = metrics.singleLine ? "pre" : "pre-wrap";
+      cachedEl = el;
+    }
+    const value = el.value ?? "";
+    const start = Math.min(el.selectionStart ?? value.length, value.length);
+    const { underCaret, hasGlyph } = glyphAt(value, start);
+    const split = !metrics.singleLine && start > 0 ? value.lastIndexOf("\n", start - 1) : -1;
+    if (split < 0) {
+      setBefore("");
+      setLine(value.slice(0, start));
+    } else {
+      const before = value.slice(0, split);
+      setBefore(before === "" || before.endsWith("\n") ? before + MARKER_CHAR : before);
+      setLine(value.slice(split + 1, start));
+    }
+    const indent = split < 0 ? "" : "0px";
+    if (indent !== lineIndent) {
+      lineIndent = indent;
+      lineBlock.style.textIndent = indent;
+    }
+    const nextMarkerHeight = `${metrics.lineHeightPx}px`;
+    if (nextMarkerHeight !== markerHeight) {
+      markerHeight = nextMarkerHeight;
+      marker.style.height = nextMarkerHeight;
+    }
+    setGlyph(underCaret);
+    const box = el.getBoundingClientRect();
+    const glyphWidth = glyphEl.offsetWidth || metrics.fontSizePx * 0.6 || 8;
+    const offsetH = el.offsetHeight || 0;
+    const line = caretLine(metrics, offsetH);
+    const rect = {
+      ...projectCaretRect({
+        box,
+        offsetW: el.offsetWidth || 0,
+        offsetH,
+        markerLeft: marker.offsetLeft || 0,
+        markerTop: (marker.offsetTop || 0) + line.top,
+        scrollLeft: el.scrollLeft || 0,
+        scrollTop: el.scrollTop || 0,
+        borderLeft: metrics.borderLeft,
+        borderTop: metrics.borderTop,
+        padLeft: metrics.padLeft,
+        padTop: metrics.padTop,
+        padRight: metrics.padRight,
+        padBottom: metrics.padBottom,
+        glyphWidth,
+        lineHeightPx: line.height,
+        hasGlyph,
+        glyph: underCaret,
+        devicePixelRatio: windowRef.devicePixelRatio
+      }),
+      fontFamily: metrics.fontFamily,
+      fontSize: metrics.fontSize,
+      fontWeight: metrics.fontWeight,
+      fontStyle: metrics.fontStyle,
+      lineHeight: line.css,
+      color: metrics.color,
+      box,
+      el,
+      pos: start
+    };
+    latestRect = rect;
+    notify(rect);
+    return rect;
+  };
+  return {
+    measure,
+    latest() {
+      return latestRect;
+    },
+    // No caret field has focus: the canvas engine stops drawing the last one.
+    clear() {
+      latestRect = null;
+    },
+    subscribe(fn) {
+      subscribers.add(fn);
+      return () => subscribers.delete(fn);
+    },
+    isSkippedHost,
+    // Drop the cached style so the next measure copies the host's width again.
+    invalidate,
+    dispose() {
+      if (disposed) return;
+      disposed = true;
+      subscribers.clear();
+      cachedEl = null;
+      metrics = null;
+      latestRect = null;
+      for (const { target, type, fn, options } of themeListeners) {
+        try {
+          target?.removeEventListener?.(type, fn, options);
+        } catch {
+        }
+      }
+      themeListeners.length = 0;
+      try {
+        themeObserver?.disconnect();
+      } catch {
+      }
+      themeObserver = null;
+      mirror.remove();
+    }
+  };
+}
+var MARKER_CHAR, INPUT_LINE_EM, INPUT_TEXT_EM, SKIP_HOST_SELECTOR, MIRROR_PROPERTIES;
+var init_caret_measure = __esm({
+  "src/caret-measure.js"() {
+    MARKER_CHAR = "​";
+    INPUT_LINE_EM = 1.5;
+    INPUT_TEXT_EM = 1.2;
+    SKIP_HOST_SELECTOR = ".rg-root";
+    MIRROR_PROPERTIES = Object.freeze([
+      "boxSizing",
+      "width",
+      "paddingTop",
+      "paddingRight",
+      "paddingBottom",
+      "paddingLeft",
+      "borderTopWidth",
+      "borderRightWidth",
+      "borderBottomWidth",
+      "borderLeftWidth",
+      "fontFamily",
+      "fontSize",
+      "fontWeight",
+      "fontStyle",
+      "fontVariant",
+      "letterSpacing",
+      "textTransform",
+      "textIndent",
+      "lineHeight",
+      "tabSize",
+      "direction"
+    ]);
+  }
+});
+
 // src/theme.js
 function isRoamDark(doc) {
   if (doc?.documentElement?.classList?.contains("bp3-dark")) return true;
@@ -765,6 +1121,10 @@ function caretCoords(e) {
   if (!rect) return null;
   const h2 = rect.height;
   const charWidth = rect.width;
+  const scaleX = Number(rect.scaleX);
+  const scaleY = Number(rect.scaleY);
+  const sx = Number.isFinite(scaleX) && scaleX > 0 ? scaleX : 1;
+  const sy = Number.isFinite(scaleY) && scaleY > 0 ? scaleY : 1;
   return {
     x: rect.x,
     top: rect.y,
@@ -772,14 +1132,14 @@ function caretCoords(e) {
     h: h2,
     w: (() => {
       const style = e.styleFor("cursorStyle");
-      return style === "Line" || style === "Beam" ? e.styleFor("caretWidthPx") : charWidth;
+      return style === "Line" || style === "Beam" ? scaledCaretWidth(e.styleFor("caretWidthPx"), sx, rect.devicePixelRatio) : charWidth;
     })(),
     actualCharWidth: charWidth,
     char: rect.glyph || "",
     pos: rect.pos ?? null,
     el: rect.el || null,
     textColor: rect.color || "#ffffff",
-    fontSize: parseFloat(rect.fontSize) || 14,
+    fontSize: (parseFloat(rect.fontSize) || 14) * sy,
     fontFamily: rect.fontFamily || "inherit",
     focused: true
   };
@@ -802,7 +1162,7 @@ function syncHostCaret(e, host) {
   if (host && e.settings.hideNativeCaret !== false && e.lastActive && isTextCaretHost(host)) {
     const type = host.tagName === "INPUT" ? String(host.type || "").toLowerCase() : "";
     const isCmdpal = !!host.closest?.(".cmdpal--dialog, .rm-command-palette, .bp3-dialog, .rm-find-or-create-wrapper");
-    if (type !== "password" && !isCmdpal) target = host;
+    if (type !== "password" && !isCmdpal && !isSkippedHost(host)) target = host;
   }
   if (target === e._hostCaretEl) return;
   releaseHostCaret(e);
@@ -1767,8 +2127,8 @@ function drawBoxCaret(e) {
     }
   });
   const active = e.animActive;
-  if (!active) return;
-  if (active.w < 3 && active.h < 8) return;
+  if (!active || !(active.w > 0) || !(active.h > 0)) return;
+  const showGlyph = active.w >= 3 || active.h >= 8;
   const alpha = blinkAlpha(e, now);
   const renderW = active.w;
   ctx.save();
@@ -1800,7 +2160,7 @@ function drawBoxCaret(e) {
   }
   ctx.restore();
   const displayChar = e.pending ? e.pending.holdChar : active.holdChar || active.char;
-  if (!hollow && settings.showChar && displayChar) {
+  if (showGlyph && !hollow && settings.showChar && displayChar) {
     ctx.save();
     ctx.globalAlpha = Math.min(1, 0.3 + alpha * 0.7);
     ctx.fillStyle = invertColor(active.textColor);
@@ -2362,6 +2722,7 @@ var __defProp3, __name2, THUNDER_LIFE_MS, THUNDER_MAX_ANGLE, THUNDER_MIN_REACH, 
 var init_cursor_engine = __esm({
   "src/cursor-engine.js"() {
     init_cursor_smith();
+    init_caret_measure();
     init_theme();
     __defProp3 = Object.defineProperty;
     __name2 = (target, value) => __defProp3(target, "name", { value, configurable: true });
@@ -4331,344 +4692,11 @@ function buildDepotPanel({
   return { tabTitle: "Roam Caret", settings: rows };
 }
 
-// src/caret-measure.js
-var MARKER_CHAR = "​";
-var INPUT_LINE_EM = 1.5;
-var INPUT_TEXT_EM = 1.2;
-var SKIP_HOST_SELECTOR = ".rg-root, .pxd-root";
-var MIRROR_PROPERTIES = Object.freeze([
-  "boxSizing",
-  "width",
-  "paddingTop",
-  "paddingRight",
-  "paddingBottom",
-  "paddingLeft",
-  "borderTopWidth",
-  "borderRightWidth",
-  "borderBottomWidth",
-  "borderLeftWidth",
-  "fontFamily",
-  "fontSize",
-  "fontWeight",
-  "fontStyle",
-  "fontVariant",
-  "letterSpacing",
-  "textTransform",
-  "textIndent",
-  "lineHeight",
-  "tabSize",
-  "direction"
-]);
-function isTextTarget(element) {
-  if (!element || !element.tagName) return false;
-  if (element.tagName === "TEXTAREA") return true;
-  if (element.tagName !== "INPUT") return false;
-  const type = (element.getAttribute?.("type") || "text").toLowerCase();
-  return ["text", "search", "url", "tel"].includes(type);
-}
-function isSkippedHost(el) {
-  return !!el?.closest?.(SKIP_HOST_SELECTOR);
-}
-function px(value, fallback = 0) {
-  const parsed = Number.parseFloat(value);
-  return Number.isFinite(parsed) ? parsed : fallback;
-}
-function projectCaretRect({
-  box,
-  offsetW,
-  offsetH,
-  markerLeft,
-  markerTop,
-  scrollLeft,
-  scrollTop,
-  borderLeft,
-  borderTop,
-  padLeft,
-  padTop,
-  padRight,
-  padBottom,
-  glyphWidth,
-  lineHeightPx,
-  hasGlyph,
-  glyph
-}) {
-  const scaleX = offsetW ? box.width / offsetW : 1;
-  const scaleY = offsetH ? box.height / offsetH : 1;
-  const x = box.left + (borderLeft + markerLeft - scrollLeft) * scaleX;
-  const y = box.top + (borderTop + markerTop - scrollTop) * scaleY;
-  const width = glyphWidth * scaleX;
-  const height = lineHeightPx * scaleY;
-  const boxRight = box.right ?? box.left + box.width;
-  const boxBottom = box.bottom ?? box.top + box.height;
-  const content = {
-    left: box.left + (borderLeft + padLeft) * scaleX,
-    top: box.top + (borderTop + padTop) * scaleY,
-    right: boxRight - (borderLeft + padRight) * scaleX,
-    bottom: boxBottom - (borderTop + padBottom) * scaleY
-  };
-  const visible = x + width > content.left && x < content.right && y + height > content.top && y < content.bottom;
-  return {
-    x,
-    y,
-    width,
-    height,
-    glyph: hasGlyph ? glyph : "",
-    visible
-  };
-}
-function readMetrics(computed) {
-  const fontSizePx = px(computed.fontSize, 16);
-  return {
-    borderLeft: px(computed.borderLeftWidth),
-    borderTop: px(computed.borderTopWidth),
-    borderBottom: px(computed.borderBottomWidth),
-    padLeft: px(computed.paddingLeft),
-    padTop: px(computed.paddingTop),
-    padRight: px(computed.paddingRight),
-    padBottom: px(computed.paddingBottom),
-    lineHeightPx: px(computed.lineHeight) || fontSizePx * 1.2 || 19,
-    fontFamily: computed.fontFamily || "",
-    fontSize: computed.fontSize || "",
-    fontWeight: computed.fontWeight || "",
-    fontStyle: computed.fontStyle || "",
-    lineHeight: computed.lineHeight || "",
-    color: computed.color || "",
-    fontSizePx
-  };
-}
-function caretLine(metrics, offsetH) {
-  const lineHeightPx = metrics.lineHeightPx;
-  if (!metrics.singleLine) return { top: 0, height: lineHeightPx, css: metrics.lineHeight };
-  const contentH = offsetH - metrics.borderTop - metrics.borderBottom - metrics.padTop - metrics.padBottom;
-  if (offsetH && Math.abs(lineHeightPx - contentH) <= 1) {
-    const height2 = Math.min(lineHeightPx, metrics.fontSizePx * INPUT_TEXT_EM);
-    return { top: (lineHeightPx - height2) / 2, height: height2, css: `${height2}px` };
-  }
-  const height = Math.min(lineHeightPx, metrics.fontSizePx * INPUT_LINE_EM);
-  return { top: offsetH ? (contentH - height) / 2 : 0, height, css: `${height}px` };
-}
-function glyphAt(value, start) {
-  const underCaret = value[start] && value[start] !== "\n" ? value[start] : "0";
-  const hasGlyph = underCaret !== "0" || value[start] === "0";
-  return { underCaret, hasGlyph };
-}
-function editableText(documentRef, element) {
-  const node = typeof documentRef.createTextNode === "function" ? documentRef.createTextNode("") : null;
-  const canEdit = typeof node?.replaceData === "function";
-  if (canEdit) element.appendChild(node);
-  let current = "";
-  return (next) => {
-    const prev = current;
-    if (next === prev) return;
-    current = next;
-    if (!canEdit) {
-      element.textContent = next;
-      return;
-    }
-    let same;
-    if (next.length >= prev.length && next.startsWith(prev)) same = prev.length;
-    else if (prev.startsWith(next)) same = next.length;
-    else {
-      same = 0;
-      const limit = Math.min(prev.length, next.length);
-      while (same < limit && prev.charCodeAt(same) === next.charCodeAt(same)) same += 1;
-    }
-    node.replaceData(same, prev.length - same, next.slice(same));
-  };
-}
-function createCaretMeasurer({ doc, win, lifecycle } = {}) {
-  const documentRef = doc || globalThis.document;
-  const windowRef = win || documentRef?.defaultView || globalThis;
-  const subscribers = /* @__PURE__ */ new Set();
-  let cachedEl = null;
-  let metrics = null;
-  let latestRect = null;
-  let markerHeight = "";
-  let disposed = false;
-  const mirror = documentRef.createElement("div");
-  const style = mirror.style;
-  style.position = "absolute";
-  style.top = "0";
-  style.left = "-99999px";
-  style.visibility = "hidden";
-  style.height = "auto";
-  style.whiteSpace = "pre-wrap";
-  style.overflowWrap = "break-word";
-  style.contain = "layout style";
-  mirror.setAttribute("aria-hidden", "true");
-  const beforeBlock = documentRef.createElement("div");
-  const lineBlock = documentRef.createElement("div");
-  const prefixNode = documentRef.createElement("span");
-  const marker = documentRef.createElement("span");
-  marker.style.display = "inline-block";
-  marker.style.width = "0";
-  marker.style.verticalAlign = "top";
-  marker.textContent = MARKER_CHAR;
-  const glyphEl = documentRef.createElement("span");
-  lineBlock.appendChild(prefixNode);
-  lineBlock.appendChild(marker);
-  lineBlock.appendChild(glyphEl);
-  mirror.appendChild(beforeBlock);
-  mirror.appendChild(lineBlock);
-  const setBefore = editableText(documentRef, beforeBlock);
-  const setLine = editableText(documentRef, prefixNode);
-  const setGlyph = editableText(documentRef, glyphEl);
-  let lineIndent = "";
-  const parent = documentRef.body || documentRef.documentElement || globalThis.document?.body;
-  if (lifecycle) lifecycle.node(mirror, parent);
-  else parent.append(mirror);
-  const invalidate = () => {
-    cachedEl = null;
-    metrics = null;
-  };
-  const themeListeners = [];
-  const bindThemeListener = (target, type, fn, options) => {
-    target?.addEventListener?.(type, fn, options);
-    themeListeners.push({ target, type, fn, options });
-  };
-  if (windowRef?.addEventListener) {
-    bindThemeListener(windowRef, "resize", invalidate);
-  }
-  const colorSchemeMq = windowRef?.matchMedia?.("(prefers-color-scheme: dark)");
-  bindThemeListener(colorSchemeMq, "change", invalidate);
-  const visualViewport = windowRef.visualViewport;
-  bindThemeListener(visualViewport, "resize", invalidate);
-  let themeObserver = null;
-  if (typeof MutationObserver === "function") {
-    themeObserver = new MutationObserver((mutations) => {
-      for (const mutation of mutations) {
-        if (mutation.type === "attributes" && mutation.attributeName === "class") {
-          invalidate();
-          return;
-        }
-      }
-    });
-    const observeClass = (node) => {
-      if (!node) return;
-      themeObserver.observe(node, { attributes: true, attributeFilter: ["class"] });
-    };
-    observeClass(documentRef.documentElement);
-    observeClass(documentRef.body);
-  }
-  const notify = (rect) => {
-    for (const fn of subscribers) fn(rect);
-  };
-  const measure = (el) => {
-    if (disposed) return null;
-    if (!isTextTarget(el) || isSkippedHost(el)) return null;
-    if (el !== cachedEl) {
-      const computedStyle = windowRef.getComputedStyle(el);
-      const copied = MIRROR_PROPERTIES.map((name) => computedStyle[name]);
-      metrics = readMetrics(computedStyle);
-      MIRROR_PROPERTIES.forEach((name, index) => {
-        style[name] = copied[index];
-      });
-      metrics.singleLine = el.tagName === "INPUT";
-      style.whiteSpace = metrics.singleLine ? "pre" : "pre-wrap";
-      cachedEl = el;
-    }
-    const value = el.value ?? "";
-    const start = Math.min(el.selectionStart ?? value.length, value.length);
-    const { underCaret, hasGlyph } = glyphAt(value, start);
-    const split = !metrics.singleLine && start > 0 ? value.lastIndexOf("\n", start - 1) : -1;
-    if (split < 0) {
-      setBefore("");
-      setLine(value.slice(0, start));
-    } else {
-      const before = value.slice(0, split);
-      setBefore(before === "" || before.endsWith("\n") ? before + MARKER_CHAR : before);
-      setLine(value.slice(split + 1, start));
-    }
-    const indent = split < 0 ? "" : "0px";
-    if (indent !== lineIndent) {
-      lineIndent = indent;
-      lineBlock.style.textIndent = indent;
-    }
-    const nextMarkerHeight = `${metrics.lineHeightPx}px`;
-    if (nextMarkerHeight !== markerHeight) {
-      markerHeight = nextMarkerHeight;
-      marker.style.height = nextMarkerHeight;
-    }
-    setGlyph(underCaret);
-    const box = el.getBoundingClientRect();
-    const glyphWidth = glyphEl.offsetWidth || metrics.fontSizePx * 0.6 || 8;
-    const offsetH = el.offsetHeight || 0;
-    const line = caretLine(metrics, offsetH);
-    const rect = {
-      ...projectCaretRect({
-        box,
-        offsetW: el.offsetWidth || 0,
-        offsetH,
-        markerLeft: marker.offsetLeft || 0,
-        markerTop: (marker.offsetTop || 0) + line.top,
-        scrollLeft: el.scrollLeft || 0,
-        scrollTop: el.scrollTop || 0,
-        borderLeft: metrics.borderLeft,
-        borderTop: metrics.borderTop,
-        padLeft: metrics.padLeft,
-        padTop: metrics.padTop,
-        padRight: metrics.padRight,
-        padBottom: metrics.padBottom,
-        glyphWidth,
-        lineHeightPx: line.height,
-        hasGlyph,
-        glyph: underCaret
-      }),
-      fontFamily: metrics.fontFamily,
-      fontSize: metrics.fontSize,
-      fontWeight: metrics.fontWeight,
-      fontStyle: metrics.fontStyle,
-      lineHeight: line.css,
-      color: metrics.color,
-      box,
-      el,
-      pos: start
-    };
-    latestRect = rect;
-    notify(rect);
-    return rect;
-  };
-  return {
-    measure,
-    latest() {
-      return latestRect;
-    },
-    // No caret field has focus: the canvas engine stops drawing the last one.
-    clear() {
-      latestRect = null;
-    },
-    subscribe(fn) {
-      subscribers.add(fn);
-      return () => subscribers.delete(fn);
-    },
-    isSkippedHost,
-    // Drop the cached style so the next measure copies the host's width again.
-    invalidate,
-    dispose() {
-      if (disposed) return;
-      disposed = true;
-      subscribers.clear();
-      cachedEl = null;
-      metrics = null;
-      latestRect = null;
-      for (const { target, type, fn, options } of themeListeners) {
-        try {
-          target?.removeEventListener?.(type, fn, options);
-        } catch {
-        }
-      }
-      themeListeners.length = 0;
-      try {
-        themeObserver?.disconnect();
-      } catch {
-      }
-      themeObserver = null;
-      mirror.remove();
-    }
-  };
-}
+// src/extension.js
+init_caret_measure();
 
 // src/caret-lite.js
+init_caret_measure();
 init_cursor_smith();
 init_theme();
 function isPasswordField(el) {
@@ -4685,6 +4713,7 @@ var SETTLE_STABLE_FRAMES = 4;
 var SETTLE_MAX_MS = 1e3;
 var MOVING_KEYS = /* @__PURE__ */ new Set(["Alt", "Control", "Meta", "Enter", "Escape"]);
 var BASE_Z_INDEX = 40;
+var CAMERA_EVENT = "plexus-diagram:camera";
 var DEMO_CLASS = "cs-lite-demo";
 var SELECTION_CLASS = "cs-sel";
 var SELECTION_BG = "--cs-selection";
@@ -4731,6 +4760,10 @@ function stackingZIndex(el, doc, win) {
 }
 function isPlainLine(settings) {
   return !!settings && settings.cursorStyle === "Line" && !settings.glow && !settings.showChar && !settings.gradientEnabled && !needsCanvas(settings);
+}
+function axisScale(value) {
+  const n = Number(value);
+  return Number.isFinite(n) && n > 0 ? n : 1;
 }
 function opacityOf(settings) {
   const value = Number(settings?.cursorOpacity);
@@ -5181,13 +5214,19 @@ function installLiteCaret({ doc, win, measurer, lifecycle, getSettings, recordTi
     writeGlyph("display", "block");
     writeGlyph("color", glyphColor);
     writeGlyph("fontFamily", rect.fontFamily || "");
-    writeGlyph("fontSize", rect.fontSize || "");
+    writeGlyph("fontSize", scaleCssLength(rect.fontSize, axisScale(rect.scaleY)));
     writeGlyph("fontWeight", rect.fontWeight || "");
     writeGlyph("fontStyle", rect.fontStyle || "");
     writeGlyph(
       "lineHeight",
-      rect.lineHeight && rect.lineHeight !== "normal" ? rect.lineHeight : `${height}px`
+      rect.lineHeight && rect.lineHeight !== "normal" ? scaleCssLength(rect.lineHeight, axisScale(rect.scaleY)) : `${height}px`
     );
+  };
+  const scaleCssLength = (value, scale) => {
+    const text = value == null ? "" : String(value);
+    if (!(scale > 0) || scale === 1 || !text.endsWith("px")) return text;
+    const n = Number.parseFloat(text);
+    return Number.isFinite(n) ? `${n * scale}px` : text;
   };
   let glowColor = "";
   let glowShadow = "";
@@ -5210,14 +5249,16 @@ function installLiteCaret({ doc, win, measurer, lifecycle, getSettings, recordTi
     let y = rect.y;
     let width = rect.width;
     let height = rect.height;
+    const dpr = windowRef.devicePixelRatio;
+    const stroke = (cssPx) => scaledCaretWidth(cssPx, axisScale(rect.scaleX), dpr);
     if (cursorStyle === "Line") {
-      width = settings.caretWidthPx ?? 2;
+      width = stroke(settings.caretWidthPx ?? 2);
       height = rect.height;
       writeStyle("borderRadius", "");
       writeStyle("border", "");
       writeStyle("background", color);
     } else if (cursorStyle === "Underline") {
-      const bar = settings.underlineWidthPx || 2;
+      const bar = stroke(settings.underlineWidthPx || 2);
       width = rect.width;
       height = bar;
       y = rect.y + rect.height - bar;
@@ -5225,8 +5266,8 @@ function installLiteCaret({ doc, win, measurer, lifecycle, getSettings, recordTi
       writeStyle("border", "");
       writeStyle("background", color);
     } else if (cursorStyle === "Beam") {
-      width = settings.caretWidthPx ?? 3;
-      height = Math.max(2, rect.height * 0.82);
+      width = stroke(settings.caretWidthPx ?? 3);
+      height = Math.max(deviceMinPx(dpr), rect.height * 0.82);
       y = rect.y + (rect.height - height) / 2;
       x = rect.x - width / 2;
       writeStyle("borderRadius", "3px");
@@ -5236,7 +5277,7 @@ function installLiteCaret({ doc, win, measurer, lifecycle, getSettings, recordTi
       writeStyle("borderRadius", "1px");
       if (settings.boxHollow) {
         writeStyle("background", "transparent");
-        writeStyle("border", `${settings.boxHollowWidth || 2}px solid ${color}`);
+        writeStyle("border", `${stroke(settings.boxHollowWidth || 2)}px solid ${color}`);
       } else {
         writeStyle("border", "");
         writeStyle("background", color);
@@ -5599,8 +5640,16 @@ function installLiteCaret({ doc, win, measurer, lifecycle, getSettings, recordTi
   for (const [type, fn, capture] of docListeners) {
     documentRef.addEventListener(type, fn, capture);
   }
+  const onCamera = () => {
+    if (disposed) return;
+    const target = documentRef.activeElement || active;
+    if (!target || !isCaretHost(target) || !target.closest?.(".pxd-root")) return;
+    schedule(false);
+    settle();
+  };
   windowRef.addEventListener("scroll", onScrollOrResize, SCROLL_OPTS);
   windowRef.addEventListener("resize", onScrollOrResize, PASSIVE_OPTS);
+  windowRef.addEventListener(CAMERA_EVENT, onCamera);
   windowRef.addEventListener("blur", onWindowBlur, PASSIVE_OPTS);
   windowRef.addEventListener("focus", onWindowFocus, PASSIVE_OPTS);
   const visualViewport = windowRef.visualViewport;
@@ -5635,6 +5684,7 @@ function installLiteCaret({ doc, win, measurer, lifecycle, getSettings, recordTi
     }
     windowRef.removeEventListener("scroll", onScrollOrResize, SCROLL_OPTS);
     windowRef.removeEventListener("resize", onScrollOrResize, PASSIVE_OPTS);
+    windowRef.removeEventListener(CAMERA_EVENT, onCamera);
     windowRef.removeEventListener("blur", onWindowBlur, PASSIVE_OPTS);
     windowRef.removeEventListener("focus", onWindowFocus, PASSIVE_OPTS);
     visualViewport?.removeEventListener?.("scroll", onScrollOrResize, PASSIVE_OPTS);
@@ -5916,6 +5966,7 @@ var CursorSmithRuntime = class {
     if (typeof win?.addEventListener === "function") {
       this._bindPumpListener(win, "scroll", pump, true);
       this._bindPumpListener(win, "resize", pump, false);
+      this._bindPumpListener(win, CAMERA_EVENT, pump, false);
     }
   }
   stopPump() {

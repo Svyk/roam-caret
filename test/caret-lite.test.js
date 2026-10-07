@@ -4,6 +4,7 @@ import test from "node:test";
 
 import { createCaretMeasurer } from "../src/caret-measure.js";
 import {
+  CAMERA_EVENT,
   glyphColorOn,
   installLiteCaret,
   coveredByPanel,
@@ -2087,4 +2088,176 @@ test("a range selection, or a covered or non-host field, stops the settle loop",
   listeners.get("input")({ target: number });
   raf.flush();
   assert.equal(raf.frames.length, 0, "not a host: no further frames");
+});
+
+test("Line width follows the board scale and stays at least one device pixel", () => {
+  const paint = (scaleX, dpr) => {
+    const harness = installHarness(
+      { x: 40, y: 20, width: 8, height: 19, scaleX },
+      {},
+      { cursorStyle: "Line", caretWidthPx: 2 },
+    );
+    harness.win.devicePixelRatio = dpr;
+    harness.listeners.get("focusin")({ target: harness.textarea });
+    return harness.lite.overlay.style.width;
+  };
+  assert.equal(paint(0.5, 1), "1px");
+  assert.equal(paint(2, 1), "4px");
+  assert.equal(paint(0.1, 2), "0.5px");
+});
+
+test("Box letter scales with the board and stays unscaled at scale 1", () => {
+  const { lite, listeners, textarea } = installHarness({
+    fontSize: "15px",
+    lineHeight: "22px",
+    scaleY: 0.5,
+    glyph: "h",
+  }, {}, { cursorStyle: "Box", showChar: true });
+  listeners.get("focusin")({ target: textarea });
+  const glyph = lite.overlay.children[0];
+  assert.equal(glyph.style.fontSize, "7.5px");
+  assert.equal(glyph.style.lineHeight, "11px");
+});
+
+test("skipped Roam Grid keeps the native caret; a Plexus board hides it", () => {
+  const { lite, doc, listeners } = installHarness();
+  const grid = makeTextarea({
+    style: makeStyle({ "caret-color": "red" }),
+    closest: () => ({ className: "rg-root" }),
+  });
+  doc.activeElement = grid;
+  listeners.get("focusin")({ target: grid });
+  assert.equal(lite.overlay.style.display, "none");
+  assert.equal(grid.style.getPropertyValue("caret-color"), "red");
+
+  const board = makeTextarea({
+    style: makeStyle(),
+    closest: (sel) => (sel === ".pxd-root" ? { className: "pxd-root" } : null),
+  });
+  doc.activeElement = board;
+  listeners.get("focusin")({ target: board });
+  assert.notEqual(lite.overlay.style.display, "none");
+  assert.equal(board.style.getPropertyValue("caret-color"), "transparent");
+  assert.equal(board.style.getPropertyPriority("caret-color"), "important");
+});
+
+test("extension.css restores the native caret only inside Roam Grid", async () => {
+  const css = await readFile(new URL("../src/extension.css", import.meta.url), "utf8");
+  assert.match(css, /body\.cs-active\.cs-hide-native \.rg-root \.rm-block__input/);
+  assert.match(css, /body\.cs-active\.cs-hide-native \.rg-root textarea\[id\^="block-input-"\]/);
+  assert.match(css, /caret-color:\s*auto !important/);
+  assert.doesNotMatch(css, /\.pxd-root/);
+});
+
+// A page card on a fullscreen board: the scroller is the page editor, and
+// the board root is position:fixed. The caret clips to the editor.
+function pageCardChain(doc, textarea) {
+  const pageEdit = {
+    isConnected: true,
+    contains: (node) => node === textarea,
+    getBoundingClientRect: () => ({ left: 110, top: 120, right: 330, bottom: 260, width: 220, height: 140 }),
+  };
+  const itemBody = {
+    isConnected: true,
+    getBoundingClientRect: () => ({ left: 90, top: 100, right: 480, bottom: 480, width: 390, height: 380 }),
+  };
+  const item = {
+    isConnected: true,
+    getBoundingClientRect: () => ({ left: 80, top: 80, right: 500, bottom: 500, width: 420, height: 420 }),
+  };
+  const world = {
+    isConnected: true,
+    getBoundingClientRect: () => ({ left: -400, top: -400, right: 2000, bottom: 2000, width: 2400, height: 2400 }),
+  };
+  const root = {
+    parentElement: doc.body,
+    isConnected: true,
+    getBoundingClientRect: () => ({ left: 0, top: 0, right: 900, bottom: 700, width: 900, height: 700 }),
+  };
+  world.parentElement = root;
+  item.parentElement = world;
+  itemBody.parentElement = item;
+  pageEdit.parentElement = itemBody;
+  textarea.parentElement = pageEdit;
+  const styles = new Map([
+    [pageEdit, { position: "relative", overflowX: "auto", overflowY: "auto", zIndex: "auto" }],
+    [itemBody, { position: "static", overflowX: "hidden", overflowY: "hidden", zIndex: "auto" }],
+    [item, { position: "absolute", overflowX: "hidden", overflowY: "hidden", zIndex: "auto" }],
+    [world, { position: "absolute", overflowX: "visible", overflowY: "visible", zIndex: "auto" }],
+    [root, { position: "fixed", overflowX: "hidden", overflowY: "hidden", zIndex: "40" }],
+  ]);
+  return { pageEdit, styles };
+}
+
+test("a scrolling page-card body clips the caret when the board is position fixed", () => {
+  const box = { left: 110, top: 120, right: 330, bottom: 420, width: 220, height: 300 };
+  const { lite, doc, win, listeners, textarea, rect } = installHarness(
+    { x: 150, y: 140, width: 8, height: 19 },
+    {
+      closest: (sel) => (sel === ".pxd-root" ? { className: "pxd-root" } : null),
+      getBoundingClientRect: () => box,
+      style: makeStyle(),
+    },
+  );
+  const { pageEdit, styles } = pageCardChain(doc, textarea);
+  win.getComputedStyle = (el) => styles.get(el)
+    || { position: "static", overflowX: "visible", overflowY: "visible", zIndex: "auto" };
+
+  listeners.get("focusin")({ target: textarea });
+  assert.notEqual(lite.overlay.style.display, "none", "a line inside the card body paints");
+
+  rect.y = 280;
+  listeners.get("input")({ target: textarea });
+  assert.equal(lite.overlay.style.display, "none", "a line below the card body does not paint on the board");
+
+  rect.y = 140;
+  listeners.get("input")({ target: textarea });
+  assert.notEqual(lite.overlay.style.display, "none");
+
+  rect.x = 180;
+  let rafCalls = 0;
+  win.requestAnimationFrame = (cb) => {
+    rafCalls += 1;
+    cb();
+    return rafCalls;
+  };
+  listeners.get("scroll")({ target: pageEdit });
+  assert.equal(rafCalls, 1, "scrolling the card body remeasures once");
+  assert.match(String(lite.overlay.style.transform), /translate\(180px, 140px\)/);
+});
+
+test("plexus-diagram:camera remeasures a focused Plexus field and then stops", () => {
+  const { lite, listeners, textarea, measurer, win } = installHarness({}, {
+    closest: (sel) => (sel === ".pxd-root" ? { className: "pxd-root" } : null),
+    style: makeStyle(),
+  });
+  listeners.get("focusin")({ target: textarea });
+  let measures = 0;
+  const base = measurer.measure.bind(measurer);
+  measurer.measure = (el) => {
+    measures += 1;
+    return base(el);
+  };
+  const raf = rafQueue(win);
+  listeners.get(CAMERA_EVENT)();
+  assert.equal(measures, 0, "the camera event only queues a frame");
+  const rounds = raf.drain();
+  assert.equal(measures, 1, "one measure for a still board");
+  assert.ok(rounds < 10, `settle stops (ran ${rounds})`);
+  assert.equal(raf.frames.length, 0, "a still board does not keep polling");
+  lite.dispose();
+  assert.equal(listeners.has(CAMERA_EVENT), false);
+});
+
+test("plexus-diagram:camera ignores a field that is not on a Plexus board", () => {
+  const { listeners, textarea, measurer } = installHarness();
+  listeners.get("focusin")({ target: textarea });
+  let measures = 0;
+  const base = measurer.measure.bind(measurer);
+  measurer.measure = (el) => {
+    measures += 1;
+    return base(el);
+  };
+  listeners.get(CAMERA_EVENT)();
+  assert.equal(measures, 0);
 });
