@@ -1,4 +1,4 @@
-/* Roam Caret v0.6.7 | MIT | generated; edit src/ */
+/* Roam Caret v0.6.8 | MIT | generated; edit src/ */
 var __defProp = Object.defineProperty;
 var __getOwnPropNames = Object.getOwnPropertyNames;
 var __esm = (fn, res, err) => function __init() {
