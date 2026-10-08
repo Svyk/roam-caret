@@ -692,3 +692,15 @@ test("isTextTarget excludes input types without a selection API in Chrome", () =
   for (const type of ["text", "search", "url", "tel"]) assert.equal(isTextTarget(input(type)), true, type);
   assert.equal(isTextTarget({ tagName: "TEXTAREA" }), true);
 });
+
+test("the mirror's line blocks inherit the field's font and line-height from the mirror", () => {
+  const { doc, body } = createFakeDoc();
+  const win = { getComputedStyle: () => fakeComputed(), addEventListener() {}, removeEventListener() {} };
+  const measurer = createCaretMeasurer({ doc, win });
+  const mirror = body.children[0];
+  assert.equal(mirror.children.length, 2);
+  for (const block of mirror.children) {
+    assert.equal(block.style.font, "inherit", "a bare `div { line-height: 1.5em }` rule must not size the mirror's lines");
+  }
+  measurer.dispose();
+});

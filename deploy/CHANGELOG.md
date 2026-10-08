@@ -4,6 +4,9 @@ All notable changes to this project follow [Keep a Changelog](https://keepachang
 
 ## [Unreleased]
 
+### Fixed
+- The caret drifted below its line in multi-line text at any font size where `1.5em` is not the field's line-height (a Plexus card zoomed to 69% put it about one line fraction low per wrapped line). A theme rule `div { line-height: 1.5em }` sized the mirror's inner blocks; they now inherit the mirror's font and line-height explicitly.
+
 ## [0.6.7] - 2026-10-06
 
 ### Fixed

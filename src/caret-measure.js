@@ -348,6 +348,11 @@ export function createCaretMeasurer({ doc, win, lifecycle } = {}) {
   marker.style.width = "0";
   marker.style.verticalAlign = "top";
   marker.textContent = MARKER_CHAR;
+  // A host stylesheet rule on bare divs (Roam's theme sets `div { line-height: 1.5em; font-family: Inter }`)
+  // beats inheritance, so the two blocks must take the mirror's font and line-height explicitly. At 13px
+  // 1.5em is the 19.5px the field uses; under a Plexus counter-scale it is not, and every line drifted.
+  beforeBlock.style.font = "inherit";
+  lineBlock.style.font = "inherit";
   const glyphEl = documentRef.createElement("span");
   // Out of flow: a width probe at the end of a full line must not wrap the marker.
   glyphEl.style.position = "absolute";
