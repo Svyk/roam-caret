@@ -4,6 +4,11 @@ All notable changes to this project follow [Keep a Changelog](https://keepachang
 
 ## [Unreleased]
 
+## [0.6.9] - 2026-10-15
+
+### Fixed
+- The caret stayed at its old spot when content above the field changed size with no key or scroll event: a SmartBlock inserting its block, or a pasted image finishing its upload. It now follows the field. One ResizeObserver also watches the content root around the focused field; when that root changes size, one box read decides whether the caret needs re-placing.
+
 ## [0.6.8] - 2026-10-07
 
 ### Fixed

@@ -1,4 +1,4 @@
-/* Roam Caret v0.6.8 | MIT | generated; edit src/ */
+/* Roam Caret v0.6.9 | MIT | generated; edit src/ */
 var __defProp = Object.defineProperty;
 var __getOwnPropNames = Object.getOwnPropertyNames;
 var __esm = (fn, res, err) => function __init() {
@@ -5010,6 +5010,22 @@ function resizeObserverClass(win) {
   const RO = win?.ResizeObserver || globalThis.ResizeObserver;
   return typeof RO === "function" ? RO : null;
 }
+function flowRootOf(el, doc, win) {
+  if (typeof win?.getComputedStyle !== "function") return null;
+  try {
+    let child = el;
+    let node = el?.parentElement;
+    let guard = 0;
+    while (node && node !== doc?.body && node !== doc?.documentElement && guard++ < 256) {
+      const oy = win.getComputedStyle(node).overflowY;
+      if (oy === "auto" || oy === "scroll") return child === el ? null : child;
+      child = node;
+      node = node.parentElement;
+    }
+  } catch {
+  }
+  return null;
+}
 function sameSize(a, b) {
   return Math.abs(a - b) < 0.5;
 }
@@ -5483,15 +5499,20 @@ function installLiteCaret({ doc, win, measurer, lifecycle, getSettings, recordTi
   };
   let followed = null;
   let followedBox = null;
+  let followedFlow = null;
   let resizeObserver = null;
   const follow = (el) => {
     if (el === followed) return;
+    const flow = el && resizeObserver ? flowRootOf(el, documentRef, windowRef) : null;
     try {
       if (followed) resizeObserver?.unobserve(followed);
+      if (followedFlow && followedFlow !== flow) resizeObserver?.unobserve(followedFlow);
       if (el) resizeObserver?.observe(el, { box: "border-box" });
+      if (flow && flow !== followedFlow) resizeObserver?.observe(flow, { box: "border-box" });
     } catch {
     }
     followed = el;
+    followedFlow = flow;
     followedBox = null;
   };
   const release = () => {
@@ -5635,8 +5656,17 @@ function installLiteCaret({ doc, win, measurer, lifecycle, getSettings, recordTi
       return;
     }
     let entry = null;
-    for (const item of entries || []) if (item?.target === followed) entry = item;
-    if (!entry) return;
+    let flowMoved = false;
+    for (const item of entries || []) {
+      if (item?.target === followed) entry = item;
+      else if (item?.target && item.target === followedFlow) flowMoved = true;
+    }
+    if (!entry) {
+      if (!flowMoved || documentRef.activeElement !== followed) return;
+      if (sameBox(followed.getBoundingClientRect(), followedBox)) return;
+      measureAndApply(followed, false);
+      return;
+    }
     const size = entry.borderBoxSize?.[0] || entry.borderBoxSize;
     const box = followedBox;
     const widthSame = !!(size && box) && sameSize(size.inlineSize, box.width);

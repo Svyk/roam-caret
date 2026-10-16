@@ -211,6 +211,26 @@ function resizeObserverClass(win) {
   return typeof RO === "function" ? RO : null;
 }
 
+// The child of the field's nearest scroll container that holds it. A block
+// inserted or an image loaded above the field grows this root and moves the
+// field without resizing it, and no scroll or key event follows.
+function flowRootOf(el, doc, win) {
+  if (typeof win?.getComputedStyle !== "function") return null;
+  try {
+    let child = el;
+    let node = el?.parentElement;
+    let guard = 0;
+    while (node && node !== doc?.body && node !== doc?.documentElement && guard++ < 256) {
+      const oy = win.getComputedStyle(node).overflowY;
+      if (oy === "auto" || oy === "scroll") return child === el ? null : child;
+      child = node;
+      node = node.parentElement;
+    }
+  } catch {
+  }
+  return null;
+}
+
 function sameSize(a, b) {
   return Math.abs(a - b) < 0.5;
 }
@@ -774,16 +794,21 @@ export function installLiteCaret({ doc, win, measurer, lifecycle, getSettings, r
   // is measured once more against its new box.
   let followed = null;
   let followedBox = null;
+  let followedFlow = null;
   let resizeObserver = null;
 
   const follow = (el) => {
     if (el === followed) return;
+    const flow = el && resizeObserver ? flowRootOf(el, documentRef, windowRef) : null;
     try {
       if (followed) resizeObserver?.unobserve(followed);
+      if (followedFlow && followedFlow !== flow) resizeObserver?.unobserve(followedFlow);
       if (el) resizeObserver?.observe(el, { box: "border-box" });
+      if (flow && flow !== followedFlow) resizeObserver?.observe(flow, { box: "border-box" });
     } catch {
     }
     followed = el;
+    followedFlow = flow;
     followedBox = null;
   };
 
@@ -948,8 +973,19 @@ export function installLiteCaret({ doc, win, measurer, lifecycle, getSettings, r
       return;
     }
     let entry = null;
-    for (const item of entries || []) if (item?.target === followed) entry = item;
-    if (!entry) return;
+    let flowMoved = false;
+    for (const item of entries || []) {
+      if (item?.target === followed) entry = item;
+      else if (item?.target && item.target === followedFlow) flowMoved = true;
+    }
+    if (!entry) {
+      // The content around the field changed size: one box read, and a
+      // measure only if the field itself moved.
+      if (!flowMoved || documentRef.activeElement !== followed) return;
+      if (sameBox(followed.getBoundingClientRect(), followedBox)) return;
+      measureAndApply(followed, false);
+      return;
+    }
     const size = entry.borderBoxSize?.[0] || entry.borderBoxSize;
     const box = followedBox;
     const widthSame = !!(size && box) && sameSize(size.inlineSize, box.width);

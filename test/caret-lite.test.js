@@ -2288,3 +2288,59 @@ test("focus in a Plexus card pulses the caret once", () => {
   listeners.get("input")({ target: textarea });
   assert.equal(lite.overlay._animations.length, 2, "typing does not pulse again");
 });
+
+test("a block inserted above the focused field moves the caret with it", () => {
+  const RO = fakeResizeObserver();
+  const box = { left: 100, top: 300, width: 400, height: 37 };
+  const field = trackBox(makeTextarea({
+    value: "18:25 elapsed",
+    selectionStart: 0,
+    selectionEnd: 0,
+    scrollTop: 0,
+    scrollLeft: 0,
+    getBoundingClientRect() {
+      return { ...box, right: box.left + box.width, bottom: box.top + box.height };
+    },
+  }), box);
+  const { lite, win, doc, listeners } = installMeasured(field, {
+    width: "400px",
+    paddingTop: "8px",
+    paddingLeft: "8px",
+    fontSize: "13px",
+    lineHeight: "21px",
+  }, {}, { win: { ResizeObserver: RO.Class } });
+  const article = { className: "roam-article" };
+  const scroller = {
+    className: "rm-article-wrapper",
+    parentElement: doc.body,
+    getBoundingClientRect: () => ({ left: 0, top: 0, right: 1200, bottom: 900, width: 1200, height: 900 }),
+  };
+  article.parentElement = scroller;
+  field.parentElement = article;
+  const computed = win.getComputedStyle;
+  win.getComputedStyle = (el) => (el === scroller ? { ...computed(el), overflowY: "scroll" } : computed(el));
+  const observer = RO.instances[0];
+  const raf = rafQueue(win);
+
+  listeners.get("focusin")({ target: field });
+  raf.flush();
+  raf.drain();
+  assert.ok(observer.targets.has(article), "the content root around the field is watched");
+  assert.ok(!observer.targets.has(scroller), "not the scroll container itself");
+  assert.deepEqual(translateOf(lite.overlay), { x: 108, y: 308 });
+
+  // Content grows elsewhere: the field did not move, so no measure.
+  observer.fire(article, 600, 900);
+  assert.deepEqual(translateOf(lite.overlay), { x: 108, y: 308 });
+
+  // A SmartBlock or a finished image upload pushes the field down one line.
+  box.top += 37;
+  observer.fire(article, 600, 937);
+  assert.equal(raf.frames.length, 0, "measured in the observer callback, no extra frame");
+  assert.deepEqual(translateOf(lite.overlay), { x: 108, y: 345 });
+
+  doc.activeElement = doc.body;
+  listeners.get("focusout")({ target: field, relatedTarget: null });
+  assert.equal(observer.targets.size, 0, "blur stops watching the content root");
+  lite.dispose();
+});
